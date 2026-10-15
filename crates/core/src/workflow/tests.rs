@@ -904,9 +904,10 @@ fn bundled_reference_templates_load_and_report_unsupported_objects() {
 
     // Keyword items must generate without panicking for every template
     // (scripts are not run for a query that matches no keyword).
-    let (paths, _r) = temp_paths("bundled-run");
+    let (paths, r) = temp_paths("bundled-run");
     for w in &loaded {
         let _ = w.keyword_items("zzzzqqqq", &paths);
     }
+    let _ = std::fs::remove_dir_all(r);
     let _ = std::fs::remove_dir_all(root);
 }
