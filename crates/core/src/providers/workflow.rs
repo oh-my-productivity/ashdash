@@ -54,7 +54,7 @@ mod tests {
         });
         let xml = to_plist(&doc);
         xml.to_file_xml(dir.join("info.plist")).unwrap();
-        e.reload();
+        e.reload_blocking();
     }
 
     fn to_plist(j: &serde_json::Value) -> plist::Value {

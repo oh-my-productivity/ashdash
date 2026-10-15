@@ -33,49 +33,157 @@ pub struct Engine {
     pub config: Config,
     apps: Arc<RwLock<Vec<AppEntry>>>,
     /// Keeps the persistent app index refreshed and watched; dropping the engine stops it.
-    app_index: AppIndex,
-    workflows: RwLock<Vec<Workflow>>,
-    snippets: RwLock<Vec<Snippet>>,
+    app_index: Arc<AppIndex>,
+    workflows: Arc<RwLock<Vec<Workflow>>>,
+    snippets: Arc<RwLock<Vec<Snippet>>>,
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
     providers: Vec<Box<dyn Provider>>,
+    /// Background reload bookkeeping (see [`Engine::reload`]).
+    reload_gate: Arc<Mutex<ReloadGate>>,
+    /// Serialises writes of per-workflow settings files.
+    settings_lock: Mutex<()>,
+}
+
+#[derive(Default)]
+struct ReloadGate {
+    running: bool,
+    /// Another reload was requested while one was running.
+    again: bool,
+}
+
+/// Everything a reload needs, owned so it can run on a background thread.
+struct ReloadJob {
+    app_index: Arc<AppIndex>,
+    workflows: Arc<RwLock<Vec<Workflow>>>,
+    snippets: Arc<RwLock<Vec<Snippet>>>,
+    workflow_roots: Vec<PathBuf>,
+    snippets_file: PathBuf,
+}
+
+impl ReloadJob {
+    /// Re-scan applications, workflows and snippets. Slow work happens before
+    /// the locks are taken, so queries keep being answered from the old data.
+    fn run(&self) {
+        self.app_index.rescan();
+        self.run_content();
+    }
+
+    fn run_content(&self) {
+        let fresh = workflow::load_all(&self.workflow_roots);
+        let snippets = clipboard::load_snippets(&self.snippets_file);
+        let old = std::mem::replace(&mut *self.workflows.write().unwrap(), fresh);
+        // A delayed continuation may still hold a clone of an old workflow: start it clean.
+        for w in &old {
+            w.reset_session();
+        }
+        *self.snippets.write().unwrap() = snippets;
+    }
+}
+
+/// One entry of a workflow's configuration sheet with its current value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowSetting {
+    pub variable: String,
+    pub label: String,
+    pub description: String,
+    /// Control type from the sheet (`textfield`, `checkbox`, `popupbutton`, ...).
+    pub kind: String,
+    pub default: String,
+    /// What scripts see: the user's value, or the default.
+    pub value: String,
+    pub is_default: bool,
 }
 
 impl Engine {
     pub fn new(paths: Paths, config: Config) -> Engine {
         let usage = Usage::load(paths.usage_file());
-        let clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard_history_size);
+        let mut clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard.max_entries);
+        config.clipboard.apply(&mut clipboard);
         // Served from the cache at once (or scanned synchronously on the very first run);
         // refreshed and watched in the background afterwards.
         let apps = Arc::new(RwLock::new(Vec::new()));
-        let app_index = AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps));
+        let app_index = Arc::new(AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps)));
+        let providers = providers::registry_for(&config);
         let e = Engine {
             paths,
             config,
             apps,
             app_index,
-            workflows: RwLock::new(Vec::new()),
-            snippets: RwLock::new(Vec::new()),
+            workflows: Arc::new(RwLock::new(Vec::new())),
+            snippets: Arc::new(RwLock::new(Vec::new())),
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
-            providers: providers::registry(),
+            providers,
+            reload_gate: Arc::default(),
+            settings_lock: Mutex::new(()),
         };
         e.reload_content();
         e
     }
 
-    /// Re-scan applications, workflows and snippets.
+    /// Re-scan applications, workflows and snippets in the background and
+    /// return at once; queries keep using the old data until the new data is
+    /// swapped in. Calls made while a reload is running are merged into one
+    /// extra pass. Use [`Engine::reload_blocking`] to wait for the result.
     pub fn reload(&self) {
-        self.app_index.rescan();
-        self.reload_content();
+        {
+            let mut gate = self.reload_gate.lock().unwrap();
+            if gate.running {
+                gate.again = true;
+                return;
+            }
+            gate.running = true;
+        }
+        let job = self.reload_job();
+        let gate = Arc::clone(&self.reload_gate);
+        let spawned = std::thread::Builder::new()
+            .name("ashdash-reload".into())
+            .spawn(move || {
+                loop {
+                    job.run();
+                    let mut g = gate.lock().unwrap();
+                    if g.again {
+                        g.again = false;
+                        continue;
+                    }
+                    g.running = false;
+                    break;
+                }
+            });
+        if spawned.is_err() {
+            // No thread available: do the work here rather than never.
+            self.reload_gate.lock().unwrap().running = false;
+            self.reload_blocking();
+        }
     }
 
-    /// Workflows and snippets (applications are handled by the app index).
+    /// Whether a background [`Engine::reload`] is still working.
+    pub fn reload_pending(&self) -> bool {
+        self.reload_gate.lock().unwrap().running
+    }
+
+    /// Re-scan applications, workflows and snippets and return when done
+    /// (tests and the command line).
+    pub fn reload_blocking(&self) {
+        self.reload_job().run();
+    }
+
+    /// Workflows and snippets only (applications are handled by the app index).
     fn reload_content(&self) {
+        self.reload_job().run_content();
+    }
+
+    fn reload_job(&self) -> ReloadJob {
         let mut roots = vec![self.paths.workflows_dir()];
         roots.extend(self.config.workflow_dirs.iter().cloned());
-        *self.workflows.write().unwrap() = workflow::load_all(&roots);
-        *self.snippets.write().unwrap() = clipboard::load_snippets(&self.paths.snippets_file());
+        ReloadJob {
+            app_index: Arc::clone(&self.app_index),
+            workflows: Arc::clone(&self.workflows),
+            snippets: Arc::clone(&self.snippets),
+            workflow_roots: roots,
+            snippets_file: self.paths.snippets_file(),
+        }
     }
 
     pub fn clipboard(&self) -> Arc<Mutex<ClipboardHistory>> {
@@ -97,8 +205,72 @@ impl Engine {
 
     pub fn import_workflow(&self, package: &Path) -> Result<PathBuf> {
         let dest = workflow::import_package(package, &self.paths.workflows_dir())?;
-        self.reload();
+        // The new workflow must be usable as soon as this returns.
+        self.reload_content();
         Ok(dest)
+    }
+
+    // ------------------------------------------------------------ workflow settings
+
+    /// The configuration sheet of the workflow with `bundle_id`, with each
+    /// entry's current value; `None` when no such workflow is installed.
+    pub fn workflow_settings(&self, bundle_id: &str) -> Option<Vec<WorkflowSetting>> {
+        let wfs = self.workflows.read().unwrap();
+        let wf = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id)?;
+        let vars = wf.base_vars(&self.paths);
+        Some(
+            wf.user_config
+                .iter()
+                .map(|c| {
+                    let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
+                    WorkflowSetting {
+                        variable: c.variable.clone(),
+                        label: c.label.clone(),
+                        description: c.description.clone(),
+                        kind: c.kind.clone(),
+                        is_default: value == c.default,
+                        default: c.default.clone(),
+                        value,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Save a value for one entry of a workflow's configuration sheet. It is
+    /// stored in `<data>/workflow-config/<bundle id>.json` (mode 0600) and is
+    /// visible to the workflow's next run as `$variable` / `{var:variable}`.
+    pub fn set_workflow_setting(&self, bundle_id: &str, variable: &str, value: &str) -> Result<()> {
+        self.update_workflow_values(bundle_id, variable, Some(value))
+    }
+
+    /// Forget the saved value of one entry; the sheet's default applies again.
+    pub fn reset_workflow_setting(&self, bundle_id: &str, variable: &str) -> Result<()> {
+        self.update_workflow_values(bundle_id, variable, None)
+    }
+
+    fn update_workflow_values(&self, bundle_id: &str, variable: &str, value: Option<&str>) -> Result<()> {
+        let _guard = self.settings_lock.lock().unwrap();
+        let wfs = self.workflows.read().unwrap();
+        let Some(wf) = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id) else {
+            bail!("no workflow with bundle id '{bundle_id}'");
+        };
+        if !wf.user_config.iter().any(|c| c.variable == variable) {
+            bail!("workflow '{}' has no setting '{variable}'", wf.name);
+        }
+        let file = wf.user_values_file(&self.paths);
+        let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        match value {
+            Some(v) => map.insert(variable.to_string(), v.into()),
+            None => map.remove(variable),
+        };
+        crate::config::write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+        // The values are cached per loaded workflow: drop the cache so the next run re-reads them.
+        wf.reset_session();
+        Ok(())
     }
 
     // ------------------------------------------------------------ query
@@ -181,6 +353,12 @@ impl Engine {
         {
             return Outcome::Confirm(prompt);
         }
+        if let Action::Clipboard(_) = &action
+            && let Some(prompt) = action.confirmation()
+            && !confirmed
+        {
+            return Outcome::Confirm(prompt);
+        }
         let outcome = self.perform(&action, mods);
         if outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_)) {
             self.usage.lock().unwrap().record(query, &item.id);
@@ -199,6 +377,11 @@ impl Engine {
                 Action::System(c) => c.run()?,
                 Action::Shell(cmd) => run_in_terminal(cmd)?,
                 Action::Workflow(a) => return Ok(self.run_workflow(a, mods)),
+                Action::Clipboard(c) => match clipboard::run_command(&self.clipboard, c) {
+                    Outcome::Error(m) => bail!("{m}"),
+                    Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
+                    Outcome::Done | Outcome::Confirm(_) => {}
+                },
                 Action::Universal(u) => match actions::run(&actions::RealOs, u) {
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
                     Outcome::Error(e) => bail!("{e}"),
@@ -501,7 +684,7 @@ mod tests {
             .map(|j| json_to_plist(&j))
             .unwrap();
         v.to_file_xml(dir.join("info.plist")).unwrap();
-        e.reload();
+        e.reload_blocking();
         let r = e.query("shout hello");
         assert_eq!(r[0].title, "Shout");
         assert_eq!(r[0].subtitle, "say hello");
@@ -529,7 +712,7 @@ mod tests {
                 "connections": {}
             });
             json_to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
-            e.reload();
+            e.reload_blocking();
             let r = e.query(&format!("{builtin} x"));
             assert_eq!(r.len(), 1, "{builtin}: {r:?}");
             assert_eq!(r[0].title, "Mine", "{builtin}");

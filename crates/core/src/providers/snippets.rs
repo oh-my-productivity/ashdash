@@ -141,7 +141,7 @@ mod tests {
             r#"[{"name":"Sign off","keyword":"sig","text":"Regards"}]"#,
         )
         .unwrap();
-        e.reload();
+        e.reload_blocking();
         let r = e.query("snip sig");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].id, "snip:sig");
@@ -159,7 +159,7 @@ mod tests {
             r#"[{"name":"Reply","keyword":"re","text":"Hi {clipboard:1}, re: {clipboard}{cursor}!"}]"#,
         )
         .unwrap();
-        e.reload();
+        e.reload_blocking();
         {
             let clip = e.clipboard();
             let mut h = clip.lock().unwrap();
@@ -198,7 +198,7 @@ mod tests {
             },
         )
         .unwrap();
-        e.reload();
+        e.reload_blocking();
 
         // By resolved keyword.
         let r = e.query("snip ;sig");
@@ -251,7 +251,7 @@ mod tests {
                 {"name":"Mail","keyword":"mail","text":"Hello\n{snippet:sig}"}]"#,
         )
         .unwrap();
-        e.reload();
+        e.reload_blocking();
         let r = e.query("snip mail");
         assert_eq!(r[0].action, Action::Copy("Hello\nRegards".into()));
         let _ = std::fs::remove_dir_all(root);

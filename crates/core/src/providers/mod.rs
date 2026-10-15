@@ -100,23 +100,70 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// All providers in precedence order.
+/// Ids of every built-in provider in precedence order (the values accepted by
+/// `Config::providers_disabled`).
+pub const PROVIDER_IDS: &[&str] = &[
+    "workflow",
+    "shell",
+    "files",
+    "actions",
+    "clipboard",
+    "snippets",
+    "bookmarks",
+    "web-keyword",
+    "path",
+    "calc",
+    "apps",
+    "system",
+    "web-fallback",
+];
+
+/// All providers in precedence order, configured with the defaults.
 pub fn registry() -> Vec<Box<dyn Provider>> {
-    vec![
-        Box::new(workflow::WorkflowProvider),
-        Box::new(shell::ShellProvider),
-        Box::new(files::FilesProvider::default()),
-        Box::new(actions::ActionsProvider),
-        Box::new(clipboard::ClipboardProvider),
-        Box::new(snippets::SnippetsProvider),
-        Box::new(bookmarks::BookmarksProvider::new()),
-        Box::new(websearch::WebKeywordProvider),
-        Box::new(files::PathBrowseProvider),
-        Box::new(calc::CalcProvider),
-        Box::new(apps::AppsProvider),
-        Box::new(system::SystemProvider),
-        Box::new(websearch::FallbackProvider),
-    ]
+    registry_for(&Config::default())
+}
+
+/// The providers for `config`, in precedence order: providers named in
+/// `config.providers_disabled` are not created at all, and the file search
+/// and bookmark providers take their settings from the configuration.
+pub fn registry_for(config: &Config) -> Vec<Box<dyn Provider>> {
+    let mut v: Vec<Box<dyn Provider>> = Vec::new();
+    // One line per provider; the id literal must equal `Provider::id` (tested).
+    macro_rules! add {
+        ($id:literal, $p:expr) => {
+            if !config.providers_disabled.iter().any(|d| d == $id) {
+                v.push(Box::new($p));
+            }
+        };
+    }
+    add!("workflow", workflow::WorkflowProvider);
+    add!("shell", shell::ShellProvider);
+    add!("files", files::FilesProvider::new(config.file_search.to_scope()));
+    add!("actions", actions::ActionsProvider);
+    add!("clipboard", clipboard::ClipboardProvider);
+    add!("snippets", snippets::SnippetsProvider);
+    add!("bookmarks", bookmarks_provider(config));
+    add!("web-keyword", websearch::WebKeywordProvider);
+    add!("path", files::PathBrowseProvider);
+    add!("calc", calc::CalcProvider);
+    add!("apps", apps::AppsProvider);
+    add!("system", system::SystemProvider);
+    add!("web-fallback", websearch::FallbackProvider);
+    v
+}
+
+/// Bookmark sources for the current user's browsers, loading in the background.
+/// Unit tests get no sources so they never read real browser data.
+fn bookmarks_provider(config: &Config) -> bookmarks::BookmarksProvider {
+    #[cfg(not(test))]
+    let sources = dirs::home_dir()
+        .map(|home| crate::bookmarks::build_sources(&home, &config.bookmarks.enabled_sources))
+        .unwrap_or_default();
+    #[cfg(test)]
+    let sources = Vec::new();
+    let cache = crate::bookmarks::BookmarkCache::new(sources);
+    cache.refresh_in_background();
+    bookmarks::BookmarksProvider::with_cache(config.bookmarks.clone(), cache)
 }
 
 /// If `q` is `keyword` or `keyword <rest>`, return the (left-trimmed) rest.
@@ -179,6 +226,23 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn provider_id_list_matches_the_registry() {
+        let ids: Vec<_> = registry().iter().map(|p| p.id()).collect();
+        assert_eq!(ids, PROVIDER_IDS);
+    }
+
+    #[test]
+    fn disabled_providers_are_not_created() {
+        let config = Config {
+            providers_disabled: vec!["calc".into(), "bookmarks".into(), "no-such-provider".into()],
+            ..Config::default()
+        };
+        let ids: Vec<_> = registry_for(&config).iter().map(|p| p.id()).collect();
+        assert!(!ids.contains(&"calc") && !ids.contains(&"bookmarks"));
+        assert_eq!(ids.len(), PROVIDER_IDS.len() - 2);
+    }
 
     #[test]
     fn registry_ids_are_unique() {

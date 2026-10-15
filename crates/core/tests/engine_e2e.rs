@@ -420,7 +420,7 @@ fn external_trigger_reports_errors_for_unknown_targets() {
     let e = env.engine();
     assert!(matches!(e.run_trigger("no.such.bundle", "t", ""), Outcome::Error(_)));
     env.install_workflow("user.workflow.k", &keyword_workflow("K", "qa.k", "kk"));
-    e.reload();
+    e.reload_blocking();
     assert!(matches!(e.run_trigger("qa.k", "missing", ""), Outcome::Error(_)));
 }
 

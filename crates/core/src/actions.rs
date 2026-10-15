@@ -441,7 +441,7 @@ pub fn item_kind(item: &Item) -> ItemKind {
         Action::OpenUrl(u) => ItemKind::Url(u.clone()),
         Action::Copy(t) => ItemKind::Text(t.clone()),
         Action::Universal(_) | Action::System(_) | Action::Workflow(_) | Action::Shell(_) => ItemKind::Other,
-        Action::None => match item.copy_text.as_ref().or(item.large_type.as_ref()) {
+        Action::None | Action::Clipboard(_) => match item.copy_text.as_ref().or(item.large_type.as_ref()) {
             Some(t) => ItemKind::Text(t.clone()),
             None => ItemKind::Other,
         },

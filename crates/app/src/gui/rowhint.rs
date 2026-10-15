@@ -32,6 +32,19 @@ pub fn describe_action(a: &Action) -> String {
         Action::Shell(_) => "Run in Terminal".into(),
         Action::Workflow(_) => "Run workflow action".into(),
         Action::Universal(_) => "Run action".into(),
+        Action::Clipboard(c) => describe_clip(c).into(),
+    }
+}
+
+fn describe_clip(c: &ashdash_core::clipboard::ClipCommand) -> &'static str {
+    use ashdash_core::clipboard::ClipCommand as C;
+    match c {
+        C::Restore { .. } => "Copy to clipboard",
+        C::Paste { .. } | C::PasteText { .. } => "Paste into the frontmost app",
+        C::Pin { pinned: true, .. } => "Pin",
+        C::Pin { pinned: false, .. } => "Unpin",
+        C::Delete { .. } => "Delete from history",
+        C::Clear | C::ClearAll => "Clear clipboard history",
     }
 }
 
