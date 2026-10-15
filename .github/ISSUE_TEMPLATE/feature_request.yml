@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ashdash is an independent project. Please describe the behaviour you want in your own words. Do not paste text, screenshots
+        or files from other products, and do not ask for pixel-for-pixel copies of anyone's artwork (see
+        [docs/CLEAN_ROOM.md](../blob/main/docs/CLEAN_ROOM.md)). Check [docs/USER_GUIDE.md](../blob/main/docs/USER_GUIDE.md), section
+        "Known unverified and missing", first: it may already be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+      description: Keywords you would type, keys you would press, settings you would expect.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?

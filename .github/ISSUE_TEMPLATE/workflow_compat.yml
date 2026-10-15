@@ -1,0 +1,41 @@
+name: Workflow does not work
+description: A reference-compatible workflow imports but misbehaves
+labels: ["workflows", "compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See [docs/WORKFLOWS.md](../blob/main/docs/WORKFLOWS.md) for the objects that are supported. Only report workflows you may share
+        details about, and **never** attach a workflow you do not have the right to share. A minimal synthetic workflow that
+        shows the problem is best. Describe object types and settings, do not paste secrets or API keys.
+  - type: input
+    id: workflow
+    attributes:
+      label: Workflow name and where it comes from (link, if public)
+    validations:
+      required: true
+  - type: textarea
+    id: types
+    attributes:
+      label: Object types involved
+      description: "For example `alfred.workflow.input.scriptfilter`, `alfred.workflow.utility.conditional` (look in `info.plist`)."
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you typed, what happened, what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: "`ashdash query \"<keyword> <text>\"` and stderr lines starting with `ashdash:` (use `ASHDASH_WORKFLOW_DEBUG=1`)."
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Ashdash version or commit
+    validations:
+      required: true
