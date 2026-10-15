@@ -15,6 +15,7 @@ mod model;
 mod package;
 mod runtime;
 mod script;
+mod trust;
 mod userconfig;
 mod utility;
 mod xml;
@@ -27,6 +28,7 @@ pub use filter::{KeywordResults, ModOverride, WorkflowAction, rerun_interval};
 pub use model::{Connection, Node, Workflow, load_all};
 pub use package::import_package;
 pub use script::{ScriptOutput, run_osascript};
+pub use trust::TrustSummary;
 pub use userconfig::ConfigVar;
 
 pub const KIND_KEYWORD: &str = "alfred.workflow.input.keyword";

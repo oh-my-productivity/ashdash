@@ -9,6 +9,14 @@
 //! index time), then call [`Query::score`]: that path performs no allocation.
 //! [`score`] is the convenience wrapper for one-off comparisons.
 
+/// Longest query (characters, after trimming) that can match anything. A longer one is a paste,
+/// not a search; it matches nothing instead of costing time (SEC-09).
+pub const MAX_QUERY_CHARS: usize = 256;
+/// Words of a candidate title taken into account; later words are ignored.
+const MAX_CANDIDATE_WORDS: usize = 1024;
+/// Initials matching tracks the consumed query prefix in a `u128`, so it needs `len < 128`.
+const MAX_INITIALS_CHARS: usize = 127;
+
 /// A candidate title with its normalized and word-split forms precomputed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Candidate {
@@ -28,6 +36,10 @@ impl Candidate {
         let mut start = 0usize;
         let mut prev: Option<char> = None;
         for ch in text.chars() {
+            if words.len() >= MAX_CANDIDATE_WORDS {
+                start = word_chars.len();
+                break;
+            }
             if !ch.is_alphanumeric() {
                 if word_chars.len() > start {
                     words.push((start as u32, word_chars.len() as u32));
@@ -43,7 +55,7 @@ impl Candidate {
             word_chars.extend(ch.to_lowercase());
             prev = Some(ch);
         }
-        if word_chars.len() > start {
+        if word_chars.len() > start && words.len() < MAX_CANDIDATE_WORDS {
             words.push((start as u32, word_chars.len() as u32));
         }
         Candidate {
@@ -69,11 +81,15 @@ pub struct Query {
     qwords: Vec<(usize, usize)>,
     /// `q` without whitespace (for initials matching).
     compact: Vec<char>,
+    /// Longer than [`MAX_QUERY_CHARS`]: matches nothing.
+    too_long: bool,
 }
 
 impl Query {
     pub fn new(query: &str) -> Query {
-        let q = normalize(query.trim());
+        let trimmed = query.trim();
+        let too_long = trimmed.chars().nth(MAX_QUERY_CHARS).is_some();
+        let q = if too_long { Vec::new() } else { normalize(trimmed) };
         let mut qwords = Vec::new();
         let mut start = None;
         for (i, c) in q.iter().enumerate() {
@@ -90,17 +106,25 @@ impl Query {
             qwords.push((s, q.len()));
         }
         let compact = q.iter().copied().filter(|c| !c.is_whitespace()).collect();
-        Query { q, qwords, compact }
+        Query {
+            q,
+            qwords,
+            compact,
+            too_long,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.q.is_empty()
+        self.q.is_empty() && !self.too_long
     }
 
     /// Returns `None` if `cand` does not match, otherwise a score where
     /// larger is better. An empty query matches everything with score 0.
     /// Does not allocate.
     pub fn score(&self, cand: &Candidate) -> Option<f64> {
+        if self.too_long {
+            return None;
+        }
         let q = &self.q[..];
         if q.is_empty() {
             return Some(0.0);
@@ -117,7 +141,7 @@ impl Query {
         if self.words_prefix_match(cand) {
             return Some(800.0 - len_penalty);
         }
-        if self.compact.len() >= 2 && initials_match(&self.compact, cand, 0) {
+        if (2..=MAX_INITIALS_CHARS).contains(&self.compact.len()) && initials_match(&self.compact, cand) {
             return Some(600.0 - len_penalty);
         }
         if let Some(pos) = find_sub(t, q) {
@@ -150,23 +174,35 @@ fn normalize(s: &str) -> Vec<char> {
     s.chars().flat_map(|c| c.to_lowercase()).collect()
 }
 
-/// Query characters are consumed as leading runs of successive words,
-/// starting at word `from`.
-fn initials_match(q: &[char], cand: &Candidate, from: usize) -> bool {
-    if q.is_empty() {
-        return true;
-    }
-    if from >= cand.words.len() {
-        return false;
-    }
-    let w = cand.word(from);
-    let max = w.len().min(q.len());
-    for k in (1..=max).rev() {
-        if q[..k] == w[..k] && initials_match(&q[k..], cand, from + 1) {
+/// Query characters are consumed as leading runs of successive words (a word may also be
+/// skipped). Tracks, per word, the set of query prefix lengths already consumed in a `u128`:
+/// no recursion, no allocation, O(words x query length) (the naive search was exponential).
+/// Requires `2 <= q.len() <= MAX_INITIALS_CHARS`.
+fn initials_match(q: &[char], cand: &Candidate) -> bool {
+    debug_assert!(q.len() <= MAX_INITIALS_CHARS);
+    let goal = 1u128 << q.len();
+    let mut reach: u128 = 1; // bit i: the first i query characters are consumed
+    for wi in 0..cand.words.len() {
+        let w = cand.word(wi);
+        let mut next = reach;
+        let mut bits = reach;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let rest = &q[i..];
+            let max = w.len().min(rest.len());
+            let common = rest.iter().zip(w).take(max).take_while(|(a, b)| a == b).count();
+            // consuming 1..=common characters of the remaining query, all matching the word's start
+            for k in 1..=common {
+                next |= 1u128 << (i + k);
+            }
+        }
+        if next & goal != 0 {
             return true;
         }
+        reach = next;
     }
-    initials_match(q, cand, from + 1)
+    false
 }
 
 fn find_sub(t: &[char], q: &[char]) -> Option<usize> {
@@ -217,6 +253,20 @@ mod tests {
         assert!(score("sm", "PreviewShellMac").is_some());
         assert!(score("vsc", "PreviewShellMac").is_none());
         assert!(score("sleep", "Install Command Line Developer Tools").is_none());
+    }
+
+    #[test]
+    fn overlong_queries_match_nothing_and_pathological_titles_stay_fast() {
+        let long = "a".repeat(MAX_QUERY_CHARS + 1);
+        assert_eq!(score(&long, &long), None);
+        assert!(!Query::new(&long).is_empty());
+        assert!(score(&"a".repeat(MAX_QUERY_CHARS), &"a".repeat(MAX_QUERY_CHARS)).is_some());
+        // the old recursive search was exponential here (every word can be skipped or used)
+        let title = "a ".repeat(5000);
+        let t = std::time::Instant::now();
+        assert_eq!(score(&format!("{}b", "a".repeat(100)), &title), None);
+        assert!(score("aaaa", &title).is_some());
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
     #[test]

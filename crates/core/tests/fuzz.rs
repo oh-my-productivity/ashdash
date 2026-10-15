@@ -152,7 +152,6 @@ fn calc_moderate_nesting_is_fine() {
 }
 
 #[test]
-#[ignore = "known: SEC-08 (calc::eval recurses without a depth limit; a pasted run of '(' aborts the process)"]
 fn calc_deep_nesting_does_not_overflow_the_stack() {
     for kind in ["parens", "negation", "power", "calls"] {
         assert!(survives_nesting(kind, 100_000), "{kind} x100000 crashed the process");
@@ -263,7 +262,6 @@ fn fuzzy_moderately_long_input_is_fine_and_fast() {
 }
 
 #[test]
-#[ignore = "known: SEC-09 (fuzzy::score recurses per query word / combining sequence: ~30k words overflow a 2 MiB stack)"]
 fn fuzzy_pathologically_long_input_neither_crashes_nor_stalls() {
     for kind in ["words", "qwords", "chars", "unicode"] {
         assert!(

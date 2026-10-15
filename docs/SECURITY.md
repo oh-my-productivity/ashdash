@@ -43,27 +43,27 @@ High = code execution or crash reachable from untrusted *data* the product is de
 Medium = needs a hostile workflow/archive or a local foothold, or leaks sensitive data;
 Low = hardening, robustness, privacy details.
 
-| ID | Sev | Title | Owner area | Test |
-|---|---|---|---|---|
-| SEC-01 | High | `osascript` option injection via notification text and Terminal commands | `engine.rs` | `notification_text_cannot_inject_applescript` |
-| SEC-02 | High | Script Filter variables can set `PATH`, `BASH_ENV`, `DYLD_*` for downstream scripts | `workflow/exec.rs`, `script.rs` | `script_filter_variables_cannot_inject_loader_env`, `..._replace_path` |
-| SEC-03 | Medium | Default `{query}` escaping does not stop `; \| & ' < >` newline injection | `workflow/script.rs` | `documents_default_mask_leaves_shell_metacharacters_live` (documented) |
-| SEC-04 | Low | `reveal` lacks the leading-`-` guard of the other `open` wrappers | `engine.rs` | `reveal_refuses_option_like_paths` |
-| SEC-05 | Medium | Timeout kills only the direct child; backgrounded grandchildren orphaned; pipe readers block after exit | `workflow/script.rs` | `timeout_kills_grandchildren`, `backgrounded_grandchild_does_not_stall_the_script_filter` |
-| SEC-06 | Medium | Script output read without a size limit | `workflow/script.rs` | `huge_script_output_is_bounded` |
-| SEC-07 | Medium | Zip extraction has no size / entry-count limit (decompression bomb) | `workflow/package.rs` | `zip_bomb_is_rejected` |
-| SEC-08 | High | `calc::eval` recurses without depth limit: pasting `((((...` aborts the process | `calc.rs` | `calc_deep_nesting_does_not_overflow_the_stack` |
-| SEC-09 | Low | `fuzzy::score` recursion depth grows with query word count | `fuzzy.rs` | `fuzzy_pathologically_long_input_neither_crashes_nor_stalls` |
-| SEC-10 | Low | Failed import leaks its `.import-<pid>` staging directory | `workflow/package.rs` | `failed_import_cleans_up_staging_dir` |
-| SEC-11 | Medium | Import staging dir is per-process and install is remove-then-rename (races, non-atomic) | `workflow/package.rs` | `concurrent_imports_do_not_interfere` |
-| SEC-12 | Medium | Workflow data/cache dir derived from the unsanitised bundle id (`..` escapes) | `workflow/script.rs` | `bundle_id_cannot_steer_workflow_data_dir` |
-| SEC-13 | Medium | Terminal Command and `openurl` splice `{query}` unescaped; any URL scheme is opened | `workflow/exec.rs` | (design finding, see text) |
-| SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) |
-| SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` |
-| SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` |
-| SEC-17 | Low | App icon path from `CFBundleIconFile` is not confined to the bundle | `apps.rs` | (text) |
-| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only |
-| SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs` | (text) |
+| ID | Sev | Title | Owner area | Test | Status |
+|---|---|---|---|---|---|
+| SEC-01 | High | `osascript` option injection via notification text and Terminal commands | `engine.rs` | `notification_text_cannot_inject_applescript` | Fixed (FIX-B) |
+| SEC-02 | High | Script Filter variables can set `PATH`, `BASH_ENV`, `DYLD_*` for downstream scripts | `workflow/exec.rs`, `script.rs` | `script_filter_variables_cannot_inject_loader_env`, `..._replace_path` | Fixed (FIX-B), rule in 9 |
+| SEC-03 | Medium | Default `{query}` escaping does not stop `; \| & ' < >` newline injection | `workflow/script.rs` | `documents_default_mask_leaves_shell_metacharacters_live` (documented) | Open by design; `Workflow::trust_summary()` hook |
+| SEC-04 | Low | `reveal` lacks the leading-`-` guard of the other `open` wrappers | `engine.rs` | `reveal_refuses_option_like_paths` | Fixed (FIX-B) |
+| SEC-05 | Medium | Timeout kills only the direct child; backgrounded grandchildren orphaned; pipe readers block after exit | `workflow/script.rs` | `timeout_kills_grandchildren`, `backgrounded_grandchild_does_not_stall_the_script_filter` | Fixed (FIX-B) |
+| SEC-06 | Medium | Script output read without a size limit | `workflow/script.rs` | `huge_script_output_is_bounded` | Fixed (FIX-B) |
+| SEC-07 | Medium | Zip extraction has no size / entry-count limit (decompression bomb) | `workflow/package.rs` | `zip_bomb_is_rejected` | Fixed (FIX-B) |
+| SEC-08 | High | `calc::eval` recurses without depth limit: pasting `((((...` aborts the process | `calc.rs` | `calc_deep_nesting_does_not_overflow_the_stack` | Fixed (FIX-B) |
+| SEC-09 | Low | `fuzzy::score` recursion depth grows with query word count | `fuzzy.rs` | `fuzzy_pathologically_long_input_neither_crashes_nor_stalls` | Fixed (FIX-B) |
+| SEC-10 | Low | Failed import leaks its `.import-<pid>` staging directory | `workflow/package.rs` | `failed_import_cleans_up_staging_dir` | Fixed (FIX-B) |
+| SEC-11 | Medium | Import staging dir is per-process and install is remove-then-rename (races, non-atomic) | `workflow/package.rs` | `concurrent_imports_do_not_interfere` | Fixed (FIX-B) |
+| SEC-12 | Medium | Workflow data/cache dir derived from the unsanitised bundle id (`..` escapes) | `workflow/script.rs` | `bundle_id_cannot_steer_workflow_data_dir` | Fixed (FIX-B) |
+| SEC-13 | Medium | Terminal Command and `openurl` splice `{query}` unescaped; any URL scheme is opened | `workflow/exec.rs` | (design finding, see text) | Open by design; `trust_summary()` hook |
+| SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) | Open by design (documented) |
+| SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
+| SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
+| SEC-17 | Low | App icon path from `CFBundleIconFile` is not confined to the bundle | `apps.rs` | (text) | Open (`apps.rs`) |
+| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only | Fixed in `usage.rs`/`config.rs` (FIX-B); opt-out wiring and clipboard concealed types pending |
+| SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs` | (text) | Open |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -337,3 +337,52 @@ hostile-input boundary from day one:
 3. SEC-07/10/11 together (one rewrite of `import_package`), SEC-12.
 4. SEC-18/15/14 privacy and hygiene.
 5. Import confirmation UI (3) before workflows are advertised to users.
+
+## 9. Fix log (wave 2, FIX-B, branch `fix/security`)
+
+All `known: SEC-nn` regression tests for the fixed findings are un-ignored and pass.
+
+- **SEC-01/04** `engine.rs`: `osascript -e ... -- <args>` (`osascript_command`), `reveal` refuses a leading `-`.
+  Script objects pass the query only after the script/program (argv) or on stdin; unit tests feed
+  `-eabc`, `-e return 1`, `--`, `-l JavaScript` to bash, zsh, python3, AppleScript and JXA scripts.
+- **SEC-08/09** `calc.rs`: parser depth limit 200 (`expr`/`unary` entries) and 512-character input cap, both return
+  `None`. `fuzzy.rs`: queries over 256 characters match nothing; initials matching is now iterative (a `u128` set of
+  consumed query prefixes; the recursive search was also exponential) and ignores candidate words past the 1024th.
+- **SEC-02** `workflow/script.rs::script_env`. Decision: *workflow-author variables stay as they are*
+  (`info.plist` variables, configuration defaults and user-saved values are exported verbatim, even `PATH`);
+  *dynamic variables* (anything that arrives through the variable set at run time: Script Filter output, scripts,
+  Arg and Utility objects) are exported unless they are in the protected set, start with `alfred_`, or are not valid
+  environment entries (empty name, `=` or NUL). Protected set (case-insensitive): `PATH HOME USER LOGNAME SHELL TMPDIR
+  BASH_ENV ENV IFS SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND CDPATH GLOBIGNORE FPATH ZDOTDIR NODE_OPTIONS NODE_PATH RUBYOPT
+  RUBYLIB PERL5OPT PERL5LIB PERLLIB PHPRC PHP_INI_SCAN_DIR GEM_HOME GEM_PATH CLASSPATH JAVA_TOOL_OPTIONS _JAVA_OPTIONS
+  JDK_JAVA_OPTIONS GCONV_PATH LOCPATH NLSPATH TERMINFO HOSTALIASES MALLOC_CONF` and the prefixes `DYLD_ LD_ PYTHON BASH_`.
+  A dynamic variable whose value equals the author's value for the same name passes (the author's variables travel
+  through the same variable set). The variable still exists for `{var:...}` templating; only the process environment is
+  filtered. `ASHDASH_WORKFLOW_DEBUG=1` logs each dropped name. Compatibility cost: a workflow that deliberately sets
+  `PATH` or `PYTHON*` from a Script Filter must set it statically instead.
+- **SEC-05/06/16** `run_with_timeout`: every script runs in its own process group; timeout or output overflow kills the
+  group with `killpg(SIGKILL)` while the child is still unreaped (no pid reuse). stdout is capped at 8 MiB (over it the
+  script is killed and the caller gets `script output exceeded 8 MiB; the script was stopped`, shown as an error item);
+  stderr keeps 256 KiB and drains the rest. Reader threads are abandoned 300 ms after the direct child exits, so a
+  backgrounded helper holding the pipe no longer stalls the launcher (it is *not* killed on a normal exit: workflows
+  legitimately start helpers). Stdin text is written by its own thread.
+- **SEC-15** temp scripts: `scripts/` is 0700, files are created `O_EXCL` with mode 0600 and a pid/counter/nanosecond name.
+- **SEC-12** `workflow::script::safe_key` (ASCII alphanumerics, `.`, `-`, `_`; never `.`/`..`/hidden; at most 128 bytes) is the
+  single sanitiser for the run-time data/cache dirs and the install directory name.
+- **SEC-07/10/11** `workflow/package.rs`: manual extraction with at most 2,000 entries, 100 MiB expanded (checked from
+  the headers and again while copying), an overall ratio ceiling (200:1 above 16 MiB), unsafe names and duplicate entries
+  rejected, set-uid/world-write bits dropped, symlinks created last and only when relative and resolving inside the
+  tree (both lexically and after canonicalisation). Staging dir: unique, 0700, `create_dir` (never follows a pre-planted
+  link), removed by a drop guard on every error. Install: old version renamed aside, new tree renamed in, old removed;
+  the old version is restored if the second rename fails; two imports of the same bundle id retry instead of mixing.
+- **SEC-18** `config.rs::write_private`: unique `O_EXCL` 0600 temp file + rename (stale `.tmp` files and concurrent
+  writers can no longer leak an old mode or collide), new directories 0700; `Config::save` uses it (config.json is 0600,
+  the data dir is created 0700). `usage.rs`: queries over 100 characters are not stored (the pick still counts
+  globally), ids over 200 bytes are not recorded, at most 2,000 queries and 50 ids per query are kept, `Usage::set_enabled`
+  is the opt-out switch (off: nothing is recorded, nothing is boosted), `Usage::clear` wipes memory and file.
+  *Still to do:* a `config` field that calls `set_enabled` at start-up, a "clear learning data" command, and the
+  clipboard concealed-type filter (WP2) are not part of FIX-B.
+- **SEC-03/13/14** are reference-compatible behaviours and unchanged. `Workflow::trust_summary()` (`workflow/trust.rs`)
+  returns a `TrustSummary` (serialisable): script-running object count, interpreters used, scripts that paste `{query}`
+  into source, Open URL schemes (`{dynamic}` when not literal, `(none)` when absent), Terminal Command templates, files
+  outside the workflow directory, and External Trigger count. The import confirmation (section 3) should be built on it.

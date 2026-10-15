@@ -389,6 +389,7 @@ pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
 }
 
 pub fn reveal(p: &Path) -> Result<()> {
+    no_dash(&p.to_string_lossy(), "path")?;
     run_status(Command::new("open").arg("-R").arg(p), "reveal")
 }
 
@@ -411,13 +412,20 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn osascript_args(lines: &[&str], args: &[&str]) -> Result<()> {
+/// `osascript -e <line>... -- <arg>...`. The `--` is what makes the arguments data: without it a
+/// first argument beginning with `-e` is parsed as one more script fragment (SEC-01).
+fn osascript_command(lines: &[&str], args: &[&str]) -> Command {
     let mut c = Command::new("osascript");
     for l in lines {
         c.arg("-e").arg(l);
     }
+    c.arg("--");
     c.args(args);
-    run_status(&mut c, "osascript")
+    c
+}
+
+fn osascript_args(lines: &[&str], args: &[&str]) -> Result<()> {
+    run_status(&mut osascript_command(lines, args), "osascript")
 }
 
 /// Strings reach AppleScript through `argv`, never spliced into source.
@@ -802,6 +810,18 @@ mod tests {
     fn plain_engine_new_in_tests_gets_a_sandboxed_home() {
         // unit tests must never read real browser data or search the real home
         assert!(!providers::ambient_home().exists());
+    }
+
+    #[test]
+    fn osascript_arguments_follow_a_double_dash() {
+        for hostile in ["-eproperty zz : 1", "-e", "--", "-l", "x"] {
+            let c = osascript_command(&["on run argv", "end run"], &[hostile, "t"]);
+            let args: Vec<_> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let dd = args.iter().position(|a| a == "--").expect("no -- separator");
+            // every `-e` option comes before the separator, every user string after it
+            assert!(args[..dd].iter().step_by(2).all(|a| a == "-e"), "{args:?}");
+            assert_eq!(&args[dd + 1..], [hostile, "t"], "{args:?}");
+        }
     }
 
     fn json_to_plist(j: &serde_json::Value) -> plist::Value {

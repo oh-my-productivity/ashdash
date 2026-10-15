@@ -197,7 +197,6 @@ fn workflow_variables_reach_scripts_and_data_dirs_are_private_to_the_env() {
 /// Script Filter output (`variables`) is untrusted data, yet it becomes process environment of
 /// the next Run Script. Loader/interpreter variables turn that into code execution.
 #[test]
-#[ignore = "known: SEC-02 (dynamic variables may set BASH_ENV/PATH/DYLD_* for downstream scripts)"]
 fn script_filter_variables_cannot_inject_loader_env() {
     let fx = Fx::new("env-inject");
     let marker = fx.root.join("bash-env-marker");
@@ -226,7 +225,6 @@ fn script_filter_variables_cannot_inject_loader_env() {
 
 /// Same vector through PATH: a Script Filter result can choose which `ls` the next script runs.
 #[test]
-#[ignore = "known: SEC-02 (PATH overridable from untrusted variables)"]
 fn script_filter_variables_cannot_replace_path() {
     let fx = Fx::new("env-path");
     let bin = fx.root.join("bin");
@@ -266,7 +264,6 @@ fn documents_scripts_inherit_parent_environment() {
 /// SEC-12: the per-workflow data directory is keyed on the raw bundle id, so a bundle id with
 /// `..` creates directories outside the data root when any script of that workflow runs.
 #[test]
-#[ignore = "known: SEC-12 (workflow-data dir derived from unsanitised bundle id)"]
 fn bundle_id_cannot_steer_workflow_data_dir() {
     let fx = Fx::new("datakey");
     let escape = fx.root.join("escaped-data-dir");
@@ -289,7 +286,6 @@ fn bundle_id_cannot_steer_workflow_data_dir() {
 /// SEC-15: the temporary script file holds the substituted source (which may contain
 /// clipboard/query data) and should not be world-readable while it exists.
 #[test]
-#[ignore = "known: SEC-15 (temp script files are created with the default umask, 0644)"]
 fn temp_script_file_is_private() {
     let fx = Fx::new("tmpmode");
     // the script prints its own file mode
@@ -316,7 +312,6 @@ fn sf_workflow(script: &str) -> Value {
 
 /// A script that exits while a background child still holds its stdout must not stall the launcher.
 #[test]
-#[ignore = "known: SEC-05 (reader threads are joined after exit; a backgrounded grandchild blocks until it ends); takes ~6 s"]
 fn backgrounded_grandchild_does_not_stall_the_script_filter() {
     let fx = Fx::new("pipehang");
     let wf = fx.wf(&sf_workflow(r#"sleep 6 & echo '{"items":[{"title":"fast"}]}'"#));
@@ -329,7 +324,6 @@ fn backgrounded_grandchild_does_not_stall_the_script_filter() {
 
 /// On timeout the whole process group should die, not just the interpreter.
 #[test]
-#[ignore = "known: SEC-05 (timeout kills only the direct child; grandchildren are orphaned); takes ~11 s"]
 fn timeout_kills_grandchildren() {
     let fx = Fx::new("timeout");
     let pidfile = fx.root.join("pid");
@@ -359,7 +353,6 @@ fn timeout_kills_grandchildren() {
 
 /// Output volume: a Script Filter that prints 64 MiB must be rejected or truncated, not held in memory.
 #[test]
-#[ignore = "known: SEC-06 (script output is read without a size limit); allocates ~200 MB"]
 fn huge_script_output_is_bounded() {
     let fx = Fx::new("hugeout");
     let script = r#"printf '{"items":[{"title":"'; head -c 67108864 /dev/zero | tr '\0' 'a'; printf '"}]}'"#;
@@ -514,7 +507,6 @@ fn open_helpers_refuse_option_like_arguments() {
 
 /// `reveal` runs `open -R <path>`; a path starting with `-` is read by `open` as an option.
 #[test]
-#[ignore = "known: SEC-04 (reveal lacks the leading '-' guard the other open helpers have)"]
 fn reveal_refuses_option_like_paths() {
     // "-@" is not an `open` option, so on a build without the guard `open` itself rejects it
     // ("illegal option"); the point is that *we* must refuse before spawning it.
@@ -529,7 +521,6 @@ fn reveal_refuses_option_like_paths() {
 /// so notification text controlled by an attacker runs a shell command.
 /// (The test shows a harmless `touch` of a temp file; on a fixed build the text is just displayed.)
 #[test]
-#[ignore = "known: SEC-01 (osascript option injection through notification text); may flash a notification"]
 fn notification_text_cannot_inject_applescript() {
     let t = TempDir::new("osa-inject");
     let marker = t.join("pwned");
@@ -543,7 +534,6 @@ fn notification_text_cannot_inject_applescript() {
 /// starts. A script that never reads stdin and a query larger than the pipe buffer therefore
 /// blocks the caller for as long as the script lives, defeating the timeout.
 #[test]
-#[ignore = "known: SEC-16 (stdin write precedes timeout supervision; unread stdin blocks past the timeout); takes ~14 s"]
 fn unread_stdin_cannot_defeat_the_timeout() {
     let fx = Fx::new("stdin-block");
     let mut doc = script_filter_workflow("sf", "sleep 14");
