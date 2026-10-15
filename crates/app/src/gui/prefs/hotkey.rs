@@ -57,6 +57,18 @@ pub fn probe(spec: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A shortcut in words (`Option+Shift+Space`): the default UI font has no ⌥ or ⌃ glyph.
+pub fn label(spec: &str) -> String {
+    let Some(display) = display_hotkey(spec) else {
+        return spec.to_string();
+    };
+    display
+        .replace('⌃', "Ctrl+")
+        .replace('⌥', "Option+")
+        .replace('⇧', "Shift+")
+        .replace('⌘', "Cmd+")
+}
+
 // ------------------------------------------------------------------ the recorder
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -126,7 +138,7 @@ impl Recorder {
         }
         if !(m.ctrl || m.alt || m.cmd) {
             // Shift alone would swallow capital letters everywhere.
-            self.state = RecorderState::Rejected("Hold ⌘, ⌥ or ⌃ together with the key.".into());
+            self.state = RecorderState::Rejected("Hold Cmd, Option or Ctrl together with the key.".into());
             return None;
         }
         let mut parts: Vec<&str> = Vec::new();
@@ -230,6 +242,13 @@ mod tests {
             mods: Mods { ctrl, alt, shift, cmd },
             code: code.into(),
         }
+    }
+
+    #[test]
+    fn labels_are_plain_words() {
+        assert_eq!(label("alt+shift+space"), "Option+Shift+Space");
+        assert_eq!(label("ctrl+cmd+KeyJ"), "Ctrl+Cmd+J");
+        assert_eq!(label("bogus"), "bogus");
     }
 
     #[test]

@@ -198,7 +198,7 @@ impl PrefsApp {
         if let Some(e) = &self.cfg_error {
             ui.label(
                 RichText::new(format!(
-                    "⚠ {e}\nThe window shows defaults and will not change the file."
+                    "Warning: {e}\nThe window shows defaults and will not change the file."
                 ))
                 .color(ERROR),
             );
@@ -211,7 +211,7 @@ impl PrefsApp {
                 );
             } else {
                 for p in &st.problems {
-                    ui.label(RichText::new(format!("⚠ {p}")).color(ERROR));
+                    ui.label(RichText::new(format!("Warning: {p}")).color(ERROR));
                 }
                 if !st.restart_required.is_empty() {
                     ui.label(

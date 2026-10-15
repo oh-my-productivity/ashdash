@@ -8,7 +8,6 @@ use ashdash_core::settings_view::{self, ThemeInfo};
 use ashdash_core::usage::Usage;
 use eframe::egui::{self, RichText};
 
-use super::super::keynames::display_hotkey;
 use super::app::{PrefsApp, Purpose};
 use super::hotkey::{self, Captured, Recorder};
 use super::widgets::{Msg, WARN, confirm_button, hint, section, show_msg};
@@ -52,7 +51,7 @@ impl PrefsApp {
     fn hotkey_section(&mut self, ui: &mut egui::Ui) {
         section(ui, "Launcher shortcut", |ui| {
             let spec = self.cfg.hotkey.clone();
-            let shown = display_hotkey(&spec).unwrap_or_else(|| spec.clone());
+            let shown = hotkey::label(&spec);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&shown).size(22.0).monospace());
                 if self.general.recorder.is_listening() {
@@ -90,7 +89,7 @@ impl PrefsApp {
             show_msg(ui, &self.general.hotkey_msg);
             hint(
                 ui,
-                "Use at least one of ⌘ ⌥ ⌃ with a key. The launcher switches to it within a second.",
+                "Use at least one of Cmd, Option or Ctrl with a key. The launcher switches to it within a second.",
             );
         });
     }
@@ -115,7 +114,7 @@ impl PrefsApp {
         let spec = cap.spec.clone();
         self.general.hotkey_msg = Some(match self.edit(|c| model::set_hotkey(c, &spec)) {
             Ok(()) => {
-                let shown = display_hotkey(&spec).unwrap_or(spec);
+                let shown = hotkey::label(&spec);
                 match cap.conflict {
                     Some(what) => Msg::ok(format!(
                         "Saved {shown}. Note: macOS uses this for {what}; one of them may win."

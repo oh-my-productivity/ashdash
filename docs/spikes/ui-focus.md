@@ -66,3 +66,18 @@ Not verified: full-screen apps, multiple physical monitors, release build timing
 * Menu-bar status item (plain objc2 `NSStatusItem`, no `tray-icon`): menu showed "Show Ashdash, Reload, Preferences… (disabled), Quit Ashdash"; clicking Reload and Show Ashdash through System Events worked and fed the egui loop. No Dock icon.
 * Large Type: Cmd+L stretched the window over the whole monitor under the mouse (covering the menu bar), dimmed it, centred the text at the maximum size; Esc returned to the normal launcher.
 * Quick Look: Cmd+Y and a lone Shift tap (held ~150 ms; a sub-frame tap can be missed) spawn `qlmanage -p`. The launcher stays open while the preview has focus; Esc in the preview ends the process and the launcher takes focus back. The launcher window is drawn above the preview window (status window level).
+
+## Preferences window (WP8)
+
+Decision: the preferences window is **its own process** (`ashdash prefs-window`, started by `ashdash prefs`, the status-item
+menu item "Preferences…" and `ashdash://prefs`), using winit's *Regular* activation policy. A second eframe viewport inside the
+launcher process was rejected: with the launcher's root window hidden eframe runs no UI pass (`show_ui` is false unless a child
+viewport is already visible), so a child could not even be created on demand, and `NSApp.hide` (our focus-return trick) would
+hide it together with the launcher. As a separate process it gets a Dock entry, a menu bar and Cmd+Tab while open, and cannot
+change the launcher's level, auto-hide or focus behaviour. Verified on the desktop (debug build, temp HOME): the launcher opened over the open
+preferences window with the hotkey/`ashdash show`, kept its own behaviour, and the preferences window stayed where it was.
+
+The processes talk only through files in the data folder: the window edits `config.json` (valid edits only), the launcher's
+settings watcher (300 ms debounce) applies it and answers in `run/reload-status.json`. A second `ashdash prefs` brings the open
+window forward (flock on `run/prefs.lock`). Note for desktop scripting: the egui window has no accessibility tree, and
+screenshots of this machine are 1.57 px per point; read the window frame through System Events before computing click positions.

@@ -254,7 +254,7 @@ impl PrefsApp {
                             if ui.small_button("Edit").clicked() {
                                 edit = Some(i);
                             }
-                            if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                            if ui.small_button("×").on_hover_text("Remove").clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -375,7 +375,7 @@ impl PrefsApp {
                             if ui.small_button("Edit").clicked() {
                                 edit = Some(*loc);
                             }
-                            if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                            if ui.small_button("×").on_hover_text("Delete").clicked() {
                                 delete = Some(*loc);
                             }
                         });

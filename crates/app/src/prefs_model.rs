@@ -120,7 +120,7 @@ pub fn validate_hotkey(spec: &str) -> Result<String, String> {
     let spec = spec.trim();
     let has_modifier = spec.split('+').count() > 1;
     if !has_modifier {
-        return Err("a shortcut needs at least one modifier key (⌘ ⌥ ⌃ ⇧)".into());
+        return Err("a shortcut needs at least one modifier key (Cmd, Option, Ctrl or Shift)".into());
     }
     spec.parse::<HotKey>()
         .map(|_| spec.to_string())

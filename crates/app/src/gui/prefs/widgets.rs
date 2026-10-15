@@ -58,7 +58,7 @@ pub enum RowAction {
     Remove(usize),
 }
 
-/// A list of strings with a ✕ button each, and an entry field to add one. Returns
+/// A list of strings with a × button each, and an entry field to add one. Returns
 /// `Some(text)` when the user pressed Add / Enter with `input`, and the row to remove, if any.
 pub fn string_list(
     ui: &mut egui::Ui,
@@ -71,7 +71,7 @@ pub fn string_list(
     ui.push_id(id, |ui| {
         for (i, item) in items.iter().enumerate() {
             ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                if ui.small_button("×").on_hover_text("Remove").clicked() {
                     action = RowAction::Remove(i);
                 }
                 ui.label(item);
