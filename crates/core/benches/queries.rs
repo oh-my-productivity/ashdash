@@ -100,6 +100,5 @@ fn fuzzy_scoring(c: &mut Criterion) {
     g.finish();
 }
 
-
 criterion_group!(benches, engine_queries, cold_start, fuzzy_scoring);
 criterion_main!(benches);

@@ -227,7 +227,11 @@ impl Shared {
         for t in batch.targets {
             match t {
                 Target::Bundle(p) => {
-                    let rec = if p.is_dir() { scan::probe(&p, recs.get(&p)) } else { None };
+                    let rec = if p.is_dir() {
+                        scan::probe(&p, recs.get(&p))
+                    } else {
+                        None
+                    };
                     match rec {
                         Some(r) => {
                             upserts.insert(p, r);
@@ -324,3 +328,6 @@ pub fn scan_entries(dirs: &[PathBuf]) -> Vec<AppEntry> {
     list.sort_by_cached_key(|a| (a.name.to_lowercase(), a.path.clone()));
     list
 }
+
+#[cfg(test)]
+mod tests;

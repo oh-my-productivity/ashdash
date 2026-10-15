@@ -112,7 +112,8 @@ pub fn prune_dir(dir: &Path, keep: usize) -> usize {
         .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
         .filter_map(|e| {
             let m = e.metadata().ok()?;
-            m.is_file().then(|| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), e.path()))
+            m.is_file()
+                .then(|| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), e.path()))
         })
         .collect();
     if files.len() <= keep {
@@ -166,7 +167,15 @@ mod tests {
         };
         assert_eq!(
             left,
-            ["00.png", "05.png", "06.png", "07.png", "08.png", "09.png", "inflight.part"]
+            [
+                "00.png",
+                "05.png",
+                "06.png",
+                "07.png",
+                "08.png",
+                "09.png",
+                "inflight.part"
+            ]
         );
         assert_eq!(prune_dir(&d, 6), 0);
         assert_eq!(prune_dir(&d.join("missing"), 6), 0);

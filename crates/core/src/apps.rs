@@ -73,7 +73,11 @@ pub fn app_icon_png(app: &Path, cache_dir: &Path) -> Option<PathBuf> {
         return Some(out);
     }
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let part = out.with_extension(format!("{}-{}.part", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    let part = out.with_extension(format!(
+        "{}-{}.part",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let status = Command::new("sips")
         .args(["-s", "format", "png", "-Z", "96"])
         .arg(&icns)
@@ -106,5 +110,33 @@ mod tests {
         let names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["Bar", "Foo"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn icon_conversion_is_cached_and_cache_is_bounded() {
+        // Needs a bundle with a classic .icns and the system `sips`; skip cleanly otherwise.
+        let Some(app) = std::fs::read_dir("/System/Applications")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "app") && icns_path(p).is_some())
+        else {
+            return;
+        };
+        let cache = std::env::temp_dir().join(format!("oa-icon-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache);
+        let Some(png) = app_icon_png(&app, &cache) else {
+            let _ = std::fs::remove_dir_all(&cache);
+            return;
+        };
+        assert!(png.exists());
+        assert_eq!(
+            app_icon_png(&app, &cache),
+            Some(png.clone()),
+            "second call is a cache hit"
+        );
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1, "no .part leftovers");
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }

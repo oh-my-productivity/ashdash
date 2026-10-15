@@ -352,8 +352,8 @@ mod tests {
     }
 
     const ALPHABET: &[char] = &[
-        'a', 'b', 'c', 's', 'v', 'x', 'A', 'B', 'S', 'V', 'C', ' ', ' ', ' ', '-', '_', '.', '1', '2', '\u{e9}', '\u{c9}',
-        '\u{130}', '\u{df}', '\u{65e5}', '\u{672c}', '\t',
+        'a', 'b', 'c', 's', 'v', 'x', 'A', 'B', 'S', 'V', 'C', ' ', ' ', ' ', '-', '_', '.', '1', '2', '\u{e9}',
+        '\u{c9}', '\u{130}', '\u{df}', '\u{65e5}', '\u{672c}', '\t',
     ];
 
     /// Texts and queries drawn from the same small alphabet so that every branch (exact, prefix,
@@ -364,7 +364,7 @@ mod tests {
         let mut branches = std::collections::BTreeSet::new();
         for _ in 0..40_000 {
             let text = rng.string(ALPHABET, 14);
-            let query = if rng.next() % 3 == 0 {
+            let query = if rng.next().is_multiple_of(3) {
                 // a query derived from the text makes matches likely
                 let chars: Vec<char> = text.chars().collect();
                 let a = (rng.next() % (chars.len() as u64 + 1)) as usize;

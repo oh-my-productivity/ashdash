@@ -95,10 +95,7 @@ pub fn save<'a>(
         version: INDEX_VERSION,
         dirs: dirs.to_vec(),
         // JSON cannot carry non-UTF-8 paths; such apps are simply re-found by the next scan
-        apps: records
-            .filter(|r| r.path.to_str().is_some())
-            .cloned()
-            .collect(),
+        apps: records.filter(|r| r.path.to_str().is_some()).cloned().collect(),
     };
     let bytes = serde_json::to_vec(&out).map_err(std::io::Error::other)?;
     crate::config::write_private(file, &bytes)

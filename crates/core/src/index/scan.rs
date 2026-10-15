@@ -121,7 +121,8 @@ pub fn classify(roots: &[Root], event: &Path) -> Option<Target> {
                 return Some(Target::Bundle(cur));
             }
         }
-        return (depth < MAX_DEPTH).then_some(Target::Subtree {
+        // `then`, not `then_some`: the depth subtraction must stay lazy
+        return (depth < MAX_DEPTH).then(|| Target::Subtree {
             path: cur,
             depth: MAX_DEPTH - depth,
         });

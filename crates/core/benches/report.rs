@@ -16,10 +16,51 @@ const QUERIES: [&str; 4] = ["saf", "vsc", "visual studio", "x"];
 
 fn words() -> Vec<&'static str> {
     vec![
-        "Visual", "Studio", "Code", "Safari", "Preview", "Terminal", "Photo", "Booth", "Final", "Cut", "Pro", "Logic",
-        "Xcode", "Docker", "Desktop", "Slack", "Zoom", "Notes", "Music", "Maps", "Mail", "Calendar", "Reminders",
-        "Keynote", "Pages", "Numbers", "Transmit", "Sketch", "Figma", "Postman", "Insomnia", "Tower", "Fork", "Kaleidoscope",
-        "Xmind", "Audacity", "Handbrake", "Inkscape", "Blender", "Unity", "Hub", "Editor", "Helper", "Manager", "Pad",
+        "Visual",
+        "Studio",
+        "Code",
+        "Safari",
+        "Preview",
+        "Terminal",
+        "Photo",
+        "Booth",
+        "Final",
+        "Cut",
+        "Pro",
+        "Logic",
+        "Xcode",
+        "Docker",
+        "Desktop",
+        "Slack",
+        "Zoom",
+        "Notes",
+        "Music",
+        "Maps",
+        "Mail",
+        "Calendar",
+        "Reminders",
+        "Keynote",
+        "Pages",
+        "Numbers",
+        "Transmit",
+        "Sketch",
+        "Figma",
+        "Postman",
+        "Insomnia",
+        "Tower",
+        "Fork",
+        "Kaleidoscope",
+        "Xmind",
+        "Audacity",
+        "Handbrake",
+        "Inkscape",
+        "Blender",
+        "Unity",
+        "Hub",
+        "Editor",
+        "Helper",
+        "Manager",
+        "Pad",
     ]
 }
 
@@ -79,7 +120,9 @@ fn cpu_time(pid: u32) -> Option<(f64, u64)> {
     let t = it.next()?;
     let rss: u64 = it.next()?.parse().ok()?;
     // formats: M:SS.cc or H:MM:SS.cc
-    let secs = t.split(':').try_fold(0.0, |acc, p| p.parse::<f64>().ok().map(|v| acc * 60.0 + v))?;
+    let secs = t
+        .split(':')
+        .try_fold(0.0, |acc, p| p.parse::<f64>().ok().map(|v| acc * 60.0 + v))?;
     Some((secs, rss))
 }
 
@@ -89,7 +132,10 @@ fn main() {
     let apps_dir = root.join("apps");
     let t = Instant::now();
     make_apps(&apps_dir);
-    println!("synthetic apps created: {N_APPS} in {:.0} ms (setup, not measured)", ms(t.elapsed()));
+    println!(
+        "synthetic apps created: {N_APPS} in {:.0} ms (setup, not measured)",
+        ms(t.elapsed())
+    );
 
     let config = || Config {
         app_dirs: vec![apps_dir.clone()],
@@ -149,7 +195,11 @@ fn main() {
         );
         all.extend(s);
     }
-    println!("engine.query overall p95 {:.3} ms (apps={})", ms(pct(&mut all, 0.95)), e.app_count());
+    println!(
+        "engine.query overall p95 {:.3} ms (apps={})",
+        ms(pct(&mut all, 0.95)),
+        e.app_count()
+    );
 
     // --- bare fuzzy loop
     let names = synthetic_names(N_APPS);
@@ -166,14 +216,21 @@ fn main() {
             std::hint::black_box(hits);
             s.push(t.elapsed());
         }
-        println!("fuzzy::score loop over {N_APPS} names, {q:?}: p95 {:.3} ms", ms(pct(&mut s, 0.95)));
+        println!(
+            "fuzzy::score loop over {N_APPS} names, {q:?}: p95 {:.3} ms",
+            ms(pct(&mut s, 0.95))
+        );
     }
 
     // --- idle CPU of the headless engine
     if let Some((c0, rss)) = cpu_time(std::process::id()) {
         std::thread::sleep(Duration::from_secs(5));
         let (c1, _) = cpu_time(std::process::id()).unwrap_or((c0, rss));
-        println!("idle: {:.2} cpu-seconds over 5 s (ps resolution 10 ms), rss {} MB", c1 - c0, rss / 1024);
+        println!(
+            "idle: {:.2} cpu-seconds over 5 s (ps resolution 10 ms), rss {} MB",
+            c1 - c0,
+            rss / 1024
+        );
     } else {
         println!("idle CPU: n/a");
     }
@@ -187,7 +244,12 @@ fn main() {
     for _ in 0..1 {
         let t = Instant::now();
         let found = apps::scan(&dirs);
-        println!("real scan of {:?}: {} apps in {:.1} ms", dirs, found.len(), ms(t.elapsed()));
+        println!(
+            "real scan of {:?}: {} apps in {:.1} ms",
+            dirs,
+            found.len(),
+            ms(t.elapsed())
+        );
     }
     let _ = std::fs::remove_dir_all(&root);
 }
