@@ -14,8 +14,10 @@ impl Provider for AppsProvider {
 
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput {
         let mut items = Vec::new();
-        for app in ctx.engine_state.apps.read().unwrap().iter() {
-            if let Some(s) = fuzzy::score(ctx.query, &app.name) {
+        // Normalize the query once; each app's name was normalized when it was indexed.
+        let query = fuzzy::Query::new(ctx.query);
+        for app in ctx.engine_state.apps.read().unwrap_or_else(|e| e.into_inner()).iter() {
+            if let Some(s) = query.score(&app.candidate) {
                 let mut it = Item::new(format!("app:{}", app.path.display()), &app.name)
                     .subtitle(files::tilde(&app.path))
                     .icon(Icon::App(app.path.clone()))

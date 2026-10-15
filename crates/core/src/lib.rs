@@ -8,6 +8,7 @@ pub mod config;
 pub mod engine;
 pub mod files;
 pub mod fuzzy;
+pub mod index;
 pub mod item;
 pub mod providers;
 pub mod system;

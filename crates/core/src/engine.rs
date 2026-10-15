@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Result, bail};
 
-use crate::apps::{self, AppEntry};
+use crate::apps::AppEntry;
 use crate::clipboard::{self, ClipboardHistory, Snippet};
 use crate::config::{Config, Paths};
+use crate::index::AppIndex;
 use crate::item::{Action, Item, Mods};
 use crate::providers::{self, EngineState, Placement, Provider, QueryCtx, sort_items};
 use crate::usage::Usage;
@@ -29,7 +30,9 @@ pub enum Outcome {
 pub struct Engine {
     pub paths: Paths,
     pub config: Config,
-    apps: RwLock<Vec<AppEntry>>,
+    apps: Arc<RwLock<Vec<AppEntry>>>,
+    /// Keeps the persistent app index refreshed and watched; dropping the engine stops it.
+    app_index: AppIndex,
     workflows: RwLock<Vec<Workflow>>,
     snippets: RwLock<Vec<Snippet>>,
     usage: Mutex<Usage>,
@@ -41,24 +44,33 @@ impl Engine {
     pub fn new(paths: Paths, config: Config) -> Engine {
         let usage = Usage::load(paths.usage_file());
         let clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard_history_size);
+        // Served from the cache at once (or scanned synchronously on the very first run);
+        // refreshed and watched in the background afterwards.
+        let apps = Arc::new(RwLock::new(Vec::new()));
+        let app_index = AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps));
         let e = Engine {
             paths,
             config,
-            apps: RwLock::new(Vec::new()),
+            apps,
+            app_index,
             workflows: RwLock::new(Vec::new()),
             snippets: RwLock::new(Vec::new()),
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
             providers: providers::registry(),
         };
-        e.reload();
+        e.reload_content();
         e
     }
 
     /// Re-scan applications, workflows and snippets.
     pub fn reload(&self) {
-        let found = apps::scan(&self.config.app_dirs);
-        *self.apps.write().unwrap() = found;
+        self.app_index.rescan();
+        self.reload_content();
+    }
+
+    /// Workflows and snippets (applications are handled by the app index).
+    fn reload_content(&self) {
         let mut roots = vec![self.paths.workflows_dir()];
         roots.extend(self.config.workflow_dirs.iter().cloned());
         *self.workflows.write().unwrap() = workflow::load_all(&roots);
