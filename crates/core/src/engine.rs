@@ -534,6 +534,7 @@ mod tests {
                 name: format!("s{i}"),
                 keyword: format!("k{i}"),
                 text: "t".into(),
+                ..Default::default()
             })
             .collect();
         *e.snippets.write().unwrap() = snippets;

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
 
 use ashdash_core::{Engine, Item, Outcome};
 use eframe::egui;
@@ -31,25 +30,9 @@ pub(super) fn spawn_query_worker(
     });
 }
 
-/// Poll the system clipboard and record changes in the history.
+/// Watch the system pasteboard and record changes in the history.
 pub(super) fn spawn_clipboard_watcher(engine: Arc<Engine>) {
-    std::thread::spawn(move || {
-        let Ok(mut board) = arboard::Clipboard::new() else {
-            return;
-        };
-        let history = engine.clipboard();
-        let mut last = board.get_text().ok();
-        loop {
-            std::thread::sleep(Duration::from_millis(600));
-            let now = board.get_text().ok();
-            if now != last {
-                if let Some(text) = &now {
-                    history.lock().unwrap().push(text);
-                }
-                last = now;
-            }
-        }
-    });
+    crate::clipboard_watch::spawn(engine);
 }
 
 impl LauncherApp {
