@@ -106,6 +106,47 @@ pub struct FileSearchSettings {
     /// Keep iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`)
     /// searchable although `~/Library` is excluded. See [`ICLOUD_DRIVE`].
     pub include_icloud_drive: bool,
+    /// `mdfind` is killed after this many milliseconds (hits found so far are kept).
+    /// Out-of-range values are clamped to [`MDFIND_TIMEOUT_MS_RANGE`] when read.
+    #[serde(deserialize_with = "de_mdfind_timeout")]
+    pub mdfind_timeout_ms: u64,
+    /// `mdfind` output beyond this many bytes is discarded ([`MDFIND_MAX_BYTES_RANGE`]).
+    #[serde(deserialize_with = "de_mdfind_bytes")]
+    pub mdfind_max_bytes: usize,
+    /// The directory-walk fallback stops after this many milliseconds ([`WALK_TIMEOUT_MS_RANGE`]).
+    #[serde(deserialize_with = "de_walk_timeout")]
+    pub walk_timeout_ms: u64,
+    /// ...or after visiting this many entries ([`WALK_MAX_ENTRIES_RANGE`]; 0 never means "unlimited").
+    #[serde(deserialize_with = "de_walk_entries")]
+    pub walk_max_entries: usize,
+}
+
+/// Accepted ranges of the file search run budget. A value outside is clamped when the settings are
+/// loaded, so a typo (or a hand-edited `0`) can neither disable a limit nor stall the query worker.
+pub const MDFIND_TIMEOUT_MS_RANGE: std::ops::RangeInclusive<u64> = 200..=30_000;
+pub const MDFIND_MAX_BYTES_RANGE: std::ops::RangeInclusive<usize> = (64 << 10)..=(256 << 20);
+pub const WALK_TIMEOUT_MS_RANGE: std::ops::RangeInclusive<u64> = 100..=30_000;
+pub const WALK_MAX_ENTRIES_RANGE: std::ops::RangeInclusive<usize> = 1_000..=10_000_000;
+
+fn clamp_de<'de, D, T>(d: D, range: &std::ops::RangeInclusive<T>) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Ord + Copy,
+{
+    Ok(T::deserialize(d)?.clamp(*range.start(), *range.end()))
+}
+
+fn de_mdfind_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    clamp_de(d, &MDFIND_TIMEOUT_MS_RANGE)
+}
+fn de_mdfind_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    clamp_de(d, &MDFIND_MAX_BYTES_RANGE)
+}
+fn de_walk_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    clamp_de(d, &WALK_TIMEOUT_MS_RANGE)
+}
+fn de_walk_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    clamp_de(d, &WALK_MAX_ENTRIES_RANGE)
 }
 
 /// iCloud Drive's folder, relative to the home directory.
@@ -120,11 +161,32 @@ impl Default for FileSearchSettings {
             excluded_substrings: vec!["/pkg/mod/".into()],
             include_hidden: false,
             include_icloud_drive: true,
+            mdfind_timeout_ms: 4_000,
+            mdfind_max_bytes: 8 << 20,
+            walk_timeout_ms: 2_000,
+            walk_max_entries: 200_000,
         }
     }
 }
 
 impl FileSearchSettings {
+    /// The run budget as the search code wants it. Values set in code (not read from a file) are
+    /// clamped here too.
+    pub fn budget(&self) -> crate::files::SearchBudget {
+        use std::time::Duration;
+        let clamp = |v: u64, r: &std::ops::RangeInclusive<u64>| v.clamp(*r.start(), *r.end());
+        crate::files::SearchBudget {
+            mdfind_timeout: Duration::from_millis(clamp(self.mdfind_timeout_ms, &MDFIND_TIMEOUT_MS_RANGE)),
+            mdfind_max_bytes: self
+                .mdfind_max_bytes
+                .clamp(*MDFIND_MAX_BYTES_RANGE.start(), *MDFIND_MAX_BYTES_RANGE.end()),
+            walk_timeout: Duration::from_millis(clamp(self.walk_timeout_ms, &WALK_TIMEOUT_MS_RANGE)),
+            walk_max_entries: self
+                .walk_max_entries
+                .clamp(*WALK_MAX_ENTRIES_RANGE.start(), *WALK_MAX_ENTRIES_RANGE.end()),
+        }
+    }
+
     /// The scope for the current user (`~` is this user's home directory).
     pub fn to_scope(&self) -> FileSearchScope {
         self.to_scope_in(&dirs::home_dir().unwrap_or_default())
@@ -153,6 +215,7 @@ impl FileSearchSettings {
         scope.excluded_names = self.excluded_names.clone();
         scope.excluded_substrings = self.excluded_substrings.clone();
         scope.include_hidden = self.include_hidden;
+        scope.budget = self.budget();
         scope
     }
 }
@@ -537,6 +600,10 @@ mod tests {
             excluded_substrings: vec![],
             include_hidden: true,
             include_icloud_drive: false,
+            mdfind_timeout_ms: 1500,
+            mdfind_max_bytes: 1 << 20,
+            walk_timeout_ms: 700,
+            walk_max_entries: 5000,
         };
         c.clipboard = ClipboardSettings {
             max_entries: 12,
@@ -686,5 +753,86 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
         assert_eq!(raw["version"], CURRENT_VERSION);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_search_budget_defaults_match_the_search_code() {
+        let d = FileSearchSettings::default();
+        assert_eq!(d.budget(), crate::files::SearchBudget::default());
+        assert_eq!(d.to_scope_in(Path::new("/h")).budget, crate::files::SearchBudget::default());
+    }
+
+    #[test]
+    fn file_search_budget_reaches_the_scope_and_is_clamped() {
+        use std::time::Duration;
+        let s = FileSearchSettings {
+            mdfind_timeout_ms: 1500,
+            mdfind_max_bytes: 1 << 20,
+            walk_timeout_ms: 700,
+            walk_max_entries: 5000,
+            ..FileSearchSettings::default()
+        };
+        let b = s.to_scope_in(Path::new("/h")).budget;
+        assert_eq!(b.mdfind_timeout, Duration::from_millis(1500));
+        assert_eq!(b.mdfind_max_bytes, 1 << 20);
+        assert_eq!(b.walk_timeout, Duration::from_millis(700));
+        assert_eq!(b.walk_max_entries, 5000);
+        // in-code values are clamped as well
+        let wild = FileSearchSettings {
+            mdfind_timeout_ms: 0,
+            mdfind_max_bytes: 0,
+            walk_timeout_ms: u64::MAX,
+            walk_max_entries: 0,
+            ..FileSearchSettings::default()
+        }
+        .budget();
+        assert_eq!(wild.mdfind_timeout, Duration::from_millis(*MDFIND_TIMEOUT_MS_RANGE.start()));
+        assert_eq!(wild.mdfind_max_bytes, *MDFIND_MAX_BYTES_RANGE.start());
+        assert_eq!(wild.walk_timeout, Duration::from_millis(*WALK_TIMEOUT_MS_RANGE.end()));
+        assert_eq!(wild.walk_max_entries, *WALK_MAX_ENTRIES_RANGE.start(), "0 is not 'unlimited'");
+    }
+
+    #[test]
+    fn file_search_budget_in_a_file_is_clamped_and_missing_keys_default() {
+        let c: Config = serde_json::from_str(
+            r#"{"file_search":{"mdfind_timeout_ms":0,"mdfind_max_bytes":99999999999,"walk_max_entries":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.file_search.mdfind_timeout_ms, *MDFIND_TIMEOUT_MS_RANGE.start());
+        assert_eq!(c.file_search.mdfind_max_bytes, *MDFIND_MAX_BYTES_RANGE.end());
+        assert_eq!(c.file_search.walk_max_entries, *WALK_MAX_ENTRIES_RANGE.start());
+        assert_eq!(c.file_search.walk_timeout_ms, 2_000, "unset key keeps its default");
+        // wrong types are errors (the whole file is then ignored by `load`), never panics
+        for bad in [
+            r#"{"file_search":{"mdfind_timeout_ms":-1}}"#,
+            r#"{"file_search":{"walk_max_entries":"lots"}}"#,
+            r#"{"file_search":{"mdfind_max_bytes":1.5}}"#,
+        ] {
+            assert!(serde_json::from_str::<Config>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn file_search_budget_keys_are_settable_and_validated() {
+        let mut c = Config::default();
+        crate::settings_view::set(&mut c, "file_search.mdfind_timeout_ms", "2500").unwrap();
+        assert_eq!(c.file_search.mdfind_timeout_ms, 2500);
+        crate::settings_view::set(&mut c, "file_search.walk_max_entries", "50000").unwrap();
+        assert_eq!(c.file_search.walk_max_entries, 50_000);
+        for (k, v) in [
+            ("file_search.mdfind_timeout_ms", "0"),
+            ("file_search.mdfind_timeout_ms", "9999999"),
+            ("file_search.mdfind_max_bytes", "10"),
+            ("file_search.walk_timeout_ms", "-5"),
+            ("file_search.walk_max_entries", "0"),
+        ] {
+            let before = c.file_search.clone();
+            assert!(crate::settings_view::set(&mut c, k, v).is_err(), "{k}={v}");
+            assert_eq!(c.file_search, before, "{k}={v} changed nothing");
+        }
+        let keys = crate::settings_view::keys(&c);
+        for k in ["mdfind_timeout_ms", "mdfind_max_bytes", "walk_timeout_ms", "walk_max_entries"] {
+            assert!(keys.contains(&format!("file_search.{k}")), "{k}");
+        }
     }
 }
