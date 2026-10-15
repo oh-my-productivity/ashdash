@@ -1,0 +1,18 @@
+[package]
+name = "ashdash"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = "3.6.1"
+dirs = "7.0.0"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu"] }
+egui_extras = { version = "0.36.2", features = ["file", "image"] }
+global-hotkey = "0.8.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSResponder"] }
+ashdash-core = { version = "0.1.0", path = "../core" }
+serde_json = "1.0.154"
+winit = "0.30.13"
