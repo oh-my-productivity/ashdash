@@ -44,7 +44,9 @@ impl Status {
             Status::RequiresApproval => {
                 "waiting for approval: open System Settings > General > Login Items and allow Ashdash"
             }
-            Status::NotFound => "not found by macOS (is Ashdash.app still where it was when you enabled it?)",
+            Status::NotFound => {
+                "not found by macOS (it usually has to live in /Applications; was Ashdash.app moved or deleted?)"
+            }
         }
     }
 }
