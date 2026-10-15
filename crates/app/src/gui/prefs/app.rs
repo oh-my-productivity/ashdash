@@ -231,6 +231,13 @@ impl PrefsApp {
 
 impl eframe::App for PrefsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
+}
+
+impl PrefsApp {
+    /// One frame of the window.
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if !self.focused_once {
             self.focused_once = true;
@@ -270,5 +277,87 @@ impl eframe::App for PrefsApp {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(tag: &str) -> (Paths, PathBuf) {
+        let root = std::env::temp_dir().join(format!("oa-prefs-app-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        (Paths::under(&root), root)
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut PrefsApp) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 640.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| app.draw(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn every_page_draws_with_and_without_data() {
+        let (paths, root) = temp("pages");
+        std::fs::create_dir_all(paths.workflows_dir().join("user.workflow.x")).unwrap();
+        std::fs::write(
+            paths.workflows_dir().join("user.workflow.x/info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+            <key>name</key><string>X</string><key>bundleid</key><string>x.b</string>
+            <key>objects</key><array/><key>connections</key><dict/></dict></plist>"#,
+        )
+        .unwrap();
+        std::fs::write(paths.snippets_file(), r#"[{"name":"Sig","keyword":"sig","text":"hi"}]"#).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = PrefsApp::new(ctx.clone(), paths);
+        for page in Page::ALL {
+            app.page = page;
+            app.enter_page();
+            for _ in 0..3 {
+                frame(&ctx, &mut app);
+            }
+        }
+        assert_eq!(app.workflows.list_len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_broken_config_is_shown_and_never_rewritten() {
+        let (paths, root) = temp("broken");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), b"{ oops").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = PrefsApp::new(ctx.clone(), paths.clone());
+        assert!(app.cfg_error.is_some());
+        assert!(app.edit(|c| crate::prefs_model::set_max_results(c, 10)).is_err());
+        for page in Page::ALL {
+            app.page = page;
+            app.enter_page();
+            frame(&ctx, &mut app);
+        }
+        assert_eq!(std::fs::read(paths.config_file()).unwrap(), b"{ oops");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_edit_reaches_the_file_and_the_window_copy() {
+        let (paths, root) = temp("edit");
+        let ctx = egui::Context::default();
+        let mut app = PrefsApp::new(ctx, paths.clone());
+        app.edit(|c| crate::prefs_model::set_max_results(c, 12)).unwrap();
+        assert_eq!(app.cfg.max_results, 12);
+        assert_eq!(Config::load_strict(&paths).unwrap().max_results, 12);
+        // another process edits the file: the window follows on its next poll
+        let mut c = Config::load_strict(&paths).unwrap();
+        c.max_results = 20;
+        c.save(&paths).unwrap();
+        app.last_poll = Instant::now() - POLL_EVERY * 2;
+        app.poll_disk();
+        assert_eq!(app.cfg.max_results, 20);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

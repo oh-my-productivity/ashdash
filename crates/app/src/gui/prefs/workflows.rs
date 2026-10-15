@@ -36,6 +36,11 @@ impl State {
         self.list = settings_view::list_workflows(paths, &cfg.workflow_dirs);
     }
 
+    #[cfg(test)]
+    pub fn list_len(&self) -> usize {
+        self.list.len()
+    }
+
     pub fn preview_done(&mut self, r: Result<(PathBuf, PackagePreview), String>) {
         self.previewing = false;
         match r {

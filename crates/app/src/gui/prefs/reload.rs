@@ -49,12 +49,42 @@ enum Msg {
     Content,
 }
 
-/// Parts of the launcher window the reload needs to change.
+/// What a reload needs from the launcher window (a trait so tests can stand in for it).
+pub trait Window {
+    /// Register `new` as the launcher hotkey and release `old` ("" = none); on error the
+    /// previous registration must still be in place.
+    fn rebind_hotkey(&mut self, old: &str, new: &str) -> Result<(), String>;
+    /// The hotkey registration is gone for good: show the startup hint again (`Some`) or not.
+    fn set_hotkey_error(&mut self, error: Option<String>);
+    fn set_theme(&mut self, theme: Theme);
+    /// Re-read workflow hotkeys (main thread).
+    fn reload_workflow_hotkeys(&mut self);
+}
+
+/// The real launcher window.
 pub struct Host<'a> {
     pub manager: &'a mut Option<GlobalHotKeyManager>,
     pub hotkey_error: &'a mut Option<String>,
     pub theme: &'a mut Theme,
     pub automation: &'a mut crate::events::Automation,
+}
+
+impl Window for Host<'_> {
+    fn rebind_hotkey(&mut self, old: &str, new: &str) -> Result<(), String> {
+        hotkey::rebind(self.manager, old, new)
+    }
+
+    fn set_hotkey_error(&mut self, error: Option<String>) {
+        *self.hotkey_error = error;
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        *self.theme = theme;
+    }
+
+    fn reload_workflow_hotkeys(&mut self) {
+        self.automation.reload_hotkeys(self.manager.as_ref());
+    }
 }
 
 pub struct HotReload {
@@ -68,11 +98,29 @@ pub struct HotReload {
     problems: BTreeMap<&'static str, String>,
     restart_required: Vec<String>,
     announced: Option<String>,
+    /// Tells the user about a new problem (a notification; replaced in tests).
+    notify: Box<dyn Fn(String) + Send>,
 }
 
 impl HotReload {
     /// `registered_hotkey`: the spec the launcher registered at start-up, if that worked.
     pub fn new(ctx: &egui::Context, engine: Arc<Engine>, registered_hotkey: Option<String>) -> HotReload {
+        HotReload::with_notifier(
+            ctx,
+            engine,
+            registered_hotkey,
+            Box::new(|body| {
+                std::thread::spawn(move || crate::mac::opendocs::notify("Ashdash settings", &body));
+            }),
+        )
+    }
+
+    pub fn with_notifier(
+        ctx: &egui::Context,
+        engine: Arc<Engine>,
+        registered_hotkey: Option<String>,
+        notify: Box<dyn Fn(String) + Send>,
+    ) -> HotReload {
         let paths = engine.paths.clone();
         let (tx, rx) = channel::<Msg>();
         let watcher = start_watcher(ctx, &engine, tx);
@@ -85,6 +133,7 @@ impl HotReload {
             problems: BTreeMap::new(),
             restart_required: Vec::new(),
             announced: None,
+            notify,
         };
         if me.watcher.is_none() {
             me.problem(
@@ -104,7 +153,7 @@ impl HotReload {
     }
 
     /// Apply whatever the watcher reported since the last call. Cheap when nothing changed.
-    pub fn poll(&mut self, host: &mut Host) {
+    pub fn poll(&mut self, host: &mut dyn Window) {
         let (mut config, mut content) = (false, false);
         while let Ok(m) = self.rx.try_recv() {
             match m {
@@ -119,12 +168,12 @@ impl HotReload {
             self.apply_disk_config(host);
         }
         if content {
-            host.automation.reload_hotkeys(host.manager.as_ref());
+            host.reload_workflow_hotkeys();
         }
         self.publish();
     }
 
-    fn apply_disk_config(&mut self, host: &mut Host) {
+    fn apply_disk_config(&mut self, host: &mut dyn Window) {
         let new = match Config::load_strict(&self.paths) {
             Ok(c) => c,
             Err(e) => {
@@ -144,10 +193,10 @@ impl HotReload {
         let report = self.engine.apply_config(new.clone());
         self.restart_required = report.restart_required.iter().map(|s| s.to_string()).collect();
         if let Some(spec) = plan.rebind_hotkey {
-            match hotkey::rebind(host.manager, &self.registered_hotkey, &spec) {
+            match host.rebind_hotkey(&self.registered_hotkey, &spec) {
                 Ok(()) => {
                     self.registered_hotkey = spec;
-                    *host.hotkey_error = None;
+                    host.set_hotkey_error(None);
                     self.problems.remove("hotkey");
                 }
                 Err(e) => {
@@ -158,7 +207,7 @@ impl HotReload {
                     };
                     self.problem("hotkey", format!("The hotkey '{spec}' did not work: {e}. {keep}"));
                     if self.registered_hotkey.is_empty() {
-                        *host.hotkey_error = Some(e);
+                        host.set_hotkey_error(Some(e));
                     }
                 }
             }
@@ -167,13 +216,13 @@ impl HotReload {
             match &new.theme {
                 Some(p) => match Theme::load(p) {
                     Ok(t) => {
-                        *host.theme = t;
+                        host.set_theme(t);
                         self.problems.remove("theme");
                     }
                     Err(e) => self.problem("theme", format!("The theme {} could not be loaded: {e:#}", p.display())),
                 },
                 None => {
-                    *host.theme = Theme::default();
+                    host.set_theme(Theme::default());
                     self.problems.remove("theme");
                 }
             }
@@ -182,7 +231,7 @@ impl HotReload {
             if let Some(w) = &self.watcher {
                 w.set_extra_roots(&self.paths, &new.workflow_dirs);
             }
-            host.automation.reload_hotkeys(host.manager.as_ref());
+            host.reload_workflow_hotkeys();
         }
     }
 
@@ -208,8 +257,7 @@ impl HotReload {
         match problems.first() {
             Some(p) if self.announced.as_ref() != Some(p) => {
                 self.announced = Some(p.clone());
-                let body = p.clone();
-                std::thread::spawn(move || crate::mac::opendocs::notify("Ashdash settings", &body));
+                (self.notify)(p.clone());
             }
             None => self.announced = None,
             _ => {}
@@ -242,7 +290,297 @@ fn start_watcher(ctx: &egui::Context, engine: &Arc<Engine>, tx: Sender<Msg>) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use ashdash_core::actions::{Cmd, Os, Process};
+
     use super::*;
+
+    /// Records what the reload asks of the window.
+    #[derive(Default)]
+    struct FakeWindow {
+        rebinds: Vec<(String, String)>,
+        fail_rebind: bool,
+        hotkey_error: Option<Option<String>>,
+        themes: Vec<Theme>,
+        workflow_hotkey_reloads: usize,
+    }
+
+    impl Window for FakeWindow {
+        fn rebind_hotkey(&mut self, old: &str, new: &str) -> Result<(), String> {
+            self.rebinds.push((old.into(), new.into()));
+            if self.fail_rebind { Err("taken".into()) } else { Ok(()) }
+        }
+        fn set_hotkey_error(&mut self, error: Option<String>) {
+            self.hotkey_error = Some(error);
+        }
+        fn set_theme(&mut self, theme: Theme) {
+            self.themes.push(theme);
+        }
+        fn reload_workflow_hotkeys(&mut self) {
+            self.workflow_hotkey_reloads += 1;
+        }
+    }
+
+    struct NoOs;
+    impl Os for NoOs {
+        fn run(&self, _: &Cmd) -> anyhow::Result<()> {
+            panic!("nothing may run")
+        }
+        fn output(&self, _: &Cmd) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn spawn(&self, _: &Cmd) -> anyhow::Result<Box<dyn Process>> {
+            panic!("nothing may run")
+        }
+    }
+
+    struct Rig {
+        root: std::path::PathBuf,
+        paths: Paths,
+        engine: Arc<Engine>,
+        reload: HotReload,
+        notes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn rig(tag: &str, config_file: Option<&[u8]>) -> Rig {
+        let root = std::env::temp_dir().join(format!("oa-reload-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let paths = Paths::under(&root);
+        if let Some(bytes) = config_file {
+            std::fs::create_dir_all(&paths.data).unwrap();
+            std::fs::write(paths.config_file(), bytes).unwrap();
+        }
+        let config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        let engine = Arc::new(Engine::with_env(
+            paths.clone(),
+            config,
+            Box::new(NoOs),
+            root.join("home"),
+        ));
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&notes);
+        let reload = HotReload::with_notifier(
+            &egui::Context::default(),
+            Arc::clone(&engine),
+            Some(engine.config.hotkey.clone()),
+            Box::new(move |t| sink.lock().unwrap().push(t)),
+        );
+        Rig {
+            root,
+            paths,
+            engine,
+            reload,
+            notes,
+        }
+    }
+
+    fn web_search_titles(e: &Engine, q: &str) -> Vec<String> {
+        e.query(q).into_iter().map(|i| i.title).collect()
+    }
+
+    #[test]
+    fn an_edited_config_is_applied_to_the_running_engine() {
+        let mut r = rig("apply", None);
+        let mut w = FakeWindow::default();
+        assert!(
+            !web_search_titles(&r.engine, "zork hi")
+                .iter()
+                .any(|t| t.contains("Zork"))
+        );
+        let mut c = Config::load(&r.paths);
+        c.web_searches.push(ashdash_core::websearch::WebSearch {
+            keyword: "zork".into(),
+            title: "Zork".into(),
+            url: "https://example.test/?q={query}".into(),
+            fallback: false,
+        });
+        c.max_results = 11;
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert!(
+            web_search_titles(&r.engine, "zork hi")
+                .iter()
+                .any(|t| t.contains("Zork"))
+        );
+        assert_eq!(r.engine.config_now().max_results, 11);
+        assert!(
+            w.rebinds.is_empty() && w.themes.is_empty(),
+            "only what changed is touched"
+        );
+        assert!(r.notes.lock().unwrap().is_empty());
+        assert!(status::read(&r.paths).unwrap().problems.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_config_is_reported_once_and_changes_nothing() {
+        let mut r = rig("invalid", None);
+        let mut w = FakeWindow::default();
+        let before = serde_json::to_value(r.engine.config_now()).unwrap();
+        std::fs::create_dir_all(&r.paths.data).unwrap();
+        std::fs::write(r.paths.config_file(), br#"{"max_results": "many"}"#).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        assert_eq!(serde_json::to_value(r.engine.config_now()).unwrap(), before);
+        let st = status::read(&r.paths).unwrap();
+        assert_eq!(st.problems.len(), 1);
+        assert!(st.problems[0].contains("config.json is not valid"), "{:?}", st.problems);
+        assert_eq!(r.notes.lock().unwrap().len(), 1, "announced once, not on every poll");
+        // fixing the file clears the problem
+        Config::default().save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        assert!(status::read(&r.paths).unwrap().problems.is_empty());
+    }
+
+    #[test]
+    fn a_config_that_was_unreadable_at_start_is_reported_at_once() {
+        let r = rig("start-broken", Some(b"{ nope"));
+        let st = status::read(&r.paths).unwrap();
+        assert!(
+            st.problems.iter().any(|p| p.contains("could not be read")),
+            "{:?}",
+            st.problems
+        );
+        assert_eq!(r.notes.lock().unwrap().len(), 1);
+        assert_eq!(st.pid, std::process::id());
+        assert_eq!(st.hotkey_active, r.engine.config.hotkey);
+    }
+
+    #[test]
+    fn a_new_hotkey_is_rebound_and_a_failure_keeps_the_old_one() {
+        let mut r = rig("hotkey", None);
+        let old = r.engine.config.hotkey.clone();
+        let mut w = FakeWindow::default();
+        let mut c = Config::load(&r.paths);
+        c.hotkey = "ctrl+alt+KeyJ".into();
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.rebinds, vec![(old.clone(), "ctrl+alt+KeyJ".to_string())]);
+        assert_eq!(w.hotkey_error, Some(None));
+        r.reload.publish();
+        assert_eq!(status::read(&r.paths).unwrap().hotkey_active, "ctrl+alt+KeyJ");
+
+        // now a hotkey that cannot be registered
+        let mut w = FakeWindow {
+            fail_rebind: true,
+            ..FakeWindow::default()
+        };
+        let mut c = Config::load(&r.paths);
+        c.hotkey = "ctrl+alt+KeyK".into();
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        let st = status::read(&r.paths).unwrap();
+        assert_eq!(st.hotkey_active, "ctrl+alt+KeyJ", "the working hotkey stays");
+        assert!(
+            st.problems
+                .iter()
+                .any(|p| p.contains("ctrl+alt+KeyK") && p.contains("taken")),
+            "{:?}",
+            st.problems
+        );
+        assert!(st.problems[0].contains("previous hotkey stays active"));
+        assert_eq!(w.hotkey_error, None, "the launcher still has a working hotkey");
+        // the same value is retried on the next change, not silently forgotten
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.rebinds.len(), 2);
+    }
+
+    #[test]
+    fn theme_changes_reload_the_theme_and_bad_themes_are_reported() {
+        let mut r = rig("theme", None);
+        let mut w = FakeWindow::default();
+        let good = r.root.join("t.alfredappearance");
+        std::fs::write(
+            &good,
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict>
+            <key>name</key><string>Night</string></dict></dict></plist>"#,
+        )
+        .unwrap();
+        let mut c = Config::load(&r.paths);
+        c.theme = Some(good);
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.themes.len(), 1);
+        assert_eq!(w.themes[0].name, "Night");
+
+        let mut c = Config::load(&r.paths);
+        c.theme = Some(r.root.join("missing.alfredappearance"));
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        assert_eq!(w.themes.len(), 1, "the working theme stays");
+        assert!(status::read(&r.paths).unwrap().problems[0].contains("could not be loaded"));
+
+        let mut c = Config::load(&r.paths);
+        c.theme = None;
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.themes.len(), 2);
+        r.reload.publish();
+        assert!(status::read(&r.paths).unwrap().problems.is_empty());
+    }
+
+    #[test]
+    fn restart_only_settings_are_listed_in_the_status() {
+        let mut r = rig("restart", None);
+        let mut w = FakeWindow::default();
+        let mut c = Config::load(&r.paths);
+        c.app_dirs.push("/somewhere".into());
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        assert_eq!(status::read(&r.paths).unwrap().restart_required, vec!["app_dirs"]);
+    }
+
+    /// The whole chain with the real file watcher: write the file, wait for the debounce.
+    #[test]
+    fn edits_on_disk_reach_the_engine_through_the_watcher() {
+        let mut r = rig("watch", None);
+        let mut w = FakeWindow::default();
+        std::thread::sleep(Duration::from_millis(400)); // let FSEvents arm
+        let mut c = Config::load(&r.paths);
+        c.max_results = 9;
+        c.save(&r.paths).unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        while r.engine.config_now().max_results != 9 && Instant::now() < end {
+            r.reload.poll(&mut w);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(r.engine.config_now().max_results, 9, "watcher + debounce + apply");
+
+        // a workflow dropped into the folder is loaded and its hotkeys re-read
+        let dir = r.paths.workflows_dir().join("user.workflow.w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+            <key>name</key><string>Dropped</string><key>bundleid</key><string>dropped.b</string>
+            <key>objects</key><array/><key>connections</key><dict/></dict></plist>"#,
+        )
+        .unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        while w.workflow_hotkey_reloads == 0 && Instant::now() < end {
+            r.reload.poll(&mut w);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(w.workflow_hotkey_reloads >= 1);
+        assert!(r.engine.workflow_summaries().iter().any(|(n, _, _)| n == "Dropped"));
+    }
 
     fn cfg() -> Config {
         Config::default()
