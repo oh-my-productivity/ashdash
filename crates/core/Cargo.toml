@@ -14,3 +14,7 @@ shlex = "2.0.1"
 thiserror = "2.0.21"
 walkdir = "2.5.0"
 zip = "9.0.3"
+
+[dev-dependencies]
+# Property/fuzz tests (crates/core/tests/fuzz.rs). Minimal feature set: no fork/timeout helpers needed.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
