@@ -62,9 +62,16 @@ fn lex(s: &str) -> Option<Vec<Tok>> {
     Some(out)
 }
 
+/// Longest input `eval` looks at (characters). Typed calculations are far shorter.
+pub const MAX_EXPR_CHARS: usize = 512;
+/// Deepest recursion of the parser (`expr` and `unary` entries). Each parenthesis, call, `^` or
+/// unary sign costs about one level; deeper input is rejected instead of overflowing the stack.
+const MAX_DEPTH: u32 = 200;
+
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
+    depth: u32,
 }
 
 impl Parser {
@@ -79,6 +86,21 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Option<f64> {
+        self.nested(Self::expr_inner)
+    }
+
+    /// Run a recursive production one level deeper, failing past [`MAX_DEPTH`] (SEC-08).
+    fn nested(&mut self, f: fn(&mut Self) -> Option<f64>) -> Option<f64> {
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
+    }
+
+    fn expr_inner(&mut self) -> Option<f64> {
         let mut v = self.term()?;
         while let Some(Tok::Op(c @ ('+' | '-'))) = self.peek().cloned() {
             self.pos += 1;
@@ -113,6 +135,10 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Option<f64> {
+        self.nested(Self::unary_inner)
+    }
+
+    fn unary_inner(&mut self) -> Option<f64> {
         match self.peek() {
             Some(Tok::Op('-')) => {
                 self.pos += 1;
@@ -203,13 +229,18 @@ fn call(name: &str, a: &[f64]) -> Option<f64> {
     }
 }
 
-/// Evaluate an arithmetic expression.
+/// Evaluate an arithmetic expression. Returns `None` for input longer than
+/// [`MAX_EXPR_CHARS`] or nested deeper than the parser allows.
 pub fn eval(s: &str) -> Option<f64> {
+    // `len()` (bytes) is >= chars; the cheap check first keeps huge pastes from being lexed at all.
+    if s.len() > MAX_EXPR_CHARS * 4 || s.chars().count() > MAX_EXPR_CHARS {
+        return None;
+    }
     let toks = lex(s)?;
     if toks.is_empty() {
         return None;
     }
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, depth: 0 };
     let v = p.expr()?;
     (p.pos == p.toks.len() && v.is_finite()).then_some(v)
 }
@@ -266,6 +297,34 @@ mod tests {
         assert!(looks_like_expression("12*3"));
         assert!(!looks_like_expression("12"));
         assert!(!looks_like_expression("pi"));
+    }
+
+    #[test]
+    fn deep_nesting_is_rejected_not_fatal() {
+        for n in [150usize, 250, 100_000] {
+            let parens = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+            let neg = format!("{}1", "-".repeat(n));
+            let pow = format!("1{}", "^1".repeat(n));
+            let calls = format!("{}1{}", "sqrt(".repeat(n), ")".repeat(n));
+            for e in [parens, neg, pow, calls] {
+                let r = std::thread::Builder::new()
+                    .stack_size(2 << 20)
+                    .spawn(move || eval(&e))
+                    .unwrap()
+                    .join()
+                    .expect("eval overflowed its stack");
+                if n >= 250 {
+                    assert_eq!(r, None, "n={n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reasonable_nesting_and_length_limits() {
+        assert_eq!(eval(&format!("{}2{}", "(".repeat(50), ")".repeat(50))), Some(2.0));
+        assert_eq!(eval(&"1+".repeat(300)), None); // longer than MAX_EXPR_CHARS
+        assert_eq!(eval(&format!("{}1", "1+".repeat(200))), Some(201.0));
     }
 
     #[test]
