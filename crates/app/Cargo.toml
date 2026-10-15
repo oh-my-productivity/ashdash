@@ -12,7 +12,18 @@ egui_extras = { version = "0.36.2", features = ["file", "image"] }
 global-hotkey = "0.8.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSApplication",
+    "NSResponder",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSWorkspace",
+    "NSRunningApplication",
+    "NSBitmapImageRep",
+    "NSImageRep",
+] }
+# Already in the lock file via objc2-app-kit; needed to name NSString/NSData/NSDictionary directly.
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSData", "NSArray", "NSDictionary"] }
 ashdash-core = { version = "0.1.0", path = "../core" }
 serde_json = "1.0.154"
 winit = "0.30.13"

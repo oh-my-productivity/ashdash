@@ -1,3 +1,4 @@
+mod clipboard_watch;
 mod gui;
 
 use std::path::PathBuf;
