@@ -327,24 +327,7 @@ impl Engine {
     pub fn workflow_settings(&self, bundle_id: &str) -> Option<Vec<WorkflowSetting>> {
         let wfs = self.workflows.read().unwrap();
         let wf = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id)?;
-        let vars = wf.base_vars(&self.paths);
-        Some(
-            wf.user_config
-                .iter()
-                .map(|c| {
-                    let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
-                    WorkflowSetting {
-                        variable: c.variable.clone(),
-                        label: c.label.clone(),
-                        description: c.description.clone(),
-                        kind: c.kind.clone(),
-                        is_default: value == c.default,
-                        default: c.default.clone(),
-                        value,
-                    }
-                })
-                .collect(),
-        )
+        Some(crate::settings_view::workflow_settings_of(wf, &self.paths))
     }
 
     /// Save a value for one entry of a workflow's configuration sheet. It is
@@ -368,16 +351,7 @@ impl Engine {
         if !wf.user_config.iter().any(|c| c.variable == variable) {
             bail!("workflow '{}' has no setting '{variable}'", wf.name);
         }
-        let file = wf.user_values_file(&self.paths);
-        let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        match value {
-            Some(v) => map.insert(variable.to_string(), v.into()),
-            None => map.remove(variable),
-        };
-        crate::config::write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+        crate::settings_view::write_workflow_value(wf, &self.paths, variable, value)?;
         // The values are cached per loaded workflow: drop the cache so the next run re-reads them.
         wf.reset_session();
         Ok(())

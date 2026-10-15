@@ -5,6 +5,7 @@ mod gui;
 mod hotkeys;
 mod ipc;
 mod mac;
+mod prefs_model;
 mod scripting;
 mod urlscheme;
 
@@ -33,6 +34,7 @@ USAGE:
   ashdash show                    show the launcher (starts it if needed)
   ashdash search <text>           show the launcher with <text> typed (starts it if needed)
   ashdash reload                  re-scan apps, workflows, snippets and workflow hotkeys
+  ashdash prefs                   open the preferences window
   ashdash quit                    quit the running launcher
   ashdash login-item enable|disable|status
                                       launch at login (needs the Ashdash.app bundle)
@@ -55,6 +57,9 @@ fn main() -> Result<()> {
             print!("{HELP}");
             Ok(())
         }
+        Some("prefs") => gui::prefs::open_window(),
+        // The window itself (its own process); `ashdash prefs` starts this detached.
+        Some("prefs-window") => gui::prefs::run(paths),
         Some("login-item") => mac::loginitem::cli(args.get(1).map(String::as_str)),
         Some("paths") => {
             println!("data:      {}", paths.data.display());

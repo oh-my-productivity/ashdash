@@ -515,6 +515,44 @@ pub fn preview_package(paths: &Paths, package: &Path) -> Result<PackagePreview> 
     })
 }
 
+/// The configuration sheet of `wf` with each entry's current value (`Engine::workflow_settings`
+/// and the preferences window share this).
+pub fn workflow_settings_of(wf: &Workflow, paths: &Paths) -> Vec<crate::engine::WorkflowSetting> {
+    let vars = wf.base_vars(paths);
+    wf.user_config
+        .iter()
+        .map(|c| {
+            let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
+            crate::engine::WorkflowSetting {
+                variable: c.variable.clone(),
+                label: c.label.clone(),
+                description: c.description.clone(),
+                kind: c.kind.clone(),
+                is_default: value == c.default,
+                default: c.default.clone(),
+                value,
+            }
+        })
+        .collect()
+}
+
+/// Store (`Some`) or forget (`None`) the user's value for one entry of `wf`'s configuration
+/// sheet, in `<data>/workflow-config/<bundle id>.json` (0600). The caller has checked that
+/// `variable` is on the sheet and resets the loaded workflow's cached values afterwards.
+pub fn write_workflow_value(wf: &Workflow, paths: &Paths, variable: &str, value: Option<&str>) -> Result<()> {
+    let file = wf.user_values_file(paths);
+    let mut map: serde_json::Map<String, Value> = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    match value {
+        Some(v) => map.insert(variable.to_string(), v.into()),
+        None => map.remove(variable),
+    };
+    write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+    Ok(())
+}
+
 // ------------------------------------------------------------------ themes
 
 /// Largest theme file accepted.

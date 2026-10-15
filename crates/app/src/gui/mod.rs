@@ -6,6 +6,7 @@ mod keynames;
 mod keys;
 mod largetype;
 mod mac;
+pub mod prefs;
 mod quicklook;
 mod results;
 mod rowhint;
@@ -86,6 +87,8 @@ struct LauncherApp {
     icon_rx: Receiver<(PathBuf, Option<PathBuf>)>,
 
     _hotkey_manager: Option<GlobalHotKeyManager>,
+    /// Live reload of settings, workflows and snippets (see `prefs::reload`).
+    hot_reload: prefs::reload::HotReload,
     /// CLI socket, URL scheme and workflow-hotkey events (see `crate::events`).
     automation: crate::events::Automation,
 }
@@ -151,6 +154,11 @@ impl LauncherApp {
         // Global hotkey.
         let (manager, toggle_rx, hotkey_error) = window::install_hotkey(&engine, &ctx);
         let hotkey_ok = hotkey_error.is_none();
+        let hot_reload = prefs::reload::HotReload::new(
+            &ctx,
+            Arc::clone(&engine),
+            hotkey_ok.then(|| engine.config.hotkey.clone()),
+        );
         automation.attach(&ctx, manager.as_ref());
 
         let (menu_tx, menu_rx) = channel();
@@ -197,6 +205,7 @@ impl LauncherApp {
             icon_tx,
             icon_rx,
             _hotkey_manager: manager,
+            hot_reload,
             automation,
         };
         if !hotkey_ok {
@@ -293,6 +302,7 @@ impl LauncherApp {
                     std::thread::spawn(move || engine.reload());
                     self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
                 }
+                Preferences => prefs::open_or_report(),
                 Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 Theme(file) => match ashdash_core::theme::Theme::load(&file) {
                     Ok(t) => self.theme = t,
@@ -309,6 +319,12 @@ impl eframe::App for LauncherApp {
         self.poll_background(ctx);
         self.poll_menu(ctx);
         self.poll_automation(ctx);
+        self.hot_reload.poll(&mut prefs::reload::Host {
+            manager: &mut self._hotkey_manager,
+            hotkey_error: &mut self.hotkey_error,
+            theme: &mut self.theme,
+            automation: &mut self.automation,
+        });
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

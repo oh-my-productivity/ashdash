@@ -56,6 +56,10 @@ pub enum Request {
     },
     Reload,
     Quit,
+    /// Open the preferences window.
+    Prefs,
+    /// Forget everything learned from earlier picks (the launcher holds it in memory).
+    ClearUsage,
     /// Absolute path of an `.alfredappearance` file.
     Theme {
         file: PathBuf,
@@ -133,6 +137,8 @@ impl Request {
             }
             Request::Reload => json!({"cmd": "reload"}),
             Request::Quit => json!({"cmd": "quit"}),
+            Request::Prefs => json!({"cmd": "prefs"}),
+            Request::ClearUsage => json!({"cmd": "clear-usage"}),
             Request::Theme { file } => json!({"cmd": "theme", "file": file.to_string_lossy()}),
         };
         format!("{v}\n")
@@ -160,6 +166,8 @@ impl Request {
             "show" => Request::Show,
             "reload" => Request::Reload,
             "quit" => Request::Quit,
+            "prefs" => Request::Prefs,
+            "clear-usage" => Request::ClearUsage,
             "search" => {
                 let text = field("text", true)?;
                 if text.len() > MAX_SEARCH {
@@ -198,6 +206,8 @@ impl Request {
 pub trait Backend: Send + Sync {
     fn run_trigger(&self, bundle: &str, id: &str, arg: &str) -> Outcome;
     fn validate_theme(&self, file: &Path) -> Result<(), String>;
+    /// Forget what the launcher learned from earlier picks.
+    fn clear_usage(&self) {}
 }
 
 pub trait Handler: Send + Sync {
@@ -228,6 +238,14 @@ impl Handler for AppHandler {
             }
             Request::Quit => {
                 self.sink.emit(AppEvent::Quit);
+                Response::ok("")
+            }
+            Request::Prefs => {
+                self.sink.emit(AppEvent::Preferences);
+                Response::ok("")
+            }
+            Request::ClearUsage => {
+                self.backend.clear_usage();
                 Response::ok("")
             }
             Request::Trigger { bundle, id, arg } => {
@@ -556,6 +574,8 @@ mod tests {
             Request::Show,
             Request::Reload,
             Request::Quit,
+            Request::Prefs,
+            Request::ClearUsage,
             Request::Search {
                 text: "saf \"quoted\"\n é".into(),
             },
@@ -620,6 +640,7 @@ mod tests {
         assert!(h.handle(Request::Search { text: "saf".into() }).ok);
         assert!(h.handle(Request::Reload).ok);
         assert!(h.handle(Request::Quit).ok);
+        assert!(h.handle(Request::Prefs).ok);
         assert!(h.handle(Request::Theme { file: "/x".into() }).ok);
         assert_eq!(
             sink.take(),
@@ -628,6 +649,7 @@ mod tests {
                 AppEvent::Search("saf".into()),
                 AppEvent::Reload,
                 AppEvent::Quit,
+                AppEvent::Preferences,
                 AppEvent::Theme("/x".into())
             ]
         );
