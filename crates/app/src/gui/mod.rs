@@ -54,6 +54,7 @@ struct LauncherApp {
     shown_at: Instant,
     want_focus: bool,
     last_height: f32,
+    resize_retries: u8,
     last_pointer: Option<Pos2>,
     focus_seen: Option<bool>,
 
@@ -163,6 +164,7 @@ impl LauncherApp {
             shown_at: Instant::now(),
             want_focus: false,
             last_height: 0.0,
+            resize_retries: 0,
             last_pointer: None,
             focus_seen: None,
             overlay: None,

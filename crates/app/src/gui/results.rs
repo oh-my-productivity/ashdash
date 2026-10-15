@@ -146,7 +146,8 @@ impl LauncherApp {
         let raw = &self.engine.config.hotkey;
         let shown = keynames::display_hotkey(raw).unwrap_or_else(|| raw.clone());
         Some(format!(
-            "Hotkey {shown} is unavailable ({err}). Change \"hotkey\" in config.json."
+            "Hotkey {shown} is unavailable ({}). Change \"hotkey\" in config.json.",
+            short_error(err)
         ))
     }
 
@@ -195,5 +196,24 @@ impl LauncherApp {
             }
             _ => None,
         }
+    }
+}
+
+/// First sentence-ish part of a library error (some append "please report this to ...").
+fn short_error(e: &str) -> &str {
+    e.split(", if you").next().unwrap_or(e).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_error;
+
+    #[test]
+    fn trims_library_boilerplate() {
+        assert_eq!(
+            short_error("invalid hotkey: Couldn't recognize \"x\" as a valid key, if you feel like it, report"),
+            "invalid hotkey: Couldn't recognize \"x\" as a valid key"
+        );
+        assert_eq!(short_error("already registered"), "already registered");
     }
 }

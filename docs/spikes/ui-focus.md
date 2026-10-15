@@ -60,3 +60,9 @@ we could not reproduce. Revisit if any of these show up in the field:
 * hotkey-to-first-key latency above ~100 ms on release builds with a cold GPU.
 
 Not verified: full-screen apps, multiple physical monitors, release build timings, secure-input fields.
+
+## Other native-window observations (smoke runs, debug build)
+
+* Menu-bar status item (plain objc2 `NSStatusItem`, no `tray-icon`): menu showed "Show Ashdash, Reload, Preferences… (disabled), Quit Ashdash"; clicking Reload and Show Ashdash through System Events worked and fed the egui loop. No Dock icon.
+* Large Type: Cmd+L stretched the window over the whole monitor under the mouse (covering the menu bar), dimmed it, centred the text at the maximum size; Esc returned to the normal launcher.
+* Quick Look: Cmd+Y and a lone Shift tap (held ~150 ms; a sub-frame tap can be missed) spawn `qlmanage -p`. The launcher stays open while the preview has focus; Esc in the preview ends the process and the launcher takes focus back. The launcher window is drawn above the preview window (status window level).

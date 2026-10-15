@@ -120,14 +120,27 @@ impl LauncherApp {
         }
     }
 
-    /// Resize the viewport when the wanted height changed.
+    /// Resize the viewport when the wanted height changed. The very first
+    /// resize after startup can be dropped by the OS, so while the real
+    /// content height still differs, the command is repeated a few times.
     pub(super) fn sync_height(&mut self, ctx: &egui::Context, total_h: f32) {
-        if (total_h - self.last_height).abs() > 0.5 {
+        let changed = (total_h - self.last_height).abs() > 0.5;
+        if changed {
             self.last_height = total_h;
+            self.resize_retries = 0;
+        }
+        let actual = ctx.content_rect().height();
+        let stuck = !changed && (actual - total_h).abs() > 1.5 && self.resize_retries < 10;
+        if changed || stuck {
+            if stuck {
+                self.resize_retries += 1;
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                 self.theme.window_width,
                 total_h,
             )));
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
     }
 }
