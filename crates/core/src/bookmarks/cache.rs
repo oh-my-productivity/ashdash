@@ -6,9 +6,13 @@
 //!   the first queries see an empty, `loaded: false` snapshot until the first
 //!   background load finishes ("stale-or-empty meanwhile").
 //! * A source is re-read only when its [`Fingerprint`] (mtime + size of its
-//!   files) changed or its last attempt failed; unchanged sources reuse their
-//!   previous result. The fingerprint check itself (a few `stat`s) also runs
-//!   on the background thread.
+//!   files) changed; unchanged sources reuse their previous result. A source
+//!   whose last attempt failed is retried with exponential backoff (10 s,
+//!   20 s ... capped at 5 min) so a permanently unreadable file does not
+//!   cost an open attempt every few seconds. The fingerprint check itself
+//!   (a few `stat`s) also runs on the background thread.
+//! * Titles and hosts are turned into [`fuzzy::Candidate`]s once, when the
+//!   snapshot is built, so a keystroke scores precomputed data only.
 //! * The merged list drops non-openable schemes and de-duplicates by URL; the
 //!   first source in precedence order wins.
 
@@ -17,11 +21,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use super::url::{clean_url, dedupe_key};
+use super::url::{clean_url, dedupe_key, display_host};
 use super::{Bookmark, BookmarkSource, Fingerprint, SourceError, SourceErrorKind};
+use crate::fuzzy::Candidate;
 
 /// How often a query may trigger a change check.
 pub const DEFAULT_RECHECK: Duration = Duration::from_secs(5);
+/// First wait before retrying a failed source; doubles per consecutive failure.
+pub const DEFAULT_BACKOFF_BASE: Duration = Duration::from_secs(10);
+/// Longest wait between retries of a failed source.
+pub const DEFAULT_BACKOFF_MAX: Duration = Duration::from_secs(300);
 
 /// A source that could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,11 +47,44 @@ pub struct Snapshot {
     pub issues: Vec<Issue>,
     /// False until the first background load has completed.
     pub loaded: bool,
+    /// `titles[i]` / `hosts[i]` belong to `bookmarks[i]`.
+    titles: Vec<Candidate>,
+    hosts: Vec<Candidate>,
+}
+
+impl Snapshot {
+    pub fn new(bookmarks: Vec<Bookmark>, issues: Vec<Issue>, loaded: bool) -> Snapshot {
+        let titles = bookmarks.iter().map(|b| Candidate::new(&b.title)).collect();
+        let hosts = bookmarks
+            .iter()
+            .map(|b| Candidate::new(&display_host(&b.url)))
+            .collect();
+        Snapshot {
+            bookmarks,
+            issues,
+            loaded,
+            titles,
+            hosts,
+        }
+    }
+
+    /// Every bookmark with its precomputed title and host candidates.
+    pub fn scored(&self) -> impl Iterator<Item = (&Bookmark, &Candidate, &Candidate)> {
+        self.bookmarks
+            .iter()
+            .zip(&self.titles)
+            .zip(&self.hosts)
+            .map(|((b, t), h)| (b, t, h))
+    }
 }
 
 struct Entry {
     fingerprint: Fingerprint,
     result: Result<Vec<Bookmark>, SourceError>,
+    /// Consecutive failed attempts with this fingerprint (0 after a success).
+    failures: u32,
+    /// A failed source is not retried before this moment (unless its files change).
+    retry_at: Option<Instant>,
 }
 
 struct Inner {
@@ -52,6 +94,8 @@ struct Inner {
     loading: AtomicBool,
     last_check: Mutex<Option<Instant>>,
     recheck: Duration,
+    backoff_base: Duration,
+    backoff_max: Duration,
 }
 
 #[derive(Clone)]
@@ -65,6 +109,16 @@ impl BookmarkCache {
     }
 
     pub fn with_recheck(sources: Vec<Box<dyn BookmarkSource>>, recheck: Duration) -> Self {
+        Self::with_timing(sources, recheck, DEFAULT_BACKOFF_BASE, DEFAULT_BACKOFF_MAX)
+    }
+
+    /// `backoff_base`/`backoff_max` bound the wait before a failed source is retried.
+    pub fn with_timing(
+        sources: Vec<Box<dyn BookmarkSource>>,
+        recheck: Duration,
+        backoff_base: Duration,
+        backoff_max: Duration,
+    ) -> Self {
         let entries = sources.iter().map(|_| None).collect();
         BookmarkCache {
             inner: Arc::new(Inner {
@@ -74,6 +128,8 @@ impl BookmarkCache {
                 loading: AtomicBool::new(false),
                 last_check: Mutex::new(None),
                 recheck,
+                backoff_base,
+                backoff_max,
             }),
         }
     }
@@ -145,10 +201,7 @@ impl Inner {
     fn mark_loaded(&self) {
         let mut w = self.snapshot.write().unwrap_or_else(|e| e.into_inner());
         if !w.loaded {
-            *w = Arc::new(Snapshot {
-                loaded: true,
-                ..Snapshot::default()
-            });
+            *w = Arc::new(Snapshot::new(Vec::new(), Vec::new(), true));
         }
     }
 
@@ -157,7 +210,15 @@ impl Inner {
         let mut changed = false;
         for (i, src) in self.sources.iter().enumerate() {
             let fp = src.fingerprint();
-            let fresh = matches!(&entries[i], Some(e) if e.fingerprint == fp && e.result.is_ok());
+            let now = Instant::now();
+            let fresh = match &entries[i] {
+                Some(e) if e.fingerprint == fp => match &e.result {
+                    Ok(_) => true,
+                    // failed: leave it alone until the backoff has passed
+                    Err(_) => e.retry_at.is_some_and(|t| now < t),
+                },
+                _ => false,
+            };
             if fresh {
                 continue;
             }
@@ -168,9 +229,25 @@ impl Inner {
             if !prev_same {
                 changed = true;
             }
+            let (failures, retry_at) = if result.is_err() {
+                let before = match &entries[i] {
+                    Some(e) if e.fingerprint == fp => e.failures,
+                    _ => 0,
+                };
+                let failures = before.saturating_add(1);
+                let wait = self
+                    .backoff_base
+                    .saturating_mul(1u32 << (failures - 1).min(16))
+                    .min(self.backoff_max);
+                (failures, Some(Instant::now() + wait))
+            } else {
+                (0, None)
+            };
             entries[i] = Some(Entry {
                 fingerprint: fp,
                 result,
+                failures,
+                retry_at,
             });
         }
         let first = !self.snapshot.read().unwrap_or_else(|e| e.into_inner()).loaded;
@@ -215,11 +292,7 @@ fn build_snapshot(sources: &[Box<dyn BookmarkSource>], entries: &[Option<Entry>]
             None => {}
         }
     }
-    Snapshot {
-        bookmarks,
-        issues,
-        loaded: true,
-    }
+    Snapshot::new(bookmarks, issues, true)
 }
 
 #[cfg(test)]
@@ -326,7 +399,8 @@ mod tests {
             message: "nope".into(),
         };
         let s = FakeSource::new("safari", Err(denied));
-        let c = BookmarkCache::new(vec![boxed(&s)]);
+        // no backoff here: this test is about recovery, not about waiting
+        let c = BookmarkCache::with_timing(vec![boxed(&s)], DEFAULT_RECHECK, Duration::ZERO, Duration::ZERO);
         c.refresh_blocking();
         let snap = c.snapshot();
         assert!(snap.bookmarks.is_empty());
@@ -338,6 +412,77 @@ mod tests {
         let snap = c.snapshot();
         assert!(snap.issues.is_empty());
         assert_eq!(snap.bookmarks.len(), 1);
+    }
+
+    #[test]
+    fn failures_back_off_instead_of_retrying_every_check() {
+        let s = FakeSource::new("safari", Err(SourceError::other("denied")));
+        let c = BookmarkCache::with_timing(
+            vec![boxed(&s)],
+            DEFAULT_RECHECK,
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+        );
+        for _ in 0..5 {
+            c.refresh_blocking();
+        }
+        assert_eq!(s.loads.load(SeqCst), 1, "failure cached: no retry within the backoff");
+        assert_eq!(c.snapshot().issues.len(), 1, "the failure is still reported");
+        // changed files are always worth another look, backoff or not
+        *s.version.lock().unwrap() = 2;
+        c.refresh_blocking();
+        assert_eq!(s.loads.load(SeqCst), 2);
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_up_to_the_cap() {
+        let s = FakeSource::new("a", Err(SourceError::other("x")));
+        let c = BookmarkCache::with_timing(
+            vec![boxed(&s)],
+            DEFAULT_RECHECK,
+            Duration::from_millis(40),
+            Duration::from_millis(80),
+        );
+        c.refresh_blocking(); // failure 1: wait 40 ms
+        c.refresh_blocking();
+        assert_eq!(s.loads.load(SeqCst), 1);
+        std::thread::sleep(Duration::from_millis(60));
+        c.refresh_blocking(); // failure 2: wait 80 ms (capped)
+        assert_eq!(s.loads.load(SeqCst), 2);
+        std::thread::sleep(Duration::from_millis(30));
+        c.refresh_blocking();
+        assert_eq!(s.loads.load(SeqCst), 2, "second wait is longer than the first");
+        std::thread::sleep(Duration::from_millis(80));
+        c.refresh_blocking();
+        assert_eq!(s.loads.load(SeqCst), 3);
+    }
+
+    #[test]
+    fn snapshot_candidates_line_up_with_bookmarks() {
+        let a = FakeSource::new(
+            "a",
+            Ok(vec![
+                bm("Rust Book", "https://www.rust-lang.org/book", ""),
+                bm("Hacker News", "https://news.ycombinator.com/", ""),
+            ]),
+        );
+        let c = BookmarkCache::new(vec![boxed(&a)]);
+        c.refresh_blocking();
+        let snap = c.snapshot();
+        let q = crate::fuzzy::Query::new("hn");
+        let hits: Vec<_> = snap
+            .scored()
+            .filter(|(_, t, _)| q.score(t).is_some())
+            .map(|(b, _, _)| b.title.as_str())
+            .collect();
+        assert_eq!(hits, ["Hacker News"]);
+        let q = crate::fuzzy::Query::new("ycombinator");
+        let by_host: Vec<_> = snap
+            .scored()
+            .filter(|(_, _, h)| q.score(h).is_some())
+            .map(|(b, _, _)| b.title.as_str())
+            .collect();
+        assert_eq!(by_host, ["Hacker News"]);
     }
 
     #[test]
@@ -357,13 +502,15 @@ mod tests {
                 bm("From B", "https://example.com", "FB"),
                 bm("Other", "https://other.example/", ""),
                 bm("Local", "file:///tmp/x.html", ""),
+                bm("App", "file:///Applications/Calculator.app", ""),
             ]),
         );
         let c = BookmarkCache::new(vec![boxed(&a), boxed(&b)]);
         c.refresh_blocking();
         let snap = c.snapshot();
         let titles: Vec<_> = snap.bookmarks.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, vec!["From A", "https://untitled.example/", "Other", "Local"]);
+        // file: bookmarks would be launched, not displayed, by `open`: dropped
+        assert_eq!(titles, vec!["From A", "https://untitled.example/", "Other"]);
     }
 
     #[test]

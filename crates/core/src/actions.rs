@@ -18,10 +18,14 @@
 //!   home folder, and always needs confirmation.
 
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -75,6 +79,33 @@ impl Cmd {
     }
 }
 
+/// Wall-clock and size limits for [`Os::output_bounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputBudget {
+    /// The process is killed when it runs longer than this.
+    pub timeout: Duration,
+    /// Output beyond this many bytes is discarded and the process is killed.
+    pub max_bytes: usize,
+}
+
+/// What a bounded run produced. Partial output is still useful (a search
+/// that ran out of time keeps the hits found so far).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoundedOutput {
+    pub bytes: Vec<u8>,
+    /// The output hit `max_bytes` and the process was killed.
+    pub truncated: bool,
+    /// The process hit the timeout and was killed.
+    pub timed_out: bool,
+}
+
+/// A started background process (e.g. Quick Look). Dropping the handle does
+/// NOT stop the process; call [`Process::kill`] to dismiss it.
+pub trait Process: Send + Sync {
+    fn kill(&self);
+    fn is_running(&self) -> bool;
+}
+
 /// Everything that reaches the operating system. Injectable so tests never
 /// touch the real machine.
 pub trait Os: Send + Sync {
@@ -82,8 +113,38 @@ pub trait Os: Send + Sync {
     fn run(&self, cmd: &Cmd) -> Result<()>;
     /// Run to completion and return stdout; a non-zero exit is an error.
     fn output(&self, cmd: &Cmd) -> Result<Vec<u8>>;
+    /// Like [`Os::output`] but never longer than `budget.timeout` and never
+    /// more than `budget.max_bytes`: the process is killed when either limit
+    /// is hit and the partial output is returned. The default delegates to
+    /// [`Os::output`] and truncates (fakes have no time to limit).
+    fn output_bounded(&self, cmd: &Cmd, budget: &OutputBudget) -> Result<BoundedOutput> {
+        let mut bytes = self.output(cmd)?;
+        let truncated = bytes.len() > budget.max_bytes;
+        bytes.truncate(budget.max_bytes);
+        Ok(BoundedOutput {
+            bytes,
+            truncated,
+            timed_out: false,
+        })
+    }
     /// Start without waiting (e.g. Quick Look, which blocks until closed).
-    fn spawn(&self, cmd: &Cmd) -> Result<()>;
+    /// The returned handle can end the process again.
+    fn spawn(&self, cmd: &Cmd) -> Result<Box<dyn Process>>;
+}
+
+impl<T: Os + ?Sized> Os for Arc<T> {
+    fn run(&self, cmd: &Cmd) -> Result<()> {
+        (**self).run(cmd)
+    }
+    fn output(&self, cmd: &Cmd) -> Result<Vec<u8>> {
+        (**self).output(cmd)
+    }
+    fn output_bounded(&self, cmd: &Cmd, budget: &OutputBudget) -> Result<BoundedOutput> {
+        (**self).output_bounded(cmd, budget)
+    }
+    fn spawn(&self, cmd: &Cmd) -> Result<Box<dyn Process>> {
+        (**self).spawn(cmd)
+    }
 }
 
 /// The real thing: spawns processes with no shell involved.
@@ -93,6 +154,26 @@ fn build(cmd: &Cmd) -> Command {
     let mut c = Command::new(&cmd.program);
     c.args(&cmd.args);
     c
+}
+
+/// A real child that a reaper thread waits for (no zombies) and that can be killed.
+struct RealProcess {
+    child: Arc<Mutex<Child>>,
+    done: Arc<AtomicBool>,
+}
+
+impl Process for RealProcess {
+    fn kill(&self) {
+        let mut c = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.done.swap(true, Ordering::AcqRel) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        !self.done.load(Ordering::Acquire)
+    }
 }
 
 impl Os for RealOs {
@@ -131,18 +212,81 @@ impl Os for RealOs {
         Ok(out.stdout)
     }
 
-    fn spawn(&self, cmd: &Cmd) -> Result<()> {
+    fn output_bounded(&self, cmd: &Cmd, budget: &OutputBudget) -> Result<BoundedOutput> {
         let mut child = build(cmd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("starting {:?}", cmd.program))?;
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        // A reader thread keeps the pipe drained; this thread enforces the limits.
+        let (tx, rx) = channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + budget.timeout;
+        let mut out = BoundedOutput::default();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(chunk) => {
+                    out.bytes.extend_from_slice(&chunk);
+                    if out.bytes.len() > budget.max_bytes {
+                        out.bytes.truncate(budget.max_bytes);
+                        out.truncated = true;
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    out.timed_out = true;
+                    break;
+                }
+                Err(RecvTimeoutError::Disconnected) => break, // EOF
+            }
+        }
+        let killed = out.truncated || out.timed_out;
+        if killed {
+            let _ = child.kill();
+        }
+        let status = child.wait()?;
+        if !killed && !status.success() {
+            bail!("{} failed ({status})", cmd.program.to_string_lossy());
+        }
+        Ok(out)
+    }
+
+    fn spawn(&self, cmd: &Cmd) -> Result<Box<dyn Process>> {
+        let child = build(cmd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("starting {:?}", cmd.program))?;
+        let child = Arc::new(Mutex::new(child));
+        let done = Arc::new(AtomicBool::new(false));
         // Reap it when it exits so it does not linger as a zombie.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        Ok(())
+        {
+            let (child, done) = (Arc::clone(&child), Arc::clone(&done));
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Acquire) {
+                    {
+                        let mut c = child.lock().unwrap_or_else(|e| e.into_inner());
+                        if matches!(c.try_wait(), Ok(Some(_)) | Err(_)) {
+                            done.store(true, Ordering::Release);
+                            return;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
+        }
+        Ok(Box::new(RealProcess { child, done }))
     }
 }
 
@@ -180,8 +324,24 @@ fn has_scheme(u: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
+/// Whether `target` (already absolute, parent directories resolved) is a place
+/// that must never be trashed: the file system root and top-level folders,
+/// system locations, the home folder and everything above it, `~/Library`.
+fn is_refused(target: &Path, home: Option<&Path>) -> bool {
+    let top_level = target.parent().is_none_or(|d| d == Path::new("/"));
+    let system = ["/System", "/usr", "/bin", "/sbin", "/private/etc", "/private/var/db"]
+        .iter()
+        .any(|s| target.starts_with(s));
+    let home_or_above = home.is_some_and(|h| h.starts_with(target));
+    let library = home.is_some_and(|h| target == h.join("Library"));
+    top_level || system || home_or_above || library
+}
+
 /// The path that will be trashed: parent resolved, final component kept (a
-/// symlink is trashed itself, never its target). Refuses dangerous targets.
+/// symlink is trashed itself, never its target; the Finder script addresses
+/// it with `item (POSIX file ...)`, not an alias). Refuses dangerous targets,
+/// and refuses a symlink whose *resolved* target is dangerous, so a link
+/// named `shortcut` that points at `~` cannot be used to get around the checks.
 fn trash_target(p: &Path) -> Result<PathBuf> {
     let p = safe_path(p)?;
     std::fs::symlink_metadata(p).with_context(|| format!("{} does not exist", p.display()))?;
@@ -192,14 +352,20 @@ fn trash_target(p: &Path) -> Result<PathBuf> {
         .canonicalize()
         .with_context(|| format!("resolving {}", parent.display()))?
         .join(name);
-    let top_level = target.parent().is_none_or(|d| d == Path::new("/"));
-    let system = ["/System", "/usr", "/bin", "/sbin", "/private/etc", "/private/var/db"]
-        .iter()
-        .any(|s| target.starts_with(s));
     let home = dirs::home_dir().map(|h| h.canonicalize().unwrap_or(h));
-    let is_home_or_above = home.is_some_and(|h| h.starts_with(&target));
-    if top_level || system || is_home_or_above {
+    if is_refused(&target, home.as_deref()) {
         bail!("refusing to trash {}", target.display());
+    }
+    let is_link = std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    if is_link
+        && let Ok(resolved) = target.canonicalize()
+        && is_refused(&resolved, home.as_deref())
+    {
+        bail!(
+            "refusing to trash {}: it is a link to {}",
+            target.display(),
+            resolved.display()
+        );
     }
     Ok(target)
 }
@@ -244,11 +410,16 @@ pub enum UniversalAction {
 }
 
 impl UniversalAction {
-    /// Destructive actions ask first (`Outcome::Confirm`).
+    /// Destructive actions ask first (`Outcome::Confirm`). The prompt names the
+    /// full path, so two files with the same name can be told apart.
     pub fn confirmation(&self) -> Option<String> {
         match self {
             UniversalAction::Trash(ps) => Some(match ps.as_slice() {
-                [p] => format!("Move \"{}\" to Trash? Press ↩ again to confirm.", file_name(p)),
+                [p] => format!(
+                    "Move \"{}\" to Trash? {}. Press ↩ again to confirm.",
+                    file_name(p),
+                    p.display()
+                ),
                 _ => format!("Move {} items to Trash? Press ↩ again to confirm.", ps.len()),
             }),
             _ => None,
@@ -266,13 +437,40 @@ const SCRIPT_COPY_FILES: &[&str] = &[
     "end run",
 ];
 
+/// How the trash script names the file to act on. An `item` specifier keeps a
+/// symlink as the link, whereas `(POSIX file p) as alias` (and `... as text`)
+/// resolves it to its target, which Finder would then delete. `my` matters:
+/// inside `tell Finder`, a bare `POSIX file p` is sent to Finder, which fails
+/// with "Can't get POSIX file" (checked against macOS). One definition feeds
+/// both the real script and the read-only probe used by the contract test.
+macro_rules! trash_item {
+    () => {
+        "item (my POSIX file (contents of p))"
+    };
+}
+
 const SCRIPT_TRASH: &[&str] = &[
     "on run argv",
     "tell application \"Finder\"",
     "repeat with p in argv",
-    "delete ((POSIX file (contents of p)) as alias)",
+    concat!("delete ", trash_item!()),
     "end repeat",
     "end tell",
+    "end run",
+];
+
+/// Same specifier as [`SCRIPT_TRASH`], but only reads the name (never deletes).
+#[cfg(test)]
+const SCRIPT_TRASH_PROBE: &[&str] = &[
+    "on run argv",
+    "set names to {}",
+    "tell application \"Finder\"",
+    "repeat with p in argv",
+    concat!("set end of names to (name of ", trash_item!(), ")"),
+    "end repeat",
+    "end tell",
+    "set AppleScript's text item delimiters to linefeed",
+    "return names as text",
     "end run",
 ];
 
@@ -325,7 +523,7 @@ fn execute(os: &dyn Os, action: &UniversalAction) -> Result<Outcome> {
         A::OpenWithMenu(_) => {}
         A::Reveal(ps) => os.run(&Cmd::new("open").arg("-R").args(safe_paths(ps)?))?,
         A::CopyFile(ps) => os.run(&Cmd::osascript(SCRIPT_COPY_FILES, safe_paths(ps)?))?,
-        A::QuickLook(ps) => os.spawn(&Cmd::new("qlmanage").arg("-p").args(safe_paths(ps)?))?,
+        A::QuickLook(ps) => drop(spawn_quick_look(os, ps)?),
         A::Trash(ps) => {
             if ps.is_empty() {
                 bail!("nothing selected");
@@ -346,6 +544,13 @@ fn execute(os: &dyn Os, action: &UniversalAction) -> Result<Outcome> {
         A::LargeType(t) => return Ok(Outcome::LargeType(t.clone())),
     }
     Ok(Outcome::Done)
+}
+
+/// Start Quick Look and keep the handle: the launcher calls `kill()` on it
+/// when the preview is dismissed. (Running the `QuickLook` action through
+/// [`run`] drops the handle and leaves the preview open.)
+pub fn spawn_quick_look(os: &dyn Os, ps: &[PathBuf]) -> Result<Box<dyn Process>> {
+    os.spawn(&Cmd::new("qlmanage").arg("-p").args(safe_paths(ps)?))
 }
 
 fn compress_cmd(ps: &[PathBuf]) -> Result<Cmd> {
@@ -550,13 +755,15 @@ fn file_actions(p: &Path, folder: bool) -> Vec<Item> {
     let one = || vec![p.to_path_buf()];
     let mut v = vec![
         act(format!("act:open:{key}"), "Open", sub.clone(), "▶", A::Open(p.into())),
+        // Dead end until a UI consumes `open_with_items`: shown, but not actionable.
         act(
             format!("act:openwith:{key}"),
             "Open With…",
-            sub.clone(),
+            "Not available yet",
             "▤",
             A::OpenWithMenu(p.into()),
-        ),
+        )
+        .valid(false),
         act(
             format!("act:reveal:{key}"),
             "Reveal in Finder",
@@ -815,12 +1022,40 @@ pub(crate) mod testing {
         Spawn,
     }
 
+    /// A background process that only remembers whether it was killed.
+    #[derive(Default)]
+    pub struct FakeProcess {
+        pub killed: AtomicBool,
+    }
+
+    impl Process for FakeProcess {
+        fn kill(&self) {
+            self.killed.store(true, Ordering::SeqCst);
+        }
+        fn is_running(&self) -> bool {
+            !self.killed.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Process for Arc<FakeProcess> {
+        fn kill(&self) {
+            (**self).kill()
+        }
+        fn is_running(&self) -> bool {
+            (**self).is_running()
+        }
+    }
+
     /// Records every command; `output` replies with canned bytes.
     #[derive(Default)]
     pub struct FakeOs {
         pub calls: Mutex<Vec<(How, Cmd)>>,
         pub stdout: Mutex<Vec<u8>>,
         pub fail: Mutex<bool>,
+        /// Budgets passed to `output_bounded`, in call order.
+        pub budgets: Mutex<Vec<OutputBudget>>,
+        /// Handles returned by `spawn`, in call order.
+        pub spawned: Mutex<Vec<Arc<FakeProcess>>>,
     }
 
     impl FakeOs {
@@ -852,8 +1087,23 @@ pub(crate) mod testing {
             self.record(How::Output, cmd)?;
             Ok(self.stdout.lock().unwrap().clone())
         }
-        fn spawn(&self, cmd: &Cmd) -> Result<()> {
-            self.record(How::Spawn, cmd)
+        fn output_bounded(&self, cmd: &Cmd, budget: &OutputBudget) -> Result<BoundedOutput> {
+            self.budgets.lock().unwrap().push(*budget);
+            self.record(How::Output, cmd)?;
+            let mut bytes = self.stdout.lock().unwrap().clone();
+            let truncated = bytes.len() > budget.max_bytes;
+            bytes.truncate(budget.max_bytes);
+            Ok(BoundedOutput {
+                bytes,
+                truncated,
+                timed_out: false,
+            })
+        }
+        fn spawn(&self, cmd: &Cmd) -> Result<Box<dyn Process>> {
+            self.record(How::Spawn, cmd)?;
+            let p = Arc::new(FakeProcess::default());
+            self.spawned.lock().unwrap().push(Arc::clone(&p));
+            Ok(Box::new(p))
         }
     }
 }
@@ -1047,6 +1297,16 @@ mod tests {
     }
 
     #[test]
+    fn open_with_entry_is_shown_but_not_actionable_until_a_ui_consumes_it() {
+        let t = Tree::new("openwith-invalid");
+        let v = actions_for(&file_item(&t.p("docs/report.pdf")));
+        let ow = v.iter().find(|i| i.title == "Open With…").unwrap();
+        assert!(!ow.valid);
+        assert!(v.iter().filter(|i| i.title != "Open With…").all(|i| i.valid));
+        // an invalid item is never executed by the engine, so nothing is recorded or hidden
+    }
+
+    #[test]
     fn open_with_menu_is_a_no_op_marker() {
         let os = FakeOs::default();
         assert_eq!(run_one(&os, UniversalAction::OpenWithMenu("/x".into())), Outcome::Done);
@@ -1099,6 +1359,119 @@ mod tests {
                     .all(|a| !a.to_string_lossy().contains("do shell script"))
             );
         }
+    }
+
+    #[test]
+    fn quick_look_can_be_killed_through_its_handle() {
+        let t = Tree::new("ql-kill");
+        let f = t.p("docs/report.pdf");
+        let os = FakeOs::default();
+        let handle = spawn_quick_look(&os, std::slice::from_ref(&f)).unwrap();
+        assert_eq!(os.calls(), vec![(How::Spawn, Cmd::new("qlmanage").arg("-p").arg(&f))]);
+        assert!(handle.is_running());
+        handle.kill();
+        assert!(!handle.is_running());
+        assert!(os.spawned.lock().unwrap()[0].killed.load(Ordering::SeqCst));
+        // the plain action drops the handle without killing the preview
+        run(&os, &UniversalAction::QuickLook(vec![f.clone()]));
+        assert!(os.spawned.lock().unwrap()[1].is_running());
+        // unsafe paths never start anything
+        assert!(spawn_quick_look(&os, &[PathBuf::from("-x")]).is_err());
+        assert_eq!(os.spawned.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn real_spawn_handle_kills_the_process() {
+        let p = RealOs.spawn(&Cmd::new("sleep").arg("30")).unwrap();
+        assert!(p.is_running());
+        let started = Instant::now();
+        p.kill();
+        assert!(!p.is_running());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        p.kill(); // idempotent
+        // a process that ends by itself is noticed by the reaper
+        let q = RealOs.spawn(&Cmd::new("true")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while q.is_running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!q.is_running());
+    }
+
+    #[test]
+    fn bounded_output_kills_a_process_that_runs_too_long() {
+        let started = Instant::now();
+        let out = RealOs
+            .output_bounded(
+                &Cmd::new("sleep").arg("30"),
+                &OutputBudget {
+                    timeout: Duration::from_millis(300),
+                    max_bytes: 1 << 20,
+                },
+            )
+            .unwrap();
+        assert!(out.timed_out && !out.truncated && out.bytes.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn bounded_output_caps_the_bytes_and_stops_the_producer() {
+        let started = Instant::now();
+        let out = RealOs
+            .output_bounded(
+                &Cmd::new("yes").arg("some-path-of-moderate-length"),
+                &OutputBudget {
+                    timeout: Duration::from_secs(20),
+                    max_bytes: 10_000,
+                },
+            )
+            .unwrap();
+        assert!(out.truncated && !out.timed_out);
+        assert_eq!(out.bytes.len(), 10_000);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn bounded_output_returns_normal_output_untouched_and_reports_failures() {
+        let budget = OutputBudget {
+            timeout: Duration::from_secs(10),
+            max_bytes: 1 << 20,
+        };
+        let out = RealOs.output_bounded(&Cmd::new("echo").arg("hi"), &budget).unwrap();
+        assert_eq!(
+            out,
+            BoundedOutput {
+                bytes: b"hi\n".to_vec(),
+                truncated: false,
+                timed_out: false
+            }
+        );
+        // exactly at the limit is not truncation
+        let tight = OutputBudget { max_bytes: 3, ..budget };
+        let out = RealOs.output_bounded(&Cmd::new("echo").arg("hi"), &tight).unwrap();
+        assert!(!out.truncated && out.bytes == b"hi\n");
+        assert!(RealOs.output_bounded(&Cmd::new("false"), &budget).is_err());
+        assert!(
+            RealOs
+                .output_bounded(&Cmd::new("no-such-program-xyz"), &budget)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn default_output_bounded_truncates_for_fakes() {
+        let os = FakeOs::with_output("0123456789");
+        let b = os
+            .output_bounded(
+                &Cmd::new("x"),
+                &OutputBudget {
+                    timeout: Duration::from_secs(1),
+                    max_bytes: 4,
+                },
+            )
+            .unwrap();
+        assert_eq!((b.bytes.as_slice(), b.truncated), (&b"0123"[..], true));
+        assert_eq!(os.budgets.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -1173,9 +1546,13 @@ mod tests {
         let t = Tree::new("trash");
         let f = t.p("docs/report.pdf");
         let a = UniversalAction::Trash(vec![f.clone()]);
+        // the prompt names the full path, so equal names can be told apart
         assert_eq!(
             a.confirmation().unwrap(),
-            "Move \"report.pdf\" to Trash? Press ↩ again to confirm."
+            format!(
+                "Move \"report.pdf\" to Trash? {}. Press ↩ again to confirm.",
+                f.display()
+            )
         );
         assert!(
             UniversalAction::Trash(vec![f.clone(), t.p("docs/notes.txt")])
@@ -1203,6 +1580,63 @@ mod tests {
         let os = FakeOs::default();
         assert_eq!(run(&os, &UniversalAction::Trash(vec![link.clone()])), Outcome::Done);
         assert_eq!(os.cmds(), vec![Cmd::osascript(SCRIPT_TRASH, [&link])]);
+    }
+
+    #[test]
+    fn trash_script_addresses_the_item_not_an_alias() {
+        // `as alias` resolves a symlink to its target; `item (POSIX file ...)` keeps the link
+        let script = SCRIPT_TRASH.join("\n");
+        assert!(
+            script.contains("delete item (my POSIX file (contents of p))"),
+            "{script}"
+        );
+        assert!(!script.contains("as alias"), "{script}");
+        // the read-only probe uses the very same specifier
+        assert!(SCRIPT_TRASH_PROBE.join("\n").contains(&trash_item!().to_string()));
+    }
+
+    #[test]
+    fn trash_refuses_a_symlink_that_points_at_a_protected_place() {
+        let t = Tree::new("trash-evil-link");
+        let home = dirs::home_dir().unwrap();
+        let os = FakeOs::default();
+        // a harmless-looking name for: the home folder, its parent, a system folder, /, ~/Library
+        let mut victims = vec![
+            home.clone(),
+            home.parent().unwrap().to_path_buf(),
+            PathBuf::from("/System/Library"),
+            PathBuf::from("/Applications"),
+            PathBuf::from("/"),
+        ];
+        victims.push(home.join("Library"));
+        for (i, victim) in victims.iter().enumerate() {
+            let link = t.p(&format!("shortcut{i}"));
+            std::os::unix::fs::symlink(victim, &link).unwrap();
+            match run(&os, &UniversalAction::Trash(vec![link.clone()])) {
+                Outcome::Error(e) => assert!(e.contains("link to"), "{victim:?}: {e}"),
+                other => panic!("{victim:?}: expected a refusal, got {other:?}"),
+            }
+        }
+        assert!(os.calls().is_empty(), "nothing may reach Finder: {:?}", os.calls());
+        // a link to something ordinary is still trashed (as the link itself)
+        let ok = t.p("fine");
+        std::os::unix::fs::symlink(t.p("docs/notes.txt"), &ok).unwrap();
+        assert_eq!(run(&os, &UniversalAction::Trash(vec![ok.clone()])), Outcome::Done);
+        assert_eq!(os.cmds(), vec![Cmd::osascript(SCRIPT_TRASH, [&ok])]);
+        // so is a dangling one
+        let dangling = t.p("dangling");
+        std::os::unix::fs::symlink(t.p("gone"), &dangling).unwrap();
+        assert_eq!(run(&os, &UniversalAction::Trash(vec![dangling])), Outcome::Done);
+    }
+
+    #[test]
+    fn trash_refuses_the_library_folder_itself() {
+        let home = Path::new("/Users/someone");
+        assert!(is_refused(&home.join("Library"), Some(home)));
+        assert!(!is_refused(&home.join("Library/Caches/x"), Some(home)));
+        assert!(!is_refused(&home.join("Documents/a.txt"), Some(home)));
+        assert!(is_refused(home, Some(home)));
+        assert!(is_refused(Path::new("/Users"), Some(home)));
     }
 
     #[test]
@@ -1441,6 +1875,39 @@ mod tests {
         for want in ["notes.txt", "./-odd.txt", "sub/"] {
             assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
         }
+    }
+
+    /// The trash script's specifier, run read-only through the real Finder on
+    /// temp symlinks: it must name the LINK, not what it points at. (A
+    /// `... as alias` coercion would name the target and Finder would delete
+    /// that.) Nothing is deleted. Needs Finder automation permission.
+    #[test]
+    #[ignore = "needs macOS Finder (Automation permission); read-only"]
+    fn manual_trash_specifier_keeps_symlinks_as_links() {
+        let t = Tree::new("trash-contract");
+        let target = t.p("docs/notes.txt");
+        let link = t.p("link-to-notes");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let dir_link = t.p("link-to-sub");
+        std::os::unix::fs::symlink(t.p("docs/sub"), &dir_link).unwrap();
+
+        let out = RealOs
+            .output(&Cmd::osascript(SCRIPT_TRASH_PROBE, [&link, &dir_link, &target]))
+            .unwrap();
+        let names: Vec<_> = String::from_utf8_lossy(&out).lines().map(str::to_string).collect();
+        assert_eq!(names, ["link-to-notes", "link-to-sub", "notes.txt"]);
+        // and the "before" behaviour, for the record: an alias resolves to the target
+        let alias = Cmd::osascript(
+            &[
+                "on run argv",
+                "tell application \"Finder\" to return name of ((POSIX file (item 1 of argv)) as alias)",
+                "end run",
+            ],
+            [&link],
+        );
+        let out = RealOs.output(&alias).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "notes.txt");
+        assert!(target.exists() && std::fs::symlink_metadata(&link).is_ok());
     }
 
     #[test]

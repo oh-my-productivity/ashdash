@@ -1,12 +1,14 @@
 //! File search (Spotlight with a directory-walk fallback), scope/exclusion
 //! rules, kind filters, recency ranking and path navigation.
 
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BinaryHeap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::actions::{Cmd, Os};
+use crate::actions::{Cmd, Os, OutputBudget};
 use crate::fuzzy;
 
 pub fn tilde(path: &Path) -> String {
@@ -45,6 +47,43 @@ pub struct FileSearchScope {
     pub excluded_substrings: Vec<String>,
     /// Include dot-files and dot-folders.
     pub include_hidden: bool,
+    /// Wall-clock and size limits for one search.
+    pub budget: SearchBudget,
+}
+
+/// How much one search may cost. A search runs on the launcher's single
+/// query worker, so every limit here is a promise that typing the next
+/// character is never blocked for longer than `mdfind_timeout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchBudget {
+    /// `mdfind` is killed after this long; hits found so far are kept.
+    pub mdfind_timeout: Duration,
+    /// `mdfind` output beyond this many bytes is discarded (process killed).
+    pub mdfind_max_bytes: usize,
+    /// The directory-walk fallback stops after this long...
+    pub walk_timeout: Duration,
+    /// ...or after visiting this many entries.
+    pub walk_max_entries: usize,
+}
+
+impl Default for SearchBudget {
+    fn default() -> Self {
+        SearchBudget {
+            mdfind_timeout: Duration::from_secs(4),
+            mdfind_max_bytes: 8 << 20,
+            walk_timeout: Duration::from_secs(2),
+            walk_max_entries: 200_000,
+        }
+    }
+}
+
+impl SearchBudget {
+    fn output_budget(&self) -> OutputBudget {
+        OutputBudget {
+            timeout: self.mdfind_timeout,
+            max_bytes: self.mdfind_max_bytes,
+        }
+    }
 }
 
 impl FileSearchScope {
@@ -56,7 +95,13 @@ impl FileSearchScope {
             excluded_names: vec!["node_modules".into(), "target".into()],
             excluded_substrings: vec!["/pkg/mod/".into()],
             include_hidden: false,
+            budget: SearchBudget::default(),
         }
+    }
+
+    pub fn with_budget(mut self, budget: SearchBudget) -> FileSearchScope {
+        self.budget = budget;
+        self
     }
 
     /// Search `home`, skipping `~/Library` and the noise lists.
@@ -251,14 +296,22 @@ pub struct Hit {
     pub last_used: Option<SystemTime>,
 }
 
-pub trait FileBackend {
-    /// Candidate files for `q` inside `scope.roots`. Backends apply the
-    /// `kinds` filter themselves; scope exclusions and ranking come after.
-    fn find(&self, scope: &FileSearchScope, q: &FileQuery) -> Result<Vec<Hit>>;
+/// Whether a backend looked at everything it was asked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Completeness {
+    #[default]
+    Complete,
+    /// A time, size or entry limit stopped the search early.
+    Partial,
 }
 
-/// Upper bound on hits considered per query.
-const MAX_HITS: usize = 5000;
+pub trait FileBackend {
+    /// Feed every candidate file for `q` inside `scope.roots` to `sink`, as it
+    /// is read. Backends apply the `kinds` filter themselves; scope
+    /// exclusions, ranking and the result cap are the sink's business, so a
+    /// huge result set never has to be held in memory.
+    fn find(&self, scope: &FileSearchScope, q: &FileQuery, sink: &mut dyn FnMut(Hit)) -> Result<Completeness>;
+}
 
 fn md_term(t: &str) -> String {
     t.chars()
@@ -298,22 +351,30 @@ pub fn spotlight_query(q: &FileQuery) -> Option<String> {
     }
 }
 
-/// Spotlight through `mdfind`, run via the injectable [`Os`].
+/// Spotlight through `mdfind`, run via the injectable [`Os`] under the
+/// scope's [`SearchBudget`] (wall-clock timeout, output byte cap).
 pub struct SpotlightBackend<'a> {
     pub os: &'a dyn Os,
 }
 
 impl FileBackend for SpotlightBackend<'_> {
-    fn find(&self, scope: &FileSearchScope, q: &FileQuery) -> Result<Vec<Hit>> {
+    fn find(&self, scope: &FileSearchScope, q: &FileQuery, sink: &mut dyn FnMut(Hit)) -> Result<Completeness> {
         let Some(query) = spotlight_query(q) else {
-            return Ok(Vec::new());
+            return Ok(Completeness::Complete);
         };
         let mut cmd = Cmd::new("mdfind").arg("-0").arg("-attr").arg("kMDItemLastUsedDate");
         for r in &scope.roots {
             cmd = cmd.arg("-onlyin").arg(r);
         }
-        let out = self.os.output(&cmd.arg(query))?;
-        Ok(parse_mdfind(&out))
+        let out = self.os.output_bounded(&cmd.arg(query), &scope.budget.output_budget())?;
+        let partial = out.truncated || out.timed_out;
+        // A killed process may have been cut in the middle of a record.
+        for_each_mdfind(&out.bytes, partial, sink);
+        Ok(if partial {
+            Completeness::Partial
+        } else {
+            Completeness::Complete
+        })
     }
 }
 
@@ -321,31 +382,42 @@ const ATTR_MARK: &str = " kMDItemLastUsedDate = ";
 
 /// Parse `mdfind -0 -attr kMDItemLastUsedDate` output (plain lines also work).
 pub fn parse_mdfind(out: &[u8]) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for_each_mdfind(out, false, &mut |h| hits.push(h));
+    hits
+}
+
+/// Stream the records of `mdfind` output to `sink`. With `drop_last` the final
+/// record is skipped (it was cut off when the process was killed).
+pub fn for_each_mdfind(out: &[u8], drop_last: bool, sink: &mut dyn FnMut(Hit)) {
     let sep = if out.contains(&0) { 0 } else { b'\n' };
-    out.split(|b| *b == sep)
-        .filter(|r| !r.is_empty())
-        .take(MAX_HITS)
-        .map(|r| {
-            let rec = String::from_utf8_lossy(r);
-            match rec.rfind(ATTR_MARK) {
-                Some(i) => {
-                    // mdfind pads the attribute column with spaces
-                    let mut path = &rec[..i];
-                    for _ in 0..2 {
-                        path = path.strip_suffix(' ').unwrap_or(path);
-                    }
-                    Hit {
-                        path: PathBuf::from(path),
-                        last_used: parse_md_date(rec[i + ATTR_MARK.len()..].trim()),
-                    }
+    let mut records: Vec<&[u8]> = out.split(|b| *b == sep).collect();
+    // `split` yields a trailing empty slice after a final separator; a
+    // non-empty last slice is an unterminated (possibly cut) record.
+    let last_unterminated = records.last().is_some_and(|r| !r.is_empty());
+    if drop_last && last_unterminated {
+        records.pop();
+    }
+    for r in records.into_iter().filter(|r| !r.is_empty()) {
+        let rec = String::from_utf8_lossy(r);
+        sink(match rec.rfind(ATTR_MARK) {
+            Some(i) => {
+                // mdfind pads the attribute column with spaces
+                let mut path = &rec[..i];
+                for _ in 0..2 {
+                    path = path.strip_suffix(' ').unwrap_or(path);
                 }
-                None => Hit {
-                    path: PathBuf::from(rec.trim_end_matches('\n').to_string()),
-                    last_used: None,
-                },
+                Hit {
+                    path: PathBuf::from(path),
+                    last_used: parse_md_date(rec[i + ATTR_MARK.len()..].trim()),
+                }
             }
-        })
-        .collect()
+            None => Hit {
+                path: PathBuf::from(rec.trim_end_matches('\n').to_string()),
+                last_used: None,
+            },
+        });
+    }
 }
 
 /// `2025-10-24 20:06:16 +0000`; `(null)` and anything else give `None`.
@@ -378,35 +450,48 @@ pub fn parse_md_date(s: &str) -> Option<SystemTime> {
 }
 
 /// Plain directory walk: the fallback when Spotlight is unavailable, and the
-/// backend the unit tests run against temp trees.
+/// backend the unit tests run against temp trees. Bounded by entries and time.
 #[derive(Default)]
 pub struct WalkBackend {
     /// Stop after visiting this many entries (0 = default of 200 000).
     pub max_entries: usize,
+    /// Stop after this long (`None` = no time limit).
+    pub max_duration: Option<Duration>,
+}
+
+impl WalkBackend {
+    pub fn from_budget(b: &SearchBudget) -> WalkBackend {
+        WalkBackend {
+            max_entries: b.walk_max_entries,
+            max_duration: Some(b.walk_timeout),
+        }
+    }
 }
 
 impl FileBackend for WalkBackend {
-    fn find(&self, scope: &FileSearchScope, q: &FileQuery) -> Result<Vec<Hit>> {
+    fn find(&self, scope: &FileSearchScope, q: &FileQuery, sink: &mut dyn FnMut(Hit)) -> Result<Completeness> {
         if q.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Completeness::Complete);
         }
         let cap = if self.max_entries == 0 {
             200_000
         } else {
             self.max_entries
         };
+        let deadline = self.max_duration.map(|d| Instant::now() + d);
         let words: Vec<String> = q.terms.split_whitespace().map(str::to_lowercase).collect();
-        let mut hits = Vec::new();
         let mut seen = 0usize;
-        'roots: for root in &scope.roots {
+        for root in &scope.roots {
             let walk = walkdir::WalkDir::new(root)
                 .max_depth(12)
                 .into_iter()
                 .filter_entry(|e| e.depth() == 0 || scope.allows(e.path()));
             for entry in walk.filter_map(|e| e.ok()) {
                 seen += 1;
-                if seen > cap || hits.len() >= MAX_HITS {
-                    break 'roots;
+                // Content mode can read a megabyte per entry, so look at the clock often.
+                let tick = if q.mode == SearchMode::Content { 0x0f } else { 0xff };
+                if seen > cap || (seen & tick == 0 && deadline.is_some_and(|d| Instant::now() >= d)) {
+                    return Ok(Completeness::Partial);
                 }
                 if entry.depth() == 0 {
                     continue;
@@ -424,14 +509,14 @@ impl FileBackend for WalkBackend {
                 };
                 if matched {
                     let last_used = entry.metadata().ok().and_then(|m| m.modified().ok());
-                    hits.push(Hit {
+                    sink(Hit {
                         path: path.to_path_buf(),
                         last_used,
                     });
                 }
             }
         }
-        Ok(hits)
+        Ok(Completeness::Complete)
     }
 }
 
@@ -461,34 +546,142 @@ pub fn recency_boost(last_used: Option<SystemTime>, now: SystemTime) -> f64 {
     RECENT_MAX_BOOST * 0.5f64.powf(age_days / RECENT_HALF_LIFE_DAYS)
 }
 
-/// Scope-filter, deduplicate and rank raw hits. Name matches are scored with
-/// the launcher's fuzzy matcher (shallower paths win ties) plus a recency
-/// boost; content matches are ordered by recency and depth.
-pub fn rank(hits: Vec<Hit>, scope: &FileSearchScope, q: &FileQuery, limit: usize, now: SystemTime) -> Vec<PathBuf> {
-    let mut seen = std::collections::HashSet::new();
-    let mut scored: Vec<(f64, PathBuf)> = hits
-        .into_iter()
-        .filter(|h| scope.allows(&h.path) && seen.insert(h.path.clone()))
-        .filter_map(|h| {
-            let depth = h.path.components().count() as f64 * 0.1;
-            let base = match q.mode {
-                SearchMode::Name if !q.terms.is_empty() => {
-                    fuzzy::score(&q.terms, &h.path.file_name()?.to_string_lossy())?
+/// A ranked candidate; "greater" means "shown earlier".
+struct Scored {
+    score: f64,
+    path: PathBuf,
+}
+
+impl PartialEq for Scored {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == Ordering::Equal
+    }
+}
+impl Eq for Scored {}
+impl PartialOrd for Scored {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for Scored {
+    fn cmp(&self, o: &Self) -> Ordering {
+        // higher score first; equal scores: the lexicographically smaller path first
+        self.score.total_cmp(&o.score).then_with(|| o.path.cmp(&self.path))
+    }
+}
+
+/// Everything in `words` is a (case-insensitive) substring of `name`.
+fn all_words_in(words: &[String], name: &str) -> bool {
+    let name = name.to_lowercase();
+    words.iter().all(|w| name.contains(w.as_str()))
+}
+
+/// Below every `fuzzy` score (the weakest is a late substring match, > 0).
+const WORDS_IN_NAME_SCORE: f64 = 300.0;
+
+/// Scope-filters, deduplicates and ranks hits as they stream in, keeping only
+/// the best `limit` (a bounded heap): memory stays small however large the
+/// result set is, and a hit is judged on scope and score, not on where
+/// Spotlight happened to list it.
+///
+/// Name matches are scored with the launcher's fuzzy matcher; when that
+/// rejects the name (Spotlight matches each word anywhere, in any order, so
+/// `report annual` finds `Annual Report.pdf`) a name containing every word
+/// still ranks, below any fuzzy match. Shallower paths win ties and a recency
+/// boost is added; content matches are ordered by recency and depth.
+pub struct Ranker<'a> {
+    scope: &'a FileSearchScope,
+    mode: SearchMode,
+    fuzzy: Option<fuzzy::Query>,
+    words: Vec<String>,
+    limit: usize,
+    now: SystemTime,
+    seen: HashSet<PathBuf>,
+    heap: BinaryHeap<Reverse<Scored>>,
+}
+
+impl<'a> Ranker<'a> {
+    pub fn new(scope: &'a FileSearchScope, q: &FileQuery, limit: usize, now: SystemTime) -> Ranker<'a> {
+        let by_name = q.mode == SearchMode::Name && !q.terms.is_empty();
+        Ranker {
+            scope,
+            mode: q.mode,
+            fuzzy: by_name.then(|| fuzzy::Query::new(&q.terms)),
+            words: q.terms.split_whitespace().map(str::to_lowercase).collect(),
+            limit,
+            now,
+            seen: HashSet::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    pub fn offer(&mut self, h: Hit) {
+        if self.limit == 0 || !self.scope.allows(&h.path) || !self.seen.insert(h.path.clone()) {
+            return;
+        }
+        let depth = h.path.components().count() as f64 * 0.1;
+        let base = match (&self.fuzzy, self.mode) {
+            (Some(fq), SearchMode::Name) => {
+                let Some(name) = h.path.file_name().map(|n| n.to_string_lossy()) else {
+                    return;
+                };
+                match fq.score(&fuzzy::Candidate::new(&name)) {
+                    Some(s) => s,
+                    None if all_words_in(&self.words, &name) => WORDS_IN_NAME_SCORE,
+                    None => return,
                 }
-                _ => 0.0,
-            };
-            Some((base - depth + recency_boost(h.last_used, now), h.path))
-        })
-        .collect();
-    scored.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(&b.1))
-    });
-    scored.into_iter().take(limit).map(|(_, p)| p).collect()
+            }
+            _ => 0.0,
+        };
+        let entry = Scored {
+            score: base - depth + recency_boost(h.last_used, self.now),
+            path: h.path,
+        };
+        if self.heap.len() < self.limit {
+            self.heap.push(Reverse(entry));
+        } else if self.heap.peek().is_some_and(|worst| entry > worst.0) {
+            self.heap.pop();
+            self.heap.push(Reverse(entry));
+        }
+    }
+
+    /// The best paths, best first.
+    pub fn finish(self) -> Vec<PathBuf> {
+        // ascending order of `Reverse<Scored>` is descending order of `Scored`
+        self.heap.into_sorted_vec().into_iter().map(|r| r.0.path).collect()
+    }
+}
+
+/// Scope-filter, deduplicate and rank raw hits (see [`Ranker`]).
+pub fn rank(hits: Vec<Hit>, scope: &FileSearchScope, q: &FileQuery, limit: usize, now: SystemTime) -> Vec<PathBuf> {
+    let mut r = Ranker::new(scope, q, limit, now);
+    hits.into_iter().for_each(|h| r.offer(h));
+    r.finish()
+}
+
+/// The result of one search, and whether it saw everything.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SearchOutcome {
+    pub paths: Vec<PathBuf>,
+    pub completeness: Completeness,
 }
 
 /// Search with an explicit backend (used by tests and by [`search_files`]).
+pub fn search_with_outcome(
+    backend: &dyn FileBackend,
+    scope: &FileSearchScope,
+    q: &FileQuery,
+    limit: usize,
+    now: SystemTime,
+) -> Result<SearchOutcome> {
+    let mut ranker = Ranker::new(scope, q, limit, now);
+    let completeness = backend.find(scope, q, &mut |h| ranker.offer(h))?;
+    Ok(SearchOutcome {
+        paths: ranker.finish(),
+        completeness,
+    })
+}
+
 pub fn search_with(
     backend: &dyn FileBackend,
     scope: &FileSearchScope,
@@ -496,18 +689,23 @@ pub fn search_with(
     limit: usize,
     now: SystemTime,
 ) -> Result<Vec<PathBuf>> {
-    Ok(rank(backend.find(scope, q)?, scope, q, limit, now))
+    search_with_outcome(backend, scope, q, limit, now).map(|o| o.paths)
 }
 
-/// Spotlight first; if `mdfind` itself fails, a bounded directory walk.
-pub fn search_files(os: &dyn Os, scope: &FileSearchScope, q: &FileQuery, limit: usize) -> Vec<PathBuf> {
+/// Spotlight first; only if `mdfind` itself fails to run (not when it merely
+/// times out or finds nothing) a directory walk bounded by the scope's budget.
+pub fn search_files_outcome(os: &dyn Os, scope: &FileSearchScope, q: &FileQuery, limit: usize) -> SearchOutcome {
     if q.is_empty() {
-        return Vec::new();
+        return SearchOutcome::default();
     }
     let now = SystemTime::now();
-    search_with(&SpotlightBackend { os }, scope, q, limit, now)
-        .or_else(|_| search_with(&WalkBackend::default(), scope, q, limit, now))
+    search_with_outcome(&SpotlightBackend { os }, scope, q, limit, now)
+        .or_else(|_| search_with_outcome(&WalkBackend::from_budget(&scope.budget), scope, q, limit, now))
         .unwrap_or_default()
+}
+
+pub fn search_files(os: &dyn Os, scope: &FileSearchScope, q: &FileQuery, limit: usize) -> Vec<PathBuf> {
+    search_files_outcome(os, scope, q, limit).paths
 }
 
 /// List a directory for path-navigation queries such as `~/Doc` or `/usr/l`.

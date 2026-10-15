@@ -11,11 +11,18 @@
 //! Folder structure is rebuilt from `moz_bookmarks.parent`; the tag tree
 //! (`tags________`) is skipped because tagged URLs would otherwise appear
 //! twice.
+//!
+//! Firefox appends to the `-wal` file on every page visit, so the raw
+//! fingerprint changes constantly while it is in use. To keep that from
+//! turning into a full database copy per recheck, [`FirefoxSource::fingerprint`]
+//! reports the fingerprint of the last load until [`MIN_RELOAD_INTERVAL`] has
+//! passed, so the cache copies the database at most once a minute.
 
 use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -28,10 +35,21 @@ const QUERY: &str = "SELECT b.id AS id, b.parent AS parent, b.type AS type, b.gu
     FROM moz_bookmarks b LEFT JOIN moz_places p ON p.id = b.fk WHERE b.type IN (1, 2)";
 const TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_DEPTH: usize = 64;
+/// Minimum time between two copies of the Firefox database.
+pub const MIN_RELOAD_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct Throttle {
+    last_load: Option<Instant>,
+    /// What the files looked like when the last load started.
+    fingerprint: Option<Fingerprint>,
+}
 
 pub struct FirefoxSource {
     profiles_root: PathBuf,
     sqlite3: PathBuf,
+    min_interval: Duration,
+    throttle: Mutex<Throttle>,
 }
 
 impl FirefoxSource {
@@ -39,7 +57,24 @@ impl FirefoxSource {
         FirefoxSource {
             profiles_root,
             sqlite3: PathBuf::from("/usr/bin/sqlite3"),
+            min_interval: MIN_RELOAD_INTERVAL,
+            throttle: Mutex::new(Throttle::default()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_min_interval(mut self, d: Duration) -> Self {
+        self.min_interval = d;
+        self
+    }
+
+    fn real_fingerprint(&self) -> Fingerprint {
+        let mut fp = Vec::new();
+        for db in self.databases() {
+            fp.push(stamp(&db));
+            fp.push(stamp(&wal_of(&db)));
+        }
+        fp
     }
 
     #[cfg(test)]
@@ -72,15 +107,23 @@ impl BookmarkSource for FirefoxSource {
     }
 
     fn fingerprint(&self) -> Fingerprint {
-        let mut fp = Vec::new();
-        for db in self.databases() {
-            fp.push(stamp(&db));
-            fp.push(stamp(&wal_of(&db)));
+        let real = self.real_fingerprint();
+        let t = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
+        match (t.last_load, &t.fingerprint) {
+            // Too soon after the last copy: pretend nothing changed.
+            (Some(at), Some(frozen)) if at.elapsed() < self.min_interval => frozen.clone(),
+            _ => real,
         }
-        fp
     }
 
     fn load(&self) -> Result<Vec<Bookmark>, SourceError> {
+        {
+            // Recorded before copying, so a change made while we copy shows up next time.
+            let fp = self.real_fingerprint();
+            let mut t = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
+            t.last_load = Some(Instant::now());
+            t.fingerprint = Some(fp);
+        }
         let mut out = Vec::new();
         let mut first_err = None;
         let dbs = self.databases();
@@ -351,6 +394,38 @@ INSERT INTO moz_bookmarks VALUES
             // Corrupt database.
             assert!(FirefoxSource::new(root.clone()).load().is_err());
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wal_churn_does_not_change_the_fingerprint_within_the_throttle_window() {
+        let root = tmp("throttle");
+        let prof = root.join("p.default");
+        std::fs::create_dir_all(&prof).unwrap();
+        std::fs::write(prof.join("places.sqlite"), b"db").unwrap();
+        let wal = prof.join("places.sqlite-wal");
+        let make = |interval| {
+            FirefoxSource::new(root.clone())
+                .with_sqlite3(root.join("no-such-sqlite3")) // load() fails, which still counts as a load
+                .with_min_interval(interval)
+        };
+
+        let throttled = make(Duration::from_secs(3600));
+        let before_any_load = throttled.fingerprint();
+        let _ = throttled.load();
+        std::fs::write(&wal, b"firefox visited a page").unwrap();
+        assert_eq!(
+            throttled.fingerprint(),
+            before_any_load,
+            "frozen to the state at the last load"
+        );
+
+        // the same churn is visible once the throttle is off
+        let open = make(Duration::ZERO);
+        let _ = open.load();
+        let seen = open.fingerprint();
+        std::fs::write(&wal, b"firefox visited another page, so the file is longer").unwrap();
+        assert_ne!(open.fingerprint(), seen);
         let _ = std::fs::remove_dir_all(root);
     }
 

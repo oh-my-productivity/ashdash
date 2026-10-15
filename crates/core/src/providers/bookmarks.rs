@@ -7,11 +7,11 @@
 //! general queries simply get no bookmark results and `bm` shows a
 //! "Loading" row.
 
+use std::path::Path;
+
 use super::{Provider, ProviderOutput, QueryCtx, sort_items, strip_keyword};
-#[cfg(not(test))]
-use crate::bookmarks::build_sources;
 use crate::bookmarks::url::display_host;
-use crate::bookmarks::{Bookmark, BookmarkCache, BookmarkSettings, Issue, Snapshot, SourceErrorKind};
+use crate::bookmarks::{Bookmark, BookmarkCache, BookmarkSettings, Issue, Snapshot, SourceErrorKind, build_sources};
 use crate::brand;
 use crate::fuzzy;
 use crate::item::{Action, Icon, Item};
@@ -35,17 +35,15 @@ pub struct BookmarksProvider {
 }
 
 impl BookmarksProvider {
-    /// Default settings, the current user's browsers, loading starts now in
-    /// the background. Under `cfg(test)` no sources are configured so unit
-    /// tests of unrelated features never read real browser data.
-    pub fn new() -> Self {
-        let settings = BookmarkSettings::default();
-        #[cfg(not(test))]
-        let sources = dirs::home_dir()
-            .map(|home| build_sources(&home, &settings.enabled_sources))
-            .unwrap_or_default();
-        #[cfg(test)]
-        let sources = Vec::new();
+    /// Default settings and the browsers found under `home`; loading starts
+    /// now, in the background. `home` is injected (no ambient lookup), so a
+    /// test points it at a temp folder and never reads real browser data.
+    pub fn new(home: &Path) -> Self {
+        Self::with_settings(home, BookmarkSettings::default())
+    }
+
+    pub fn with_settings(home: &Path, settings: BookmarkSettings) -> Self {
+        let sources = build_sources(home, &settings.enabled_sources);
         let p = Self::with_cache(settings, BookmarkCache::new(sources));
         p.cache.refresh_in_background();
         p
@@ -53,12 +51,6 @@ impl BookmarksProvider {
 
     pub fn with_cache(settings: BookmarkSettings, cache: BookmarkCache) -> Self {
         BookmarksProvider { settings, cache }
-    }
-}
-
-impl Default for BookmarksProvider {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -77,7 +69,7 @@ impl Provider for BookmarksProvider {
         if !self.settings.include_in_general_search {
             return ProviderOutput::none();
         }
-        ProviderOutput::ranked(general_items(&snap.bookmarks, ctx.query))
+        ProviderOutput::ranked(general_items(&snap, ctx.query))
     }
 }
 
@@ -101,14 +93,17 @@ fn item_for(b: &Bookmark, score: f64) -> Item {
     it
 }
 
-fn general_items(bookmarks: &[Bookmark], query: &str) -> Vec<Item> {
+fn general_items(snap: &Snapshot, query: &str) -> Vec<Item> {
     if query.trim().chars().count() < 2 {
         return Vec::new();
     }
-    let mut items: Vec<Item> = bookmarks
-        .iter()
-        .filter_map(|b| {
-            let s = fuzzy::score(query, &b.title)?;
+    // Normalised once per keystroke; every bookmark title was normalised when
+    // the snapshot was built, so scoring allocates nothing per bookmark.
+    let q = fuzzy::Query::new(query);
+    let mut items: Vec<Item> = snap
+        .scored()
+        .filter_map(|(b, title, _)| {
+            let s = q.score(title)?;
             (s >= GENERAL_MIN_SCORE).then(|| item_for(b, s - GENERAL_PENALTY))
         })
         .collect();
@@ -121,13 +116,12 @@ fn keyword_items(snap: &Snapshot, rest: &str, max: usize) -> Vec<Item> {
     let notice = access_notice(&snap.issues);
     let room = max.saturating_sub(usize::from(notice.is_some())).max(1);
 
+    let q = fuzzy::Query::new(rest);
     let mut items: Vec<Item> = snap
-        .bookmarks
-        .iter()
-        .filter_map(|b| {
-            let by_title = fuzzy::score(rest, &b.title);
-            let by_host = || fuzzy::score(rest, &display_host(&b.url)).map(|s| s - HOST_PENALTY);
-            by_title.or_else(by_host).map(|s| item_for(b, s))
+        .scored()
+        .filter_map(|(b, title, host)| {
+            let by_host = || q.score(host).map(|s| s - HOST_PENALTY);
+            q.score(title).or_else(by_host).map(|s| item_for(b, s))
         })
         .collect();
     sort_items(&mut items);
@@ -262,7 +256,7 @@ mod tests {
             Some(Action::Copy("https://www.rust-lang.org/".into()))
         );
         assert_eq!(first.id, "bm:https://www.rust-lang.org/");
-        assert!(BookmarksProvider::new().learns());
+        assert!(p.learns());
     }
 
     #[test]

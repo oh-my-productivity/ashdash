@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use super::{Provider, ProviderOutput, QueryCtx, strip_keyword};
 use crate::actions::{Os, RealOs};
-use crate::files::{self, FileQuery, FileSearchScope, SearchMode};
+use crate::files::{self, Completeness, FileQuery, FileSearchScope, SearchMode};
 use crate::item::{Action, Icon, Item};
 
 pub struct FilesProvider {
@@ -97,15 +97,19 @@ fn file_items(os: &dyn Os, scope: &FileSearchScope, kw: &str, mode: SearchMode, 
                 .valid(false),
         ];
     }
-    let found = files::search_files(os, scope, &q, max);
-    if found.is_empty() {
-        return vec![
-            Item::new("nofiles", "No files found")
-                .subtitle(rest.to_string())
-                .valid(false),
-        ];
+    let found = files::search_files_outcome(os, scope, &q, max);
+    if found.paths.is_empty() {
+        let (id, title, sub) = match found.completeness {
+            Completeness::Complete => ("nofiles", "No files found", rest.to_string()),
+            Completeness::Partial => (
+                "nofiles-partial",
+                "No files found yet",
+                format!("The search hit its time or size limit; try a more specific query ({rest})"),
+            ),
+        };
+        return vec![Item::new(id, title).subtitle(sub).valid(false)];
     }
-    found.iter().map(|p| path_item(p)).collect()
+    found.paths.iter().map(|p| path_item(p)).collect()
 }
 
 /// Typing `/…` or `~…` browses the file system; exclusive only if it matched.

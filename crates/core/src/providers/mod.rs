@@ -16,8 +16,10 @@
 //! ranked list has been sorted and truncated, so it always closes the list.
 //! Trailing providers are skipped when an exclusive provider short-circuits.
 
-use std::sync::{Mutex, RwLock};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 
+use crate::actions::{Os, RealOs};
 use crate::apps::AppEntry;
 use crate::clipboard::{ClipboardHistory, Snippet};
 use crate::config::{Config, Paths};
@@ -100,16 +102,59 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// All providers in precedence order.
+/// What the providers need from the machine they run on. Production uses
+/// [`RegistryDeps::ambient`]; tests inject a fake [`Os`] and a temp home so
+/// nothing touches the real machine.
+#[derive(Clone)]
+pub struct RegistryDeps {
+    /// Runs `mdfind`, Finder scripts, `open` ... for providers that need them.
+    pub os: Arc<dyn Os>,
+    /// The home folder: the file-search root and where browser bookmarks live.
+    pub home: PathBuf,
+}
+
+impl RegistryDeps {
+    /// The real OS and the current user's home.
+    pub fn ambient() -> RegistryDeps {
+        RegistryDeps {
+            os: Arc::new(RealOs),
+            home: ambient_home(),
+        }
+    }
+}
+
+/// The current user's home folder. Unit tests of this crate get a folder that
+/// does not exist, so they can never read real browser data or search the real home.
+pub fn ambient_home() -> PathBuf {
+    #[cfg(test)]
+    {
+        PathBuf::from("/nonexistent-ashdash-test-home")
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().unwrap_or_default()
+    }
+}
+
+/// All providers in precedence order, for the real machine.
 pub fn registry() -> Vec<Box<dyn Provider>> {
+    registry_with(&RegistryDeps::ambient())
+}
+
+/// All providers in precedence order, wired to `deps`.
+pub fn registry_with(deps: &RegistryDeps) -> Vec<Box<dyn Provider>> {
+    use crate::files::FileSearchScope;
     vec![
         Box::new(workflow::WorkflowProvider),
         Box::new(shell::ShellProvider),
-        Box::new(files::FilesProvider::default()),
+        Box::new(files::FilesProvider::with_os(
+            FileSearchScope::home_default(&deps.home),
+            Arc::clone(&deps.os),
+        )),
         Box::new(actions::ActionsProvider),
         Box::new(clipboard::ClipboardProvider),
         Box::new(snippets::SnippetsProvider),
-        Box::new(bookmarks::BookmarksProvider::new()),
+        Box::new(bookmarks::BookmarksProvider::new(&deps.home)),
         Box::new(websearch::WebKeywordProvider),
         Box::new(files::PathBrowseProvider),
         Box::new(calc::CalcProvider),

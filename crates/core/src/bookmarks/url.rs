@@ -1,11 +1,13 @@
 //! URL hygiene for bookmarks: which schemes we are willing to open, display
 //! host, and the key used to de-duplicate.
 
-const ALLOWED: &[&str] = &["http", "https", "file", "ftp"];
+const ALLOWED: &[&str] = &["http", "https", "ftp"];
 
 /// Trim `raw` and return it only if it is safe to hand to `open`: an
-/// http/https/file/ftp URL without control characters. `javascript:`
-/// bookmarklets, `data:`, `place:`, `chrome://` and friends yield `None`.
+/// http/https/ftp URL without control characters. `javascript:` bookmarklets,
+/// `data:`, `place:`, `chrome://` and friends yield `None`, and so does
+/// `file:`: a browser would only display such a bookmark, but `open` hands it
+/// to LaunchServices, which launches an application or runs a `.command` file.
 pub fn clean_url(raw: &str) -> Option<String> {
     let url = raw.trim();
     if url.is_empty() || url.chars().any(|c| c.is_control()) {
@@ -16,13 +18,8 @@ pub fn clean_url(raw: &str) -> Option<String> {
     if !ALLOWED.contains(&scheme.as_str()) {
         return None;
     }
-    match scheme.as_str() {
-        "file" => (rest.starts_with("//") || rest.starts_with('/')).then(|| url.to_string()),
-        _ => {
-            let auth = authority(rest.strip_prefix("//")?);
-            (!host_of(auth).is_empty()).then(|| url.to_string())
-        }
-    }
+    let auth = authority(rest.strip_prefix("//")?);
+    (!host_of(auth).is_empty()).then(|| url.to_string())
 }
 
 /// `host[:port]/...` -> the authority part (up to `/`, `?` or `#`).
@@ -86,12 +83,14 @@ mod tests {
             "http://a.com",
             "HTTPS://a.com/x?y=1#z",
             "ftp://files.example.org/pub",
-            "file:///Users/me/doc.html",
             "  https://a.com  ",
         ] {
             assert!(clean_url(ok).is_some(), "{ok}");
         }
         for bad in [
+            "file:///Users/me/doc.html",
+            "FILE:///Applications/Calculator.app",
+            "file:/tmp/x.command",
             "javascript:alert(1)",
             "JavaScript:void(0)",
             "data:text/html,hi",

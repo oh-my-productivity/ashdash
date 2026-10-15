@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Result, bail};
 
-use crate::actions;
+use crate::actions::{self, Os};
 use crate::apps::AppEntry;
 use crate::clipboard::{self, ClipboardHistory, Snippet};
 use crate::config::{Config, Paths};
 use crate::index::AppIndex;
 use crate::item::{Action, Item, Mods};
-use crate::providers::{self, EngineState, Placement, Provider, QueryCtx, sort_items};
+use crate::providers::{self, EngineState, Placement, Provider, QueryCtx, RegistryDeps, sort_items};
 use crate::usage::Usage;
 use crate::workflow::{self, Effect, Workflow, WorkflowAction};
 
@@ -39,10 +39,46 @@ pub struct Engine {
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
     providers: Vec<Box<dyn Provider>>,
+    /// Everything that reaches the machine from `perform` (Universal Actions).
+    os: Arc<dyn Os>,
 }
 
 impl Engine {
+    /// An engine for the real machine: real OS, the current user's home.
     pub fn new(paths: Paths, config: Config) -> Engine {
+        Engine::with_deps(paths, config, RegistryDeps::ambient())
+    }
+
+    /// Like [`Engine::new`] but every OS-level operation (Spotlight, Finder
+    /// scripts, `open`, ...) goes through `os`. The home folder is still the
+    /// current user's, so bookmarks and file search read the real one; use
+    /// [`Engine::with_env`] to replace that too.
+    pub fn with_os(paths: Paths, config: Config, os: Box<dyn Os>) -> Engine {
+        Engine::with_deps(
+            paths,
+            config,
+            RegistryDeps {
+                os: Arc::from(os),
+                ..RegistryDeps::ambient()
+            },
+        )
+    }
+
+    /// A fully injected engine: `os` runs every OS operation and `home` is the
+    /// folder bookmarks are read from and files are searched in, so a test
+    /// engine never touches the real machine.
+    pub fn with_env(paths: Paths, config: Config, os: Box<dyn Os>, home: PathBuf) -> Engine {
+        Engine::with_deps(
+            paths,
+            config,
+            RegistryDeps {
+                os: Arc::from(os),
+                home,
+            },
+        )
+    }
+
+    fn with_deps(paths: Paths, config: Config, deps: RegistryDeps) -> Engine {
         let usage = Usage::load(paths.usage_file());
         let clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard_history_size);
         // Served from the cache at once (or scanned synchronously on the very first run);
@@ -58,7 +94,8 @@ impl Engine {
             snippets: RwLock::new(Vec::new()),
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
-            providers: providers::registry(),
+            providers: providers::registry_with(&deps),
+            os: deps.os,
         };
         e.reload_content();
         e
@@ -161,28 +198,40 @@ impl Engine {
 
     // ------------------------------------------------------------ execution
 
+    /// The action `item` runs for `mods` (the Cmd variant when Cmd is held).
+    fn effective_action<'a>(item: &'a Item, mods: Mods) -> &'a Action {
+        match (&item.cmd_action, mods.cmd) {
+            (Some(a), true) => a,
+            _ => &item.action,
+        }
+    }
+
+    /// The question to ask before running `item` with `mods`, if its action is
+    /// destructive. This is the only place that decides: [`Engine::execute`]
+    /// asks it, and a UI that wants to prompt first (instead of calling
+    /// `execute(.., false)` and handling `Outcome::Confirm`) must use it too,
+    /// then call `execute(.., true)` once the user agrees.
+    pub fn confirmation_for(&self, item: &Item, mods: Mods) -> Option<String> {
+        if !item.valid {
+            return None;
+        }
+        Engine::effective_action(item, mods).confirmation()
+    }
+
     pub fn execute(&self, item: &Item, query: &str, mods: Mods, confirmed: bool) -> Outcome {
         if !item.valid {
             return Outcome::Done;
         }
-        let action = match (&item.cmd_action, mods.cmd) {
-            (Some(a), true) => a.clone(),
-            _ => item.action.clone(),
-        };
-        if let Action::System(cmd) = &action
-            && cmd.needs_confirmation()
-            && !confirmed
-        {
-            return Outcome::Confirm(format!("{}? Press ↩ again to confirm.", cmd.title()));
-        }
-        if let Action::Universal(u) = &action
-            && let Some(prompt) = u.confirmation()
-            && !confirmed
-        {
+        if !confirmed && let Some(prompt) = self.confirmation_for(item, mods) {
             return Outcome::Confirm(prompt);
         }
+        let action = Engine::effective_action(item, mods).clone();
         let outcome = self.perform(&action, mods);
-        if outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_)) {
+        // Universal Actions carry the text or path they act on in their id
+        // (`act:copy:<text>`); recording that would write it, unbounded and in
+        // plaintext, to usage.json. They are never ranked, so nothing is lost.
+        let learnable = !matches!(action, Action::Universal(_)) && !matches!(item.action, Action::Universal(_));
+        if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_))) {
             self.usage.lock().unwrap().record(query, &item.id);
         }
         outcome
@@ -199,7 +248,7 @@ impl Engine {
                 Action::System(c) => c.run()?,
                 Action::Shell(cmd) => run_in_terminal(cmd)?,
                 Action::Workflow(a) => return Ok(self.run_workflow(a, mods)),
-                Action::Universal(u) => match actions::run(&actions::RealOs, u) {
+                Action::Universal(u) => match actions::run(self.os.as_ref(), u) {
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
                     Outcome::Error(e) => bail!("{e}"),
                     Outcome::Done | Outcome::Confirm(_) => {}
