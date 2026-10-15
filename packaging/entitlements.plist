@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the launcher.
+
+  Deliberately tiny. The app is plain native code (Rust + Metal): no JIT, no unsigned
+  executable memory, no DYLD variables, no library-validation exemption. Workflow scripts
+  run as separate child processes, so their own signatures/entitlements apply to them.
+  The app is NOT sandboxed: a launcher has to open arbitrary apps and files.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Send Apple Events (osascript / NSAppleScript) to other apps. Without this the
+       hardened runtime blocks the "control other apps" prompt entirely. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

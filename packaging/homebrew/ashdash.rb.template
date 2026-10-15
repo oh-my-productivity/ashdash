@@ -1,0 +1,22 @@
+# Homebrew cask template. Render it with packaging/homebrew/render-cask.sh;
+# do not edit a rendered copy by hand. Publishing to a tap is a manual step
+# (see docs/RELEASING.md).
+cask "@SLUG@" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/@REPO@/releases/download/v#{version}/@NAME@-#{version}.dmg"
+  name "@NAME@"
+  desc "Keyboard launcher for macOS"
+  homepage "https://github.com/@REPO@"
+
+  depends_on macos: ">= :monterey"
+
+  app "@NAME@.app"
+  binary "#{appdir}/@NAME@.app/Contents/MacOS/@SLUG@"
+
+  zap trash: [
+    "~/Library/Application Support/@SLUG@",
+    "~/Library/Caches/@SLUG@",
+  ]
+end

@@ -1,0 +1,132 @@
+name: release
+
+# Runs when a version tag is pushed (v0.1.0). Signs with a Developer ID certificate and
+# notarizes when the secrets below exist; otherwise produces an ad-hoc signed, clearly
+# labelled pre-release. See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+  # Manual runs build and upload artifacts but never create a release (only tags do).
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      # Secrets cannot be tested in `if:` directly; expose only their presence.
+      HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' && secrets.CODESIGN_IDENTITY != '' }}
+      HAVE_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the crate version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' crates/app/Cargo.toml | head -n 1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match crates/app/Cargo.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Packaging self-test
+        run: packaging/selftest.sh
+
+      - name: Import signing certificate
+        if: env.HAVE_CERT == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          # Put the temporary keychain first in the search list.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+
+      - name: Store notarization credentials
+        if: env.HAVE_NOTARY == 'true' && env.HAVE_CERT == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool store-credentials ashdash-notary \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+          echo "NOTARY_PROFILE=ashdash-notary" >> "$GITHUB_ENV"
+
+      - name: Build the universal app
+        env:
+          CODESIGN_IDENTITY: ${{ env.HAVE_CERT == 'true' && secrets.CODESIGN_IDENTITY || '-' }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          packaging/build-app.sh
+
+      - name: Notarize the app
+        run: packaging/notarize.sh dist/Ashdash.app
+
+      - name: Make the DMG
+        env:
+          CODESIGN_IDENTITY: ${{ env.HAVE_CERT == 'true' && secrets.CODESIGN_IDENTITY || '-' }}
+        run: packaging/make-dmg.sh dist/Ashdash.app
+
+      - name: Notarize the DMG
+        run: packaging/notarize.sh "dist/Ashdash-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Refresh the checksum and render the Homebrew cask
+        run: |
+          set -euo pipefail
+          dmg="dist/Ashdash-${{ steps.version.outputs.version }}.dmg"
+          # Stapling rewrites the DMG, so the checksum must be taken last.
+          (cd dist && shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256")
+          cat "$dmg.sha256"
+          packaging/homebrew/render-cask.sh --dmg "$dmg" --repo "$GITHUB_REPOSITORY" --output dist/ashdash.rb
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ashdash-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+            dist/ashdash.rb
+          if-no-files-found: error
+
+      - name: Publish the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=(--generate-notes --title "Ashdash ${{ steps.version.outputs.version }}")
+          if [ "$HAVE_CERT" != "true" ] || [ "$HAVE_NOTARY" != "true" ]; then
+            flags+=(--prerelease --notes "Unsigned or ad-hoc signed build, not notarized. Gatekeeper will block it until you right-click > Open, or run xattr -dr com.apple.quarantine on the app.")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
+            dist/*.dmg dist/*.sha256 dist/ashdash.rb
+
+      - name: Remove the temporary keychain
+        if: always() && env.HAVE_CERT == 'true'
+        run: security delete-keychain "$KEYCHAIN_PATH" || true

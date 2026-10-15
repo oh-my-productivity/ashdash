@@ -4,6 +4,7 @@ mod events;
 mod gui;
 mod hotkeys;
 mod ipc;
+mod mac;
 mod scripting;
 mod urlscheme;
 
@@ -33,6 +34,8 @@ USAGE:
   ashdash search <text>           show the launcher with <text> typed (starts it if needed)
   ashdash reload                  re-scan apps, workflows, snippets and workflow hotkeys
   ashdash quit                    quit the running launcher
+  ashdash login-item enable|disable|status
+                                      launch at login (needs the Ashdash.app bundle)
   ashdash paths                   print data / config locations
   ashdash config path             print the settings file location
   ashdash config get [key]        print all settings, or one by dotted path (clipboard.max_entries)
@@ -52,6 +55,7 @@ fn main() -> Result<()> {
             print!("{HELP}");
             Ok(())
         }
+        Some("login-item") => mac::loginitem::cli(args.get(1).map(String::as_str)),
         Some("paths") => {
             println!("data:      {}", paths.data.display());
             println!("config:    {}", paths.config_file().display());
@@ -239,6 +243,8 @@ fn run_launcher(paths: Paths, config: Config) -> Result<()> {
         }
     };
     let engine = Arc::new(Engine::new(paths, config));
+    // Double-clicked .alfredworkflow / .alfredappearance / .alfredsnippets files.
+    mac::opendocs::install(Arc::clone(&engine));
     let started = automation::start(&engine, primary);
     gui::run(engine, started.automation)
 }
