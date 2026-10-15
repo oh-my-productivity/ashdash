@@ -16,10 +16,10 @@ impl Paths {
     pub fn system() -> Self {
         let data = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ashdash");
+            .join(crate::brand::SLUG);
         let cache = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ashdash");
+            .join(crate::brand::SLUG);
         Paths { data, cache }
     }
 
@@ -71,8 +71,7 @@ impl Default for Config {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_default();
         Config {
-            // Cmd+Space is taken by Spotlight, so default to Option+Space.
-            hotkey: "alt+space".into(),
+            hotkey: crate::brand::DEFAULT_HOTKEY.into(),
             max_results: 30,
             app_dirs: vec![
                 PathBuf::from("/Applications"),

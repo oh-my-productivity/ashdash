@@ -4,7 +4,7 @@ A keyboard launcher for macOS in Rust, modelled on the reference launcher's obse
 (see [docs/REVERSE_ENGINEERING.md](docs/REVERSE_ENGINEERING.md)).
 
 ```
-cargo run -p ashdash --release        # Option+Space opens it; Esc closes; Cmd+Q quits
+cargo run -p ashdash --release        # Option+Shift+Space opens it; Esc closes; Cmd+Q quits
 cargo run -p ashdash -- query "vsc"   # headless: print ranked results
 ```
 

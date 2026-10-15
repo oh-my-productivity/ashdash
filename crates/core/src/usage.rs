@@ -31,12 +31,7 @@ impl Usage {
 
     pub fn boost(&self, query: &str, id: &str) -> f64 {
         let q = query.trim().to_lowercase();
-        let exact = self
-            .by_query
-            .get(&q)
-            .and_then(|m| m.get(id))
-            .copied()
-            .unwrap_or(0) as f64;
+        let exact = self.by_query.get(&q).and_then(|m| m.get(id)).copied().unwrap_or(0) as f64;
         let total = self.total.get(id).copied().unwrap_or(0) as f64;
         // Query-specific picks matter most; global popularity breaks ties.
         (exact.min(10.0) * 60.0) + (1.0 + total).ln() * 15.0
@@ -46,17 +41,12 @@ impl Usage {
         let q = query.trim().to_lowercase();
         *self.total.entry(id.to_string()).or_insert(0) += 1;
         if !q.is_empty() {
-            *self
-                .by_query
-                .entry(q)
-                .or_default()
-                .entry(id.to_string())
-                .or_insert(0) += 1;
+            *self.by_query.entry(q).or_default().entry(id.to_string()).or_insert(0) += 1;
         }
-        if let Some(p) = &self.path {
-            if let Ok(bytes) = serde_json::to_vec(self) {
-                let _ = write_private(p, &bytes);
-            }
+        if let Some(p) = &self.path
+            && let Ok(bytes) = serde_json::to_vec(self)
+        {
+            let _ = write_private(p, &bytes);
         }
     }
 }

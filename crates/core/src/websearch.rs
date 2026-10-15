@@ -43,8 +43,18 @@ pub fn defaults() -> Vec<WebSearch> {
         mk("ddg", "DuckDuckGo", "https://duckduckgo.com/?q={query}", false),
         mk("bing", "Bing", "https://www.bing.com/search?q={query}", false),
         mk("amazon", "Amazon", "https://www.amazon.com/s?k={query}", true),
-        mk("wiki", "Wikipedia", "https://en.wikipedia.org/w/index.php?search={query}", true),
-        mk("youtube", "YouTube", "https://www.youtube.com/results?search_query={query}", false),
+        mk(
+            "wiki",
+            "Wikipedia",
+            "https://en.wikipedia.org/w/index.php?search={query}",
+            true,
+        ),
+        mk(
+            "youtube",
+            "YouTube",
+            "https://www.youtube.com/results?search_query={query}",
+            false,
+        ),
         mk("imdb", "IMDb", "https://www.imdb.com/find?q={query}", false),
         mk("maps", "Apple Maps", "https://maps.apple.com/?q={query}", false),
     ]

@@ -4,16 +4,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use ashdash_core::theme::{Rgba, Theme};
+use ashdash_core::{Action, Engine, Icon, Item, Mods, Outcome, apps};
+use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use ashdash_core::theme::{Rgba, Theme};
-use ashdash_core::{apps, Action, Engine, Icon, Item, Mods, Outcome};
 
 const VISIBLE_ROWS: usize = 9;
 const ROW_HEIGHT: f32 = 48.0;
@@ -145,7 +145,10 @@ impl LauncherApp {
                 }));
                 manager = Some(m);
                 hotkey_ok = true;
-                eprintln!("ashdash: press {} to open (Esc to close, Cmd+Q to quit)", engine.config.hotkey);
+                eprintln!(
+                    "ashdash: press {} to open (Esc to close, Cmd+Q to quit)",
+                    engine.config.hotkey
+                );
             }
             Err(e) => eprintln!("ashdash: could not register hotkey '{}': {e:#}", engine.config.hotkey),
         }
@@ -237,16 +240,19 @@ impl LauncherApp {
     }
 
     fn activate(&mut self, ctx: &egui::Context, index: usize, mods: Mods) {
-        let Some(item) = self.items.get(index).cloned() else { return };
+        let Some(item) = self.items.get(index).cloned() else {
+            return;
+        };
         if !item.valid {
             return;
         }
-        if let Action::System(cmd) = &item.action {
-            if cmd.needs_confirmation() && self.confirming.as_deref() != Some(item.id.as_str()) {
-                self.confirming = Some(item.id.clone());
-                self.status = Some(format!("{}? Press Return again to confirm.", cmd.title()));
-                return;
-            }
+        if let Action::System(cmd) = &item.action
+            && cmd.needs_confirmation()
+            && self.confirming.as_deref() != Some(item.id.as_str())
+        {
+            self.confirming = Some(item.id.clone());
+            self.status = Some(format!("{}? Press Return again to confirm.", cmd.title()));
+            return;
         }
         let query = self.query.clone();
         self.hide(ctx);
@@ -303,7 +309,12 @@ impl LauncherApp {
                     None => {}
                 }
                 self.icons.insert(app.clone(), IconState::Pending);
-                let (tx, app, cache, ctx) = (self.icon_tx.clone(), app.clone(), self.engine.paths.icon_cache(), ctx.clone());
+                let (tx, app, cache, ctx) = (
+                    self.icon_tx.clone(),
+                    app.clone(),
+                    self.engine.paths.icon_cache(),
+                    ctx.clone(),
+                );
                 std::thread::spawn(move || {
                     let png = apps::app_icon_png(&app, &cache);
                     let _ = tx.send((app, png));
@@ -394,7 +405,9 @@ impl eframe::App for LauncherApp {
             if let Some(text) = self.large_type.clone() {
                 ui.add_space(9.0);
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(text).size(32.0).color(c(t.result_text_selected))).wrap());
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(text).size(32.0).color(c(t.result_text_selected))).wrap(),
+                    );
                 });
             } else if rows > 0 {
                 ui.add_space(9.0);
@@ -403,7 +416,11 @@ impl eframe::App for LauncherApp {
 
             if let Some(msg) = &self.status {
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(msg).size(t.result_subtext_size + 1.0).color(c(t.result_subtext_selected)));
+                ui.label(
+                    egui::RichText::new(msg)
+                        .size(t.result_subtext_size + 1.0)
+                        .color(c(t.result_subtext_selected)),
+                );
             }
         });
     }
@@ -423,8 +440,23 @@ impl LauncherApp {
         }
         let keys = ctx.input_mut(|i| {
             let m = i.modifiers;
-            let mods = Mods { cmd: m.mac_cmd, alt: m.alt, ctrl: m.ctrl, shift: m.shift, fn_key: false };
-            let mut k = Keys { up: false, down: false, enter: None, tab: false, esc: false, large: false, quit: false, number: None };
+            let mods = Mods {
+                cmd: m.mac_cmd,
+                alt: m.alt,
+                ctrl: m.ctrl,
+                shift: m.shift,
+                fn_key: false,
+            };
+            let mut k = Keys {
+                up: false,
+                down: false,
+                enter: None,
+                tab: false,
+                esc: false,
+                large: false,
+                quit: false,
+                number: None,
+            };
             k.up = i.consume_key(Modifiers::NONE, Key::ArrowUp) || i.consume_key(Modifiers::CTRL, Key::P);
             k.down = i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::CTRL, Key::N);
             if i.key_pressed(Key::Enter) {
@@ -435,9 +467,19 @@ impl LauncherApp {
             k.esc = i.consume_key(Modifiers::NONE, Key::Escape);
             k.large = i.consume_key(Modifiers::MAC_CMD, Key::L);
             k.quit = i.consume_key(Modifiers::MAC_CMD, Key::Q);
-            for (n, key) in [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9]
-                .into_iter()
-                .enumerate()
+            for (n, key) in [
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+                Key::Num9,
+            ]
+            .into_iter()
+            .enumerate()
             {
                 if i.consume_key(Modifiers::MAC_CMD, key) {
                     k.number = Some(n);
@@ -476,29 +518,29 @@ impl LauncherApp {
             self.confirming = None;
             self.status = None;
         }
-        if keys.tab {
-            if let Some(a) = self.items.get(self.selected).and_then(|i| i.autocomplete.clone()) {
-                self.query = a;
-                self.want_focus = true;
-                self.request_query();
-                // put the cursor at the end of the new text
-                if let Some(mut state) = egui::TextEdit::load_state(ctx, query_id()) {
-                    let end = egui::text::CCursor::new(self.query.chars().count());
-                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-                    state.store(ctx, query_id());
-                }
+        if keys.tab
+            && let Some(a) = self.items.get(self.selected).and_then(|i| i.autocomplete.clone())
+        {
+            self.query = a;
+            self.want_focus = true;
+            self.request_query();
+            // put the cursor at the end of the new text
+            if let Some(mut state) = egui::TextEdit::load_state(ctx, query_id()) {
+                let end = egui::text::CCursor::new(self.query.chars().count());
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                state.store(ctx, query_id());
             }
         }
-        if keys.large {
-            if let Some(item) = self.items.get(self.selected) {
-                self.large_type = Some(item.large_type.clone().unwrap_or_else(|| item.title.clone()));
-            }
+        if keys.large
+            && let Some(item) = self.items.get(self.selected)
+        {
+            self.large_type = Some(item.large_type.clone().unwrap_or_else(|| item.title.clone()));
         }
-        if let Some(n) = keys.number {
-            if n < self.items.len().min(VISIBLE_ROWS) {
-                self.activate(ctx, n, Mods::NONE);
-                return;
-            }
+        if let Some(n) = keys.number
+            && n < self.items.len().min(VISIBLE_ROWS)
+        {
+            self.activate(ctx, n, Mods::NONE);
+            return;
         }
         if let Some(mods) = keys.enter {
             if self.large_type.is_some() {
@@ -529,10 +571,10 @@ impl LauncherApp {
                     // Only a real mouse movement may steal the selection from the keyboard.
                     if resp.hovered() {
                         let pos = ctx.input(|i| i.pointer.hover_pos());
-                        if let (Some(p), Some(prev)) = (pos, self.last_pointer) {
-                            if p.distance(prev) > 2.0 {
-                                self.selected = idx;
-                            }
+                        if let (Some(p), Some(prev)) = (pos, self.last_pointer)
+                            && p.distance(prev) > 2.0
+                        {
+                            self.selected = idx;
                         }
                     }
                     if resp.clicked() {
@@ -550,7 +592,9 @@ impl LauncherApp {
                     );
                     match self.icon_uri(ctx, &item.icon) {
                         Some(uri) => {
-                            egui::Image::new(uri).fit_to_exact_size(Vec2::splat(icon_size)).paint_at(ui, icon_rect);
+                            egui::Image::new(uri)
+                                .fit_to_exact_size(Vec2::splat(icon_size))
+                                .paint_at(ui, icon_rect);
                         }
                         None => {
                             let glyph = match &item.icon {
@@ -569,7 +613,11 @@ impl LauncherApp {
                     }
                     let text_x = icon_rect.right() + 10.0;
                     let has_sub = !item.subtitle.is_empty();
-                    let title_y = if has_sub { rect.top() + 6.0 } else { rect.center().y - t.result_text_size * 0.6 };
+                    let title_y = if has_sub {
+                        rect.top() + 6.0
+                    } else {
+                        rect.center().y - t.result_text_size * 0.6
+                    };
                     let dim = if item.valid { 1.0 } else { 0.6 };
                     painter.text(
                         Pos2::new(text_x, title_y),
@@ -584,7 +632,11 @@ impl LauncherApp {
                             egui::Align2::LEFT_TOP,
                             &item.subtitle,
                             FontId::proportional(t.result_subtext_size),
-                            c(if sel { t.result_subtext_selected } else { t.result_subtext }),
+                            c(if sel {
+                                t.result_subtext_selected
+                            } else {
+                                t.result_subtext
+                            }),
                         );
                     }
                     if idx < 9 {
@@ -593,7 +645,11 @@ impl LauncherApp {
                             egui::Align2::RIGHT_CENTER,
                             format!("⌘{}", idx + 1),
                             FontId::proportional(t.result_subtext_size + 2.0),
-                            c(if sel { t.result_subtext_selected } else { t.result_subtext }),
+                            c(if sel {
+                                t.result_subtext_selected
+                            } else {
+                                t.result_subtext
+                            }),
                         );
                     }
                 }
@@ -601,7 +657,13 @@ impl LauncherApp {
         self.last_pointer = ctx.input(|i| i.pointer.hover_pos()).or(self.last_pointer);
         self.scroll_to_selected = false;
         if let Some(i) = clicked {
-            let mods = ctx.input(|i| Mods { cmd: i.modifiers.mac_cmd, alt: i.modifiers.alt, ctrl: i.modifiers.ctrl, shift: i.modifiers.shift, fn_key: false });
+            let mods = ctx.input(|i| Mods {
+                cmd: i.modifiers.mac_cmd,
+                alt: i.modifiers.alt,
+                ctrl: i.modifiers.ctrl,
+                shift: i.modifiers.shift,
+                fn_key: false,
+            });
             self.activate(ctx, i, mods);
         }
     }
@@ -617,7 +679,9 @@ fn register_hotkey(spec: &str) -> Result<(GlobalHotKeyManager, u32)> {
 /// Poll the system clipboard and record changes in the history.
 fn spawn_clipboard_watcher(engine: Arc<Engine>) {
     std::thread::spawn(move || {
-        let Ok(mut board) = arboard::Clipboard::new() else { return };
+        let Ok(mut board) = arboard::Clipboard::new() else {
+            return;
+        };
         let history = engine.clipboard();
         let mut last = board.get_text().ok();
         loop {

@@ -6,10 +6,10 @@ use std::process::Command;
 use crate::fuzzy;
 
 pub fn tilde(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            return format!("~/{}", rest.display());
-        }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rest.display());
     }
     path.display().to_string()
 }
@@ -70,17 +70,26 @@ pub fn browse(query: &str, limit: usize) -> Vec<PathBuf> {
         (full.clone(), String::new())
     } else {
         (
-            full.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/")),
-            full.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            full.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/")),
+            full.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
         )
     };
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let show_hidden = prefix.starts_with('.');
     let mut v: Vec<PathBuf> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            let n = p.file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let n = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
             (show_hidden || !n.starts_with('.')) && n.starts_with(&prefix.to_lowercase())
         })
         .collect();

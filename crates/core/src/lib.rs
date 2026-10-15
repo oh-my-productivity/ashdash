@@ -1,6 +1,7 @@
 //! Ashdash core: query engine, workflows and data stores. No UI.
 
 pub mod apps;
+pub mod brand;
 pub mod calc;
 pub mod clipboard;
 pub mod config;

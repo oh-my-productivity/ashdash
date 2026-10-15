@@ -26,7 +26,10 @@ pub struct ClipboardHistory {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl ClipboardHistory {
@@ -35,11 +38,19 @@ impl ClipboardHistory {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        ClipboardHistory { entries, max, path: Some(path) }
+        ClipboardHistory {
+            entries,
+            max,
+            path: Some(path),
+        }
     }
 
     pub fn in_memory(max: usize) -> Self {
-        ClipboardHistory { entries: Vec::new(), max, path: None }
+        ClipboardHistory {
+            entries: Vec::new(),
+            max,
+            path: None,
+        }
     }
 
     /// Record a clipboard value. Returns false for empty/duplicate-of-latest.
@@ -48,12 +59,18 @@ impl ClipboardHistory {
             return false;
         }
         self.entries.retain(|e| e.text != text);
-        self.entries.insert(0, ClipEntry { text: text.to_string(), ts: now() });
+        self.entries.insert(
+            0,
+            ClipEntry {
+                text: text.to_string(),
+                ts: now(),
+            },
+        );
         self.entries.truncate(self.max.max(1));
-        if let Some(p) = &self.path {
-            if let Ok(b) = serde_json::to_vec(&self.entries) {
-                let _ = write_private(p, &b);
-            }
+        if let Some(p) = &self.path
+            && let Ok(b) = serde_json::to_vec(&self.entries)
+        {
+            let _ = write_private(p, &b);
         }
         true
     }
@@ -67,13 +84,24 @@ impl ClipboardHistory {
             .entries
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| fuzzy::score(query, e.text.lines().next().unwrap_or("")).or_else(|| {
-                // match anywhere in the text, but rank below title-style matches
-                e.text.to_lowercase().contains(&query.trim().to_lowercase()).then_some(1.0)
-            }).map(|s| (s, i, e)))
+            .filter_map(|(i, e)| {
+                fuzzy::score(query, e.text.lines().next().unwrap_or(""))
+                    .or_else(|| {
+                        // match anywhere in the text, but rank below title-style matches
+                        e.text
+                            .to_lowercase()
+                            .contains(&query.trim().to_lowercase())
+                            .then_some(1.0)
+                    })
+                    .map(|s| (s, i, e))
+            })
             .collect();
         // Higher score first; for equal scores keep recency order.
-        v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        v.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
         v.into_iter().take(limit).map(|(_, _, e)| e.clone()).collect()
     }
 

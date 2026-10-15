@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde_json::Value;
 
@@ -111,11 +111,11 @@ pub enum Effect {
 fn plist_to_json(v: &plist::Value) -> Value {
     match v {
         plist::Value::Array(a) => Value::Array(a.iter().map(plist_to_json).collect()),
-        plist::Value::Dictionary(d) => {
-            Value::Object(d.iter().map(|(k, v)| (k.clone(), plist_to_json(v))).collect())
-        }
+        plist::Value::Dictionary(d) => Value::Object(d.iter().map(|(k, v)| (k.clone(), plist_to_json(v))).collect()),
         plist::Value::Boolean(b) => Value::Bool(*b),
-        plist::Value::Real(f) => serde_json::Number::from_f64(*f).map(Value::Number).unwrap_or(Value::Null),
+        plist::Value::Real(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         plist::Value::Integer(i) => {
             if let Some(n) = i.as_signed() {
                 Value::from(n)
@@ -149,14 +149,20 @@ impl Workflow {
     pub fn load(dir: &Path) -> Result<Workflow> {
         let v = plist::Value::from_file(dir.join("info.plist"))
             .with_context(|| format!("reading {}/info.plist", dir.display()))?;
-        let id = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let id = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         Workflow::from_json(dir, &id, &plist_to_json(&v))
     }
 
     pub fn from_json(dir: &Path, id: &str, j: &Value) -> Result<Workflow> {
         let mut nodes = Vec::new();
         for o in j.get("objects").and_then(Value::as_array).into_iter().flatten() {
-            let uid = o.get("uid").and_then(Value::as_str).ok_or_else(|| anyhow!("object without uid"))?;
+            let uid = o
+                .get("uid")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("object without uid"))?;
             nodes.push(Node {
                 uid: uid.to_string(),
                 kind: o.get("type").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -192,7 +198,11 @@ impl Workflow {
     }
 
     fn data_key(&self) -> String {
-        if self.bundle_id.is_empty() { self.id.clone() } else { self.bundle_id.clone() }
+        if self.bundle_id.is_empty() {
+            self.id.clone()
+        } else {
+            self.bundle_id.clone()
+        }
     }
 }
 
@@ -225,10 +235,20 @@ pub fn import_package(package: &Path, dest_root: &Path) -> Result<PathBuf> {
     // `extract` rejects entries that would escape the target directory.
     zip.extract(&tmp).context("extracting workflow")?;
     let wf = Workflow::load(&tmp).context("archive has no readable info.plist")?;
-    let base: String = if wf.bundle_id.is_empty() { wf.name.clone() } else { wf.bundle_id.clone() };
+    let base: String = if wf.bundle_id.is_empty() {
+        wf.name.clone()
+    } else {
+        wf.bundle_id.clone()
+    };
     let safe: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if safe.is_empty() {
         bail!("workflow has neither a bundle id nor a name");
@@ -283,14 +303,46 @@ struct Interpreter {
 /// unverified against the binary.
 fn interpreter(kind: i64) -> Option<Interpreter> {
     Some(match kind {
-        0 => Interpreter { program: "/bin/bash", pre_args: &[], ext: "sh" },
-        1 => Interpreter { program: "/usr/bin/php", pre_args: &[], ext: "php" },
-        2 => Interpreter { program: "/usr/bin/ruby", pre_args: &[], ext: "rb" },
-        3 => Interpreter { program: "/usr/bin/python3", pre_args: &[], ext: "py" },
-        4 => Interpreter { program: "/usr/bin/perl", pre_args: &[], ext: "pl" },
-        5 => Interpreter { program: "/bin/zsh", pre_args: &[], ext: "zsh" },
-        6 => Interpreter { program: "/usr/bin/osascript", pre_args: &[], ext: "applescript" },
-        7 => Interpreter { program: "/usr/bin/osascript", pre_args: &["-l", "JavaScript"], ext: "js" },
+        0 => Interpreter {
+            program: "/bin/bash",
+            pre_args: &[],
+            ext: "sh",
+        },
+        1 => Interpreter {
+            program: "/usr/bin/php",
+            pre_args: &[],
+            ext: "php",
+        },
+        2 => Interpreter {
+            program: "/usr/bin/ruby",
+            pre_args: &[],
+            ext: "rb",
+        },
+        3 => Interpreter {
+            program: "/usr/bin/python3",
+            pre_args: &[],
+            ext: "py",
+        },
+        4 => Interpreter {
+            program: "/usr/bin/perl",
+            pre_args: &[],
+            ext: "pl",
+        },
+        5 => Interpreter {
+            program: "/bin/zsh",
+            pre_args: &[],
+            ext: "zsh",
+        },
+        6 => Interpreter {
+            program: "/usr/bin/osascript",
+            pre_args: &[],
+            ext: "applescript",
+        },
+        7 => Interpreter {
+            program: "/usr/bin/osascript",
+            pre_args: &["-l", "JavaScript"],
+            ext: "js",
+        },
         _ => return None,
     })
 }
@@ -359,7 +411,11 @@ fn run_node_script(
 
     let mut cleanup: Option<PathBuf> = None;
     let (program, args): (PathBuf, Vec<String>) = if script.trim().is_empty() && !scriptfile.is_empty() {
-        let p = if Path::new(&scriptfile).is_absolute() { PathBuf::from(&scriptfile) } else { wf.dir.join(&scriptfile) };
+        let p = if Path::new(&scriptfile).is_absolute() {
+            PathBuf::from(&scriptfile)
+        } else {
+            wf.dir.join(&scriptfile)
+        };
         (p, vec![])
     } else {
         let interp = interpreter(kind).ok_or_else(|| anyhow!("unsupported script type {kind}"))?;
@@ -395,7 +451,9 @@ fn run_node_script(
 }
 
 fn run_with_timeout(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Result<ScriptOutput> {
-    let mut child = cmd.spawn().with_context(|| format!("starting {:?}", cmd.get_program()))?;
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("starting {:?}", cmd.get_program()))?;
     if let (Some(text), Some(mut si)) = (stdin, child.stdin.take()) {
         let _ = si.write_all(text.as_bytes());
     }
@@ -425,7 +483,11 @@ fn run_with_timeout(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -
     };
     let stdout = String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned();
     let stderr = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
-    Ok(ScriptOutput { stdout, stderr, success: status.success() })
+    Ok(ScriptOutput {
+        stdout,
+        stderr,
+        success: status.success(),
+    })
 }
 
 // ---------------------------------------------------------------- keywords & script filters
@@ -436,7 +498,10 @@ enum KeywordMatch {
     Partial,
     /// Keyword typed in full; the payload is the argument text and whether a
     /// separating space has been typed.
-    Full { arg: String, spaced: bool },
+    Full {
+        arg: String,
+        spaced: bool,
+    },
 }
 
 fn match_keyword(query: &str, keyword: &str, withspace: bool) -> KeywordMatch {
@@ -449,13 +514,19 @@ fn match_keyword(query: &str, keyword: &str, withspace: bool) -> KeywordMatch {
     let (head, rest) = q.split_at(idx);
     if head.to_lowercase() == keyword.to_lowercase() && head.chars().count() == n {
         if rest.is_empty() {
-            return KeywordMatch::Full { arg: String::new(), spaced: false };
+            return KeywordMatch::Full {
+                arg: String::new(),
+                spaced: false,
+            };
         }
         if withspace && !rest.starts_with(' ') {
             return KeywordMatch::No;
         }
         let spaced = rest.starts_with(' ');
-        return KeywordMatch::Full { arg: rest.trim_start().to_string(), spaced };
+        return KeywordMatch::Full {
+            arg: rest.trim_start().to_string(),
+            spaced,
+        };
     }
     if q.chars().count() >= 2 && keyword.to_lowercase().starts_with(&q.to_lowercase()) {
         return KeywordMatch::Partial;
@@ -473,11 +544,19 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
     match ty {
         "fileicon" => {
             let p = expand_tilde(path);
-            if p.extension().is_some_and(|e| e == "app") { Icon::App(p) } else { Icon::Glyph("▤") }
+            if p.extension().is_some_and(|e| e == "app") {
+                Icon::App(p)
+            } else {
+                Icon::Glyph("▤")
+            }
         }
         "filetype" => Icon::Glyph("▤"),
         _ => {
-            let p = if Path::new(path).is_absolute() { PathBuf::from(path) } else { wf.dir.join(path) };
+            let p = if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                wf.dir.join(path)
+            };
             if p.is_file() { Icon::Image(p) } else { Icon::None }
         }
     }
@@ -485,7 +564,11 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
 
 fn workflow_icon(wf: &Workflow) -> Icon {
     let p = wf.dir.join("icon.png");
-    if p.is_file() { Icon::Image(p) } else { Icon::Glyph("◆") }
+    if p.is_file() {
+        Icon::Image(p)
+    } else {
+        Icon::Glyph("◆")
+    }
 }
 
 impl Workflow {
@@ -577,7 +660,11 @@ impl Workflow {
         let parsed = match parse_script_filter(&out.stdout) {
             Ok(p) => p,
             Err(e) => {
-                let detail = if out.stderr.trim().is_empty() { format!("{e:#}") } else { out.stderr.trim().to_string() };
+                let detail = if out.stderr.trim().is_empty() {
+                    format!("{e:#}")
+                } else {
+                    out.stderr.trim().to_string()
+                };
                 return vec![error_item(self, node, &detail)];
             }
         };
@@ -613,7 +700,11 @@ impl Workflow {
                     ));
                 }
             }
-            let uid = raw.get("uid").map(stringify).filter(|s| !s.is_empty()).unwrap_or_else(|| title.clone());
+            let uid = raw
+                .get("uid")
+                .map(stringify)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| title.clone());
             let text = raw.get("text");
             let mut it = Item::new(format!("wf:{}:{}:{}", self.id, node.uid, uid), title)
                 .subtitle(sub)
@@ -654,11 +745,14 @@ impl Workflow {
 
 fn error_item(wf: &Workflow, node: &Node, detail: &str) -> Item {
     let first = detail.lines().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
-    Item::new(format!("wferr:{}:{}", wf.id, node.uid), format!("{}: script error", wf.name))
-        .subtitle(first.to_string())
-        .icon(Icon::Glyph("!"))
-        .valid(false)
-        .score(1.0)
+    Item::new(
+        format!("wferr:{}:{}", wf.id, node.uid),
+        format!("{}: script error", wf.name),
+    )
+    .subtitle(first.to_string())
+    .icon(Icon::Glyph("!"))
+    .valid(false)
+    .score(1.0)
 }
 
 struct ParsedFilter {
@@ -672,7 +766,10 @@ fn parse_script_filter(stdout: &str) -> Result<ParsedFilter> {
         Some(Value::Array(a)) => a.clone(),
         _ => bail!("script filter JSON has no \"items\" array"),
     };
-    Ok(ParsedFilter { items, variables: str_map(v.get("variables")) })
+    Ok(ParsedFilter {
+        items,
+        variables: str_map(v.get("variables")),
+    })
 }
 
 // ---------------------------------------------------------------- execution
@@ -686,7 +783,10 @@ struct State {
 impl Workflow {
     /// Walk the graph from the object that produced the result.
     pub fn run(&self, act: &WorkflowAction, pressed: Mods, paths: &Paths) -> Vec<Effect> {
-        let mut state = State { arg: act.arg.clone(), vars: self.variables.clone() };
+        let mut state = State {
+            arg: act.arg.clone(),
+            vars: self.variables.clone(),
+        };
         state.vars.extend(act.vars.clone());
         if let Some((_, ov)) = act.mods.iter().find(|(m, _)| *m == pressed) {
             if ov.valid == Some(false) {
@@ -726,7 +826,11 @@ impl Workflow {
                 match run_node_script(node, self, paths, &st.arg, &st.vars, SCRIPT_ACTION_TIMEOUT) {
                     Ok(out) => {
                         if !out.success {
-                            fx.push(Effect::Warn(format!("{}: script exited with an error: {}", self.name, out.stderr.trim())));
+                            fx.push(Effect::Warn(format!(
+                                "{}: script exited with an error: {}",
+                                self.name,
+                                out.stderr.trim()
+                            )));
                         }
                         apply_script_output(&mut st, &out.stdout);
                     }
@@ -740,7 +844,11 @@ impl Workflow {
                 let utf8 = node.b("utf8");
                 let spaces = node.s("spaces");
                 let q = if utf8 { percent_encode(&st.arg) } else { st.arg.clone() };
-                let q = if spaces.is_empty() { q } else { q.replace("%20", &spaces) };
+                let q = if spaces.is_empty() {
+                    q
+                } else {
+                    q.replace("%20", &spaces)
+                };
                 let url = render(&node.s("url"), &q, &st.vars);
                 let browser = Some(node.s("browser")).filter(|b| !b.is_empty());
                 fx.push(Effect::OpenUrl { url, browser });
@@ -753,7 +861,10 @@ impl Workflow {
             "alfred.workflow.action.launchfiles" => {
                 for p in node.config.get("paths").and_then(Value::as_array).into_iter().flatten() {
                     if let Some(s) = p.as_str() {
-                        fx.push(Effect::OpenPath { path: expand_tilde(&r(s)), with: None });
+                        fx.push(Effect::OpenPath {
+                            path: expand_tilde(&r(s)),
+                            with: None,
+                        });
                     }
                 }
             }
@@ -764,7 +875,10 @@ impl Workflow {
                 fx.push(Effect::Terminal(r(&node.s("text"))));
             }
             "alfred.workflow.output.notification" => {
-                fx.push(Effect::Notify { title: r(&node.s("title")), text: r(&node.s("text")) });
+                fx.push(Effect::Notify {
+                    title: r(&node.s("title")),
+                    text: r(&node.s("text")),
+                });
             }
             "alfred.workflow.output.clipboard" => {
                 fx.push(Effect::Copy(r(&node.s("clipboardtext"))));
@@ -778,13 +892,23 @@ impl Workflow {
                     st.arg = a;
                 }
                 let current = st.clone();
-                for (k, v) in node.config.get("variables").and_then(Value::as_object).into_iter().flatten() {
-                    st.vars.insert(k.clone(), render(&stringify(v), &current.arg, &current.vars));
+                for (k, v) in node
+                    .config
+                    .get("variables")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                {
+                    st.vars
+                        .insert(k.clone(), render(&stringify(v), &current.arg, &current.vars));
                 }
             }
             "alfred.workflow.utility.junction" => {}
             other => {
-                fx.push(Effect::Warn(format!("{}: unsupported workflow object '{other}'", self.name)));
+                fx.push(Effect::Warn(format!(
+                    "{}: unsupported workflow object '{other}'",
+                    self.name
+                )));
                 return;
             }
         }
@@ -796,16 +920,15 @@ impl Workflow {
 /// argument) or the reference launcher's `{"alfredworkflow": {"arg": ..., "variables": {...}}}`.
 fn apply_script_output(st: &mut State, stdout: &str) {
     let trimmed = stdout.trim_end_matches(['\n', '\r']);
-    if trimmed.trim_start().starts_with('{') {
-        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-            if let Some(w) = v.get("alfredworkflow") {
-                if let Some(a) = w.get("arg") {
-                    st.arg = stringify(a);
-                }
-                st.vars.extend(str_map(w.get("variables")));
-                return;
-            }
+    if trimmed.trim_start().starts_with('{')
+        && let Ok(v) = serde_json::from_str::<Value>(trimmed)
+        && let Some(w) = v.get("alfredworkflow")
+    {
+        if let Some(a) = w.get("arg") {
+            st.arg = stringify(a);
         }
+        st.vars.extend(str_map(w.get("variables")));
+        return;
     }
     st.arg = trimmed.to_string();
 }
@@ -855,7 +978,10 @@ mod tests {
 
     #[test]
     fn keyword_matching_modes() {
-        assert!(matches!(match_keyword("demo", "demo", true), KeywordMatch::Full { spaced: false, .. }));
+        assert!(matches!(
+            match_keyword("demo", "demo", true),
+            KeywordMatch::Full { spaced: false, .. }
+        ));
         match match_keyword("Demo  hello", "demo", true) {
             KeywordMatch::Full { arg, spaced } => assert!(spaced && arg == "hello"),
             _ => panic!(),
@@ -876,14 +1002,31 @@ mod tests {
         assert!(!items[1].valid);
         assert!(items[0].score > items[1].score);
 
-        let Action::Workflow(act) = &items[0].action else { panic!() };
+        let Action::Workflow(act) = &items[0].action else {
+            panic!()
+        };
         let fx = wf.run(act, Mods::NONE, &paths);
-        assert_eq!(fx, vec![Effect::Notify { title: "T".into(), text: "got:A hello:hi/hi".into() }]);
+        assert_eq!(
+            fx,
+            vec![Effect::Notify {
+                title: "T".into(),
+                text: "got:A hello:hi/hi".into()
+            }]
+        );
 
         // cmd modifier: override arg and follow the cmd-only connection
-        let cmd = Mods { cmd: true, ..Mods::NONE };
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
         let fx = wf.run(act, cmd, &paths);
-        assert_eq!(fx, vec![Effect::OpenUrl { url: "https://x.test/?q=CMD".into(), browser: None }]);
+        assert_eq!(
+            fx,
+            vec![Effect::OpenUrl {
+                url: "https://x.test/?q=CMD".into(),
+                browser: None
+            }]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -917,7 +1060,10 @@ mod tests {
 
     #[test]
     fn workflow_json_output_sets_vars() {
-        let mut st = State { arg: "x".into(), vars: BTreeMap::new() };
+        let mut st = State {
+            arg: "x".into(),
+            vars: BTreeMap::new(),
+        };
         apply_script_output(&mut st, r#"{"alfredworkflow":{"arg":"new","variables":{"k":1}}}"#);
         assert_eq!(st.arg, "new");
         assert_eq!(st.vars["k"], "1");
@@ -937,7 +1083,13 @@ mod tests {
             "connections": {"A": [{"destinationuid": "B", "modifiers": 0}], "B": [{"destinationuid": "A", "modifiers": 0}]}
         });
         let wf = Workflow::from_json(&root, "c", &doc).unwrap();
-        let act = WorkflowAction { workflow: "c".into(), from_uid: "A".into(), arg: String::new(), vars: BTreeMap::new(), mods: vec![] };
+        let act = WorkflowAction {
+            workflow: "c".into(),
+            from_uid: "A".into(),
+            arg: String::new(),
+            vars: BTreeMap::new(),
+            mods: vec![],
+        };
         let fx = wf.run(&act, Mods::NONE, &paths);
         assert!(matches!(fx.last(), Some(Effect::Warn(_))));
         let _ = std::fs::remove_dir_all(root);

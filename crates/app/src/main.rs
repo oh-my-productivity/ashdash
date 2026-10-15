@@ -3,15 +3,15 @@ mod gui;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Mods, Outcome, Paths};
+use anyhow::{Context, Result, bail};
 
 const HELP: &str = "\
 ashdash — a keyboard launcher for macOS
 
 USAGE:
-  ashdash                         start the launcher (default hotkey: Option+Space)
+  ashdash                         start the launcher (default hotkey: Option+Shift+Space)
   ashdash query <text>            print the ranked results for <text>
   ashdash run <text> [index]      run result <index> (default 0) for <text>
   ashdash import <file>           install an .alfredworkflow package
@@ -48,19 +48,28 @@ fn main() -> Result<()> {
             let text = args[1..].join(" ");
             let engine = Engine::new(paths, config);
             for (i, it) in engine.query(&text).iter().enumerate() {
-                println!("{i:>2}  {:<40}  {}{}", it.title, it.subtitle, if it.valid { "" } else { "  [not actionable]" });
+                println!(
+                    "{i:>2}  {:<40}  {}{}",
+                    it.title,
+                    it.subtitle,
+                    if it.valid { "" } else { "  [not actionable]" }
+                );
             }
             Ok(())
         }
         Some("run") => {
-            let Some(text) = args.get(1) else { bail!("usage: ashdash run <text> [index]") };
+            let Some(text) = args.get(1) else {
+                bail!("usage: ashdash run <text> [index]")
+            };
             let idx: usize = match args.get(2) {
                 Some(s) => s.parse().context("index must be a number")?,
                 None => 0,
             };
             let engine = Engine::new(paths, config);
             let items = engine.query(text);
-            let item = items.get(idx).with_context(|| format!("no result #{idx} for '{text}'"))?;
+            let item = items
+                .get(idx)
+                .with_context(|| format!("no result #{idx} for '{text}'"))?;
             println!("running: {} — {}", item.title, item.subtitle);
             let mut outcome = engine.execute(item, text, Mods::NONE, false);
             if let Outcome::Confirm(msg) = &outcome {
@@ -72,7 +81,9 @@ fn main() -> Result<()> {
             report(outcome)
         }
         Some("import") => {
-            let Some(file) = args.get(1) else { bail!("usage: ashdash import <file.alfredworkflow>") };
+            let Some(file) = args.get(1) else {
+                bail!("usage: ashdash import <file.alfredworkflow>")
+            };
             let engine = Engine::new(paths, config);
             let dest = engine.import_workflow(&PathBuf::from(file))?;
             println!("installed to {}", dest.display());
@@ -93,7 +104,9 @@ fn main() -> Result<()> {
             report(engine.run_trigger(bundle, trigger, args.get(3).map(String::as_str).unwrap_or("")))
         }
         Some("theme") => {
-            let Some(file) = args.get(1) else { bail!("usage: ashdash theme <file>") };
+            let Some(file) = args.get(1) else {
+                bail!("usage: ashdash theme <file>")
+            };
             println!("{:#?}", Theme::load(&PathBuf::from(file))?);
             Ok(())
         }

@@ -97,7 +97,11 @@ impl Theme {
             .and_then(|d| d.get("alfredtheme"))
             .context("missing alfredtheme dictionary")?;
         let mut out = Theme::default();
-        if let Some(n) = t.as_dictionary().and_then(|d| d.get("name")).and_then(|v| v.as_string()) {
+        if let Some(n) = t
+            .as_dictionary()
+            .and_then(|d| d.get("name"))
+            .and_then(|v| v.as_string())
+        {
             out.name = n.to_string();
         }
         let wrap = plist::Value::Dictionary(t.as_dictionary().cloned().unwrap_or_default());

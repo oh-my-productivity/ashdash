@@ -1,7 +1,7 @@
 //! Application discovery and icon extraction.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,18 +30,18 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<AppEntry> {
                 if is_background_only(p) {
                     continue;
                 }
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    if seen.insert(p.to_path_buf()) {
-                        out.push(AppEntry {
-                            name: stem.to_string(),
-                            path: p.to_path_buf(),
-                        });
-                    }
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                    && seen.insert(p.to_path_buf())
+                {
+                    out.push(AppEntry {
+                        name: stem.to_string(),
+                        path: p.to_path_buf(),
+                    });
                 }
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 
@@ -57,11 +57,7 @@ fn is_background_only(app: &Path) -> bool {
 fn icns_path(app: &Path) -> Option<PathBuf> {
     let resources = app.join("Contents/Resources");
     let info = plist::Value::from_file(app.join("Contents/Info.plist")).ok()?;
-    let name = info
-        .as_dictionary()?
-        .get("CFBundleIconFile")?
-        .as_string()?
-        .to_string();
+    let name = info.as_dictionary()?.get("CFBundleIconFile")?.as_string()?.to_string();
     let mut p = resources.join(&name);
     if p.extension().is_none() {
         p.set_extension("icns");
@@ -102,7 +98,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("Foo.app/Contents/Nested.app")).unwrap();
         std::fs::create_dir_all(root.join("Utilities/Bar.app")).unwrap();
-        let apps = scan(&[root.clone()]);
+        let apps = scan(std::slice::from_ref(&root));
         let names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["Bar", "Foo"]);
         let _ = std::fs::remove_dir_all(&root);

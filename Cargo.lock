@@ -67,6 +67,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashdash"
+version = "0.1.0"
+dependencies = [
+ "ashdash-core",
+ "anyhow",
+ "arboard",
+ "dirs",
+ "eframe",
+ "egui_extras",
+ "global-hotkey",
+ "image",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "serde_json",
+ "winit",
+]
+
+[[package]]
+name = "ashdash-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "plist",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex",
+ "thiserror 2.0.21",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1902,40 +1936,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "ashdash"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "dirs",
- "eframe",
- "egui_extras",
- "global-hotkey",
- "image",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "ashdash-core",
- "serde_json",
- "winit",
-]
-
-[[package]]
-name = "ashdash-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "plist",
- "regex",
- "serde",
- "serde_json",
- "shlex",
- "thiserror 2.0.21",
- "walkdir",
- "zip",
-]
 
 [[package]]
 name = "option-ext"

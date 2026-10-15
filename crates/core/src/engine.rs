@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::apps::{self, AppEntry};
 use crate::calc;
@@ -131,11 +131,18 @@ impl Engine {
         // 2. Built-in prefixed commands.
         if let Some(cmd) = q.strip_prefix('>') {
             let cmd = cmd.trim();
-            let it = Item::new("shell", if cmd.is_empty() { "Run a command in Terminal".to_string() } else { format!("Run in Terminal: {cmd}") })
-                .subtitle("↩ to run")
-                .icon(Icon::Glyph(">"))
-                .valid(!cmd.is_empty())
-                .action(Action::Shell(cmd.to_string()));
+            let it = Item::new(
+                "shell",
+                if cmd.is_empty() {
+                    "Run a command in Terminal".to_string()
+                } else {
+                    format!("Run in Terminal: {cmd}")
+                },
+            )
+            .subtitle("↩ to run")
+            .icon(Icon::Glyph(">"))
+            .valid(!cmd.is_empty())
+            .action(Action::Shell(cmd.to_string()));
             return vec![it];
         }
         for kw in ["open", "find"] {
@@ -150,10 +157,10 @@ impl Engine {
             return self.snippet_items(rest);
         }
         for ws in &self.config.web_searches {
-            if let Some(rest) = strip_keyword(q, &ws.keyword) {
-                if !rest.is_empty() {
-                    return vec![web_item(&ws.title, &ws.url_for(rest), rest)];
-                }
+            if let Some(rest) = strip_keyword(q, &ws.keyword)
+                && !rest.is_empty()
+            {
+                return vec![web_item(&ws.title, &ws.url_for(rest), rest)];
             }
         }
         if q.starts_with('/') || q.starts_with('~') {
@@ -165,7 +172,10 @@ impl Engine {
 
         // 3. General search.
         let mut items = wf_items;
-        let expr = q.strip_prefix('=').map(str::trim).or_else(|| calc::looks_like_expression(q).then_some(q));
+        let expr = q
+            .strip_prefix('=')
+            .map(str::trim)
+            .or_else(|| calc::looks_like_expression(q).then_some(q));
         if let Some(v) = expr.and_then(calc::eval) {
             let s = calc::format(v);
             let mut it = Item::new(format!("calc:{s}"), s.clone())
@@ -222,14 +232,20 @@ impl Engine {
 
     fn file_items(&self, kw: &str, rest: &str) -> Vec<Item> {
         if rest.is_empty() {
-            return vec![Item::new(format!("kw:{kw}"), format!("{kw} <file name>"))
-                .subtitle("Search files in your home folder by name")
-                .icon(Icon::Glyph("▤"))
-                .valid(false)];
+            return vec![
+                Item::new(format!("kw:{kw}"), format!("{kw} <file name>"))
+                    .subtitle("Search files in your home folder by name")
+                    .icon(Icon::Glyph("▤"))
+                    .valid(false),
+            ];
         }
         let found = files::search(rest, self.config.max_results);
         if found.is_empty() {
-            return vec![Item::new("nofiles", "No files found").subtitle(rest.to_string()).valid(false)];
+            return vec![
+                Item::new("nofiles", "No files found")
+                    .subtitle(rest.to_string())
+                    .valid(false),
+            ];
         }
         found.iter().map(|p| path_item(p)).collect()
     }
@@ -245,7 +261,11 @@ impl Engine {
                 let first = e.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
                 let lines = e.text.lines().count();
                 let mut it = Item::new(format!("clip:{i}:{}", e.ts), truncate(first, 120))
-                    .subtitle(format!("{} chars, {} line(s) — ↩ to copy", e.text.chars().count(), lines))
+                    .subtitle(format!(
+                        "{} chars, {} line(s) — ↩ to copy",
+                        e.text.chars().count(),
+                        lines
+                    ))
                     .icon(Icon::Glyph("⎘"))
                     .action(Action::Copy(e.text.clone()))
                     .score(10_000.0 - i as f64);
@@ -272,7 +292,11 @@ impl Engine {
             .collect();
         v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         if v.is_empty() {
-            return vec![Item::new("nosnip", "No snippets").subtitle(format!("Add some to {}", self.paths.snippets_file().display())).valid(false)];
+            return vec![
+                Item::new("nosnip", "No snippets")
+                    .subtitle(format!("Add some to {}", self.paths.snippets_file().display()))
+                    .valid(false),
+            ];
         }
         v.into_iter()
             .map(|(sc, s)| {
@@ -298,10 +322,11 @@ impl Engine {
             (Some(a), true) => a.clone(),
             _ => item.action.clone(),
         };
-        if let Action::System(cmd) = &action {
-            if cmd.needs_confirmation() && !confirmed {
-                return Outcome::Confirm(format!("{}? Press ↩ again to confirm.", cmd.title()));
-            }
+        if let Action::System(cmd) = &action
+            && cmd.needs_confirmation()
+            && !confirmed
+        {
+            return Outcome::Confirm(format!("{}? Press ↩ again to confirm.", cmd.title()));
         }
         let outcome = self.perform(&action, mods);
         if outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_)) {
@@ -429,14 +454,20 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 fn web_item(engine: &str, url: &str, query: &str) -> Item {
-    Item::new(format!("web:{engine}:{query}"), format!("Search {engine} for '{query}'"))
-        .subtitle(url.to_string())
-        .icon(Icon::Glyph("🔍"))
-        .action(Action::OpenUrl(url.to_string()))
+    Item::new(
+        format!("web:{engine}:{query}"),
+        format!("Search {engine} for '{query}'"),
+    )
+    .subtitle(url.to_string())
+    .icon(Icon::Glyph("🔍"))
+    .action(Action::OpenUrl(url.to_string()))
 }
 
 fn path_item(p: &Path) -> Item {
-    let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.display().to_string());
     let is_app = p.extension().is_some_and(|e| e == "app");
     let mut it = Item::new(format!("file:{}", p.display()), name)
         .subtitle(files::tilde(p))
@@ -465,7 +496,11 @@ fn no_dash(s: &str, what: &str) -> Result<()> {
 }
 
 fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
-    let out = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output()?;
+    let out = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
     if !out.status.success() {
         bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -557,7 +592,10 @@ mod tests {
         std::fs::create_dir_all(apps.join("Visual Studio Code.app")).unwrap();
         std::fs::create_dir_all(apps.join("Calendar.app")).unwrap();
         let paths = Paths::under(&root);
-        let config = Config { app_dirs: vec![apps], ..Config::default() };
+        let config = Config {
+            app_dirs: vec![apps],
+            ..Config::default()
+        };
         (Engine::new(paths, config), root)
     }
 
@@ -585,7 +623,10 @@ mod tests {
         let (e, root) = engine("web");
         let r = e.query("g rust lifetimes");
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].action, Action::OpenUrl("https://www.google.com/search?q=rust%20lifetimes".into()));
+        assert_eq!(
+            r[0].action,
+            Action::OpenUrl("https://www.google.com/search?q=rust%20lifetimes".into())
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -595,7 +636,11 @@ mod tests {
         // "ca" prefixes Calendar; "sa" prefixes Safari. Make "a" ambiguous.
         let before: Vec<_> = e.query("a").iter().take(3).map(|i| i.title.clone()).collect();
         assert!(!before.is_empty());
-        let target = e.query("a").into_iter().find(|i| i.title == "Visual Studio Code").unwrap();
+        let target = e
+            .query("a")
+            .into_iter()
+            .find(|i| i.title == "Visual Studio Code")
+            .unwrap();
         for _ in 0..3 {
             e.usage.lock().unwrap().record("a", &target.id);
         }
@@ -606,8 +651,15 @@ mod tests {
     #[test]
     fn destructive_system_commands_need_confirmation() {
         let (e, root) = engine("sys");
-        let it = e.query("shut down").into_iter().find(|i| i.title == "Shut Down").unwrap();
-        assert!(matches!(e.execute(&it, "shut down", Mods::NONE, false), Outcome::Confirm(_)));
+        let it = e
+            .query("shut down")
+            .into_iter()
+            .find(|i| i.title == "Shut Down")
+            .unwrap();
+        assert!(matches!(
+            e.execute(&it, "shut down", Mods::NONE, false),
+            Outcome::Confirm(_)
+        ));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -624,13 +676,18 @@ mod tests {
             ],
             "connections": {"K": [{"destinationuid": "L", "modifiers": 0}]}
         });
-        let v: plist::Value = serde_json::from_value::<serde_json::Value>(doc).map(|j| json_to_plist(&j)).unwrap();
+        let v: plist::Value = serde_json::from_value::<serde_json::Value>(doc)
+            .map(|j| json_to_plist(&j))
+            .unwrap();
         v.to_file_xml(dir.join("info.plist")).unwrap();
         e.reload();
         let r = e.query("shout hello");
         assert_eq!(r[0].title, "Shout");
         assert_eq!(r[0].subtitle, "say hello");
-        assert_eq!(e.execute(&r[0], "shout hello", Mods::NONE, false), Outcome::LargeType("hello!".into()));
+        assert_eq!(
+            e.execute(&r[0], "shout hello", Mods::NONE, false),
+            Outcome::LargeType("hello!".into())
+        );
         // argument required: without one the item is not actionable
         assert!(!e.query("shout ")[0].valid);
         let _ = std::fs::remove_dir_all(root);
@@ -641,7 +698,10 @@ mod tests {
         match j {
             J::Null => plist::Value::String(String::new()),
             J::Bool(b) => plist::Value::Boolean(*b),
-            J::Number(n) => n.as_i64().map(plist::Value::from).unwrap_or_else(|| plist::Value::Real(n.as_f64().unwrap())),
+            J::Number(n) => n
+                .as_i64()
+                .map(plist::Value::from)
+                .unwrap_or_else(|| plist::Value::Real(n.as_f64().unwrap())),
             J::String(s) => plist::Value::String(s.clone()),
             J::Array(a) => plist::Value::Array(a.iter().map(json_to_plist).collect()),
             J::Object(o) => plist::Value::Dictionary(o.iter().map(|(k, v)| (k.clone(), json_to_plist(v))).collect()),
