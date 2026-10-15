@@ -583,6 +583,10 @@ pub(super) struct ParsedFilter {
     pub cache: Option<(u64, bool)>,
 }
 
+/// A Script Filter may return at most this many items; the rest are dropped (the output size cap
+/// alone would still allow ~100k tiny items to be built on every keystroke).
+pub(super) const MAX_FILTER_ITEMS: usize = 5_000;
+
 pub(super) fn parse_script_filter(stdout: &str) -> Result<ParsedFilter> {
     let text = stdout.trim();
     let v: Value = if text.starts_with('<') {
@@ -591,7 +595,7 @@ pub(super) fn parse_script_filter(stdout: &str) -> Result<ParsedFilter> {
         serde_json::from_str(text).context("script filter output is not valid JSON")?
     };
     let items = match v.get("items") {
-        Some(Value::Array(a)) => a.clone(),
+        Some(Value::Array(a)) => a.iter().take(MAX_FILTER_ITEMS).cloned().collect(),
         _ => bail!("script filter JSON has no \"items\" array"),
     };
     let rerun = v
@@ -631,6 +635,21 @@ mod tests {
         assert!(matches!(match_keyword("demox", "demo", true), KeywordMatch::No));
         assert!(matches!(match_keyword("de", "demo", true), KeywordMatch::Partial));
         assert!(matches!(match_keyword("d", "demo", true), KeywordMatch::No));
+    }
+
+    #[test]
+    fn script_filter_item_count_is_capped() {
+        let big = format!(
+            "{{\"items\":[{}]}}",
+            (0..MAX_FILTER_ITEMS + 500)
+                .map(|i| format!("{{\"title\":\"t{i}\"}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let parsed = parse_script_filter(&big).unwrap();
+        assert_eq!(parsed.items.len(), MAX_FILTER_ITEMS);
+        assert_eq!(parsed.items[0]["title"], "t0", "the first items are kept");
+        assert_eq!(parse_script_filter(r#"{"items":[{"title":"a"}]}"#).unwrap().items.len(), 1);
     }
 
     #[test]

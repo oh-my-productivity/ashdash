@@ -61,9 +61,10 @@ Low = hardening, robustness, privacy details.
 | SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) | Open by design (documented) |
 | SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
 | SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
-| SEC-17 | Low | App icon path from `CFBundleIconFile` is not confined to the bundle | `apps.rs` | (text) | Open (`apps.rs`) |
-| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only | Fixed in `usage.rs`/`config.rs` (FIX-B); opt-out wiring and clipboard concealed types pending |
-| SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs` | (text) | Open |
+| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `confine::tests` | Fixed (core-followups) |
+| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups); a `config` field that calls `Usage::set_enabled` and a "clear learning data" command are still to do (WP8 General page) |
+| SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
+| SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -320,15 +321,15 @@ hostile-input boundary from day one:
 
 | Resource | Today | Needed |
 |---|---|---|
-| Script stdout/stderr | unbounded (SEC-06) | 4 MiB cap, kill group |
-| Script runtime | 10 s filter / 60 s action; direct child only (SEC-05, SEC-16) | process-group kill; supervise before stdin write |
+| Script stdout/stderr | stdout 8 MiB, stderr 256 KiB, group killed (SEC-06, fixed) | ok |
+| Script runtime | 10 s filter / 60 s action; whole process group killed (SEC-05/16, fixed) | ok |
 | Concurrent script filters | the GUI worker drops stale *results*, but a started script is not cancelled and (unverified) a slow filter delays the next query | cancel stale runs; one in flight per workflow |
-| Archive size / entries | unbounded (SEC-07) | limits as above |
+| Archive size / entries | 2,000 entries / 100 MiB / ratio ceiling (SEC-07, fixed) | ok |
 | Graph traversal | bounded (256 steps) | ok |
-| Query length | unbounded into `calc`/`fuzzy` (SEC-08/09) | cap at the engine entry point |
-| Clipboard history | max entries, each entry unbounded size; whole file rewritten per copy | cap entry size (e.g. 1 MiB), async writes |
-| Script Filter item count | unbounded | cap |
-| Icon cache | unbounded files, unlimited concurrent `sips` | WP5 (LRU, limiter) |
+| Query length | `calc` 512 chars + depth 200, `fuzzy` 256 chars (SEC-08/09, fixed) | a single cap at the engine entry point would be tidier |
+| Clipboard history | max entries, text entries capped at 1 MiB (`MAX_TEXT_BYTES`), images size-capped; whole file still rewritten per copy | async writes |
+| Script Filter item count | capped at 5,000 (core-followups) | ok |
+| Icon cache | 500 files LRU, concurrent `sips` limited (WP5, done) | ok |
 
 ## 8. Suggested fix order
 
@@ -386,3 +387,53 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   returns a `TrustSummary` (serialisable): script-running object count, interpreters used, scripts that paste `{query}`
   into source, Open URL schemes (`{dynamic}` when not literal, `(none)` when absent), Terminal Command templates, files
   outside the workflow directory, and External Trigger count. The import confirmation (section 3) should be built on it.
+
+## 9b. Fix log (wave 3, CORE follow-ups, branch `wp/core-followups`)
+
+- **SEC-17** new `crates/core/src/confine.rs::confined_file(root, candidate)`: no `..`/root/prefix components, no symlink
+  anywhere below the root (also links that stay inside), a regular file whose canonical path is inside the canonical root;
+  the root itself may be a symlink (`/tmp`). Used for
+  (a) `apps.rs::icns_path`: `CFBundleIconFile` containing `/`, `\` or NUL is refused, the rest must be a regular,
+  non-symlink file in `Contents/Resources`; (b) `workflow/filter.rs::resolve_icon` (Script Filter / List Filter `icon.path`,
+  relative or absolute) and `workflow_icon` (`icon.png`): the image must live inside the workflow directory. Compatibility
+  cost: a Script Filter that points icons at its own cache/data directory or at a system path shows no icon (the item
+  still works). If that matters, widen the root list to include the workflow's data and cache directories (needs `Paths`
+  in `resolve_icon`); do not allow arbitrary absolute paths. `fileicon`/`filetype` icon types never touch the file system.
+- **SEC-19** (a) Concealed / transient / auto-generated pasteboard types and ignored apps never reach `clipboard.json`
+  or any row (re-verified end to end with a fake pasteboard: `clipboard_privacy.rs`). (b) Clipboard text only appears
+  behind the `clip` / `clipboard` keyword: ordinary queries, `snip`, `open`, `bm` never include it. (c) A snippet whose
+  expansion depends on the clipboard (directly, with an index, or through `{snippet:..}`; decided by expanding twice with
+  different clipboards) shows "expands using the clipboard" instead of the expanded first line and has no Large Type /
+  copy text; Return still pastes it. (d) `Engine::execute` no longer records clipboard actions in `usage.json`: the typed
+  query (`clip hunter2-corr`) is stored in clear text there and clipboard rows are ordered by recency anyway.
+  *Left to the UI:* a "hide clipboard contents while the screen is shared" preference; Large Type of a plain `clip` row
+  still shows the entry (the user asked for it explicitly).
+- **SEC-20** `Engine::run_node(bundle, node_uid, arg, vars)` runs from an arbitrary object of an enabled workflow and
+  records nothing. It exists for the user's own hotkeys (`crates/app/src/hotkeys.rs`, specs built from the installed
+  workflows). **It must never be reachable from `ashdash://`, the control socket or the CLI**, which may only use
+  `Engine::run_trigger` (External Trigger objects that opt in). Today `ipc.rs`, `urlscheme.rs` and `automation.rs` call only
+  `run_trigger` (checked with grep). Keep it that way when adding verbs.
+- **Bookmarks** `bookmarks/url.rs`: the allow-list is `http` and `https` only. `ftp:` was dropped (no current macOS browser
+  browses it and `open ftp://...` goes to whatever handler is registered); `file:`, `javascript:`, `data:`, `chrome:`,
+  `ssh:`, `smb:`, `vnc:`, `x-apple.*:`, `tel:` and anything else were already refused, now pinned by tests.
+- **Resource limits** `Config.file_search.{mdfind_timeout_ms, mdfind_max_bytes, walk_timeout_ms, walk_max_entries}`
+  (defaults 4000 ms / 8 MiB / 2000 ms / 200,000 = the previous hard-coded `SearchBudget`). Values are clamped when read
+  (200..30,000 ms, 64 KiB..256 MiB, 100..30,000 ms, 1,000..10,000,000), so neither a hand edit nor `0` can remove a limit;
+  `ashdash config set` rejects out-of-range values because the round trip no longer returns what was stored. The Script
+  Filter item count is capped at 5,000 (output size was already capped at 8 MiB).
+- **Fuzzing** `crates/core/tests/fuzz.rs`: hostile values for every Config v2 section and field (wrong types, extremes, junk),
+  `Config::load`/`load_strict` + save/load round trip, an `Engine` built from such settings answering queries with a null OS
+  and a temp home, and `settings_view::set` with arbitrary dotted paths and values (total, atomic, result loadable).
+  No defect found: the budget clamps are the only behaviour that had to be added.
+- **Re-measure** (`cargo bench -p ashdash-core --bench report`, release, 5,000 synthetic apps, this machine, idle):
+  engine query p95 0.42 ms overall (0.12-0.43 ms per query), warm-cache start to first query 6.2 ms, cold start 251 ms,
+  idle CPU 0, real scan of 81 apps 14.7 ms. The debug-build ceiling test `query_latency_p95_at_5000_apps_stays_under_the_ceiling`
+  was flaky because a single p95 over 120 samples is dominated by scheduler noise when the whole suite runs in parallel;
+  it now warms up and takes the best of five independent rounds (a real regression slows every round) against the
+  unchanged 25 ms ceiling and prints all rounds.
+
+### Status of every finding (checked in core-followups)
+
+SEC-01, 02, 04-12, 15, 16, 17, 18 (except opt-out wiring), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. Nothing is without a status.
+
