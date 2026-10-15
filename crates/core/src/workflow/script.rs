@@ -78,7 +78,7 @@ fn interpreter(kind: i64) -> Option<Interpreter> {
 /// Escape `{query}` for substitution into script source. Bit meanings for
 /// 2/4/32/64 are inferred from the default mask (102) and the reference launcher's forum
 /// guidance; 1/8/16 are brackets/semicolons/spaces in unverified order.
-fn escape_query(q: &str, mask: i64) -> String {
+pub(super) fn escape_query(q: &str, mask: i64) -> String {
     let mut out = String::with_capacity(q.len());
     for ch in q.chars() {
         let esc = match ch {
@@ -112,10 +112,11 @@ fn script_env(wf: &Workflow, paths: &Paths, vars: &BTreeMap<String, String>) -> 
     env.insert("alfred_workflow_name".into(), wf.name.clone());
     env.insert("alfred_workflow_bundleid".into(), wf.bundle_id.clone());
     env.insert("alfred_workflow_uid".into(), wf.id.clone());
+    env.insert("alfred_workflow_version".into(), wf.version.clone());
     env.insert("alfred_workflow_data".into(), data.display().to_string());
     env.insert("alfred_workflow_cache".into(), cache.display().to_string());
-    for (k, v) in &wf.variables {
-        env.insert(k.clone(), v.clone());
+    for (k, v) in wf.base_vars(paths) {
+        env.insert(k, v);
     }
     for (k, v) in vars {
         env.insert(k.clone(), v.clone());
@@ -176,6 +177,55 @@ pub(super) fn run_node_script(
         let _ = std::fs::remove_file(f);
     }
     result
+}
+
+/// Run AppleScript source with `osascript`. A script that only defines
+/// `on alfred_script(q)` (the reference launcher's Run NSAppleScript template) gets a `run`
+/// handler appended that calls it with the argument.
+pub(super) fn run_applescript(
+    source: &str,
+    arg: &str,
+    wf: &Workflow,
+    paths: &Paths,
+    vars: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> Result<ScriptOutput> {
+    let mut src = source.to_string();
+    if src.contains("alfred_script") && !src.contains("on run") {
+        src.push_str("\non run argv\n\treturn alfred_script(item 1 of argv)\nend run\n");
+    }
+    let dir = paths.cache.join("scripts");
+    std::fs::create_dir_all(&dir)?;
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file = dir.join(format!("{}-{}.applescript", std::process::id(), n));
+    std::fs::write(&file, src)?;
+    let mut cmd = Command::new("/usr/bin/osascript");
+    cmd.arg(&file)
+        .arg(arg)
+        .current_dir(&wf.dir)
+        .envs(script_env(wf, paths, vars))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let result = run_with_timeout(&mut cmd, None, timeout);
+    let _ = std::fs::remove_file(file);
+    result
+}
+
+/// Run a one-off AppleScript snippet (`osascript -e`), e.g. a Music command.
+pub fn run_osascript(source: &str) -> Result<String> {
+    let mut cmd = Command::new("/usr/bin/osascript");
+    cmd.arg("-e")
+        .arg(source)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let out = run_with_timeout(&mut cmd, None, Duration::from_secs(30))?;
+    if out.success {
+        Ok(out.stdout.trim_end().to_string())
+    } else {
+        bail!("osascript failed: {}", out.stderr.trim())
+    }
 }
 
 fn run_with_timeout(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -> Result<ScriptOutput> {
