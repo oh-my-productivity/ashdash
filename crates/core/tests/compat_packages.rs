@@ -108,6 +108,7 @@ fn every_bundled_reference_workflow_imports_loads_and_runs_without_panics() {
                 arg: "qa argument".into(),
                 vars: BTreeMap::new(),
                 mods: vec![],
+                ..Default::default()
             };
             for e in wf.run(&act, Mods::NONE, &env.paths) {
                 if let Effect::Warn(msg) = e

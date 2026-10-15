@@ -1,10 +1,6 @@
 //! What a result row says about itself while a modifier key is held
 //! (The reference launcher swaps the subtitle). Limited to what `ashdash_core::Item` exposes:
 //! `cmd_action` and a workflow's per-modifier overrides.
-//!
-//! Core change that would unlock real per-modifier subtitles: `ModOverride`
-//! (workflow/filter.rs) does not keep the Script Filter `mods.<m>.subtitle`
-//! text, so only a generic "alternate action" can be shown for workflows.
 
 use ashdash_core::{Action, Item, Mods};
 
@@ -35,6 +31,7 @@ pub fn describe_action(a: &Action) -> String {
         Action::System(c) => c.title().to_string(),
         Action::Shell(_) => "Run in Terminal".into(),
         Action::Workflow(_) => "Run workflow action".into(),
+        Action::Universal(_) => "Run action".into(),
     }
 }
 
@@ -54,6 +51,8 @@ pub fn mod_hint(item: &Item, mods: Mods) -> Option<String> {
     {
         return Some(if ov.valid == Some(false) {
             format!("{} Not available", mods_glyphs(mods))
+        } else if let Some(sub) = ov.subtitle.as_deref().filter(|s| !s.is_empty()) {
+            format!("{} {}", mods_glyphs(mods), sub)
         } else {
             format!("{} Alternate action", mods_glyphs(mods))
         });
@@ -134,22 +133,22 @@ mod tests {
                     CMD,
                     ModOverride {
                         arg: Some("x".into()),
-                        valid: None,
-                        vars: BTreeMap::new(),
+                        subtitle: Some("Open the docs".into()),
+                        ..Default::default()
                     },
                 ),
                 (
                     alt,
                     ModOverride {
-                        arg: None,
                         valid: Some(false),
-                        vars: BTreeMap::new(),
+                        ..Default::default()
                     },
                 ),
             ],
+            ..Default::default()
         };
         let it = Item::new("w", "t").action(Action::Workflow(Box::new(wa)));
-        assert_eq!(mod_hint(&it, CMD).as_deref(), Some("⌘ Alternate action"));
+        assert_eq!(mod_hint(&it, CMD).as_deref(), Some("⌘ Open the docs"));
         assert_eq!(mod_hint(&it, alt).as_deref(), Some("⌥ Not available"));
     }
 }

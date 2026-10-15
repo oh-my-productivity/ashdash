@@ -440,6 +440,7 @@ fn long_chain_is_cut_off_with_a_warning_and_finishes_fast() {
         arg: String::new(),
         vars: BTreeMap::new(),
         mods: vec![],
+        ..Default::default()
     };
     let fx_out = wf.run(&act, Mods::NONE, &fx.paths);
     assert!(
@@ -467,6 +468,7 @@ fn wide_fanout_and_self_loops_are_bounded() {
         arg: String::new(),
         vars: BTreeMap::new(),
         mods: vec![],
+        ..Default::default()
     };
     let start = Instant::now();
     let out = wf.run(&act, Mods::NONE, &fx.paths);
@@ -491,6 +493,7 @@ fn connections_to_missing_objects_and_odd_shapes_are_ignored() {
         arg: String::new(),
         vars: BTreeMap::new(),
         mods: vec![],
+        ..Default::default()
     };
     assert!(wf.run(&act, Mods::NONE, &fx.paths).is_empty());
 }
