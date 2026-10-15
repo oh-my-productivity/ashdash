@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Result, bail};
 
+use crate::actions;
 use crate::apps::{self, AppEntry};
 use crate::clipboard::{self, ClipboardHistory, Snippet};
 use crate::config::{Config, Paths};
@@ -141,6 +142,11 @@ impl Engine {
         items
     }
 
+    /// Universal Actions available for a result (empty when it has none).
+    pub fn actions_for(&self, item: &Item) -> Vec<Item> {
+        actions::actions_for(item)
+    }
+
     // ------------------------------------------------------------ execution
 
     pub fn execute(&self, item: &Item, query: &str, mods: Mods, confirmed: bool) -> Outcome {
@@ -156,6 +162,12 @@ impl Engine {
             && !confirmed
         {
             return Outcome::Confirm(format!("{}? Press ↩ again to confirm.", cmd.title()));
+        }
+        if let Action::Universal(u) = &action
+            && let Some(prompt) = u.confirmation()
+            && !confirmed
+        {
+            return Outcome::Confirm(prompt);
         }
         let outcome = self.perform(&action, mods);
         if outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_)) {
@@ -175,6 +187,11 @@ impl Engine {
                 Action::System(c) => c.run()?,
                 Action::Shell(cmd) => run_in_terminal(cmd)?,
                 Action::Workflow(a) => return Ok(self.run_workflow(a, mods)),
+                Action::Universal(u) => match actions::run(&actions::RealOs, u) {
+                    Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
+                    Outcome::Error(e) => bail!("{e}"),
+                    Outcome::Done | Outcome::Confirm(_) => {}
+                },
             }
             Ok(None)
         })();

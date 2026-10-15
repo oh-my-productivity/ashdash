@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::actions::UniversalAction;
 use crate::system::SystemCommand;
 use crate::workflow::WorkflowAction;
 
@@ -94,6 +95,19 @@ pub enum Action {
     /// Run a command line through `/bin/sh -c`.
     Shell(String),
     Workflow(Box<WorkflowAction>),
+    /// A Universal Action (file/text operation), executed through the `Os` trait.
+    Universal(UniversalAction),
+}
+
+impl Action {
+    /// A confirmation prompt if running this action needs one (destructive).
+    pub fn confirmation(&self) -> Option<String> {
+        match self {
+            Action::System(c) if c.needs_confirmation() => Some(format!("{}? Press ↩ again to confirm.", c.title())),
+            Action::Universal(u) => u.confirmation(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
