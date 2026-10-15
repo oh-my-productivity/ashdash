@@ -11,17 +11,18 @@ use eframe::egui::{self, Pos2, Vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use super::{LauncherApp, mac};
+use super::statusitem::MenuCmd;
+use super::{LauncherApp, geometry, mac, style, trace};
 
 /// Register the configured global hotkey. Returns the manager (which must be
-/// kept alive), the toggle channel and whether registration succeeded.
+/// kept alive), the toggle channel and the registration error, if any.
 pub(super) fn install_hotkey(
     engine: &Engine,
     ctx: &egui::Context,
-) -> (Option<GlobalHotKeyManager>, Receiver<()>, bool) {
+) -> (Option<GlobalHotKeyManager>, Receiver<()>, Option<String>) {
     let (toggle_tx, toggle_rx) = channel::<()>();
     let mut manager = None;
-    let mut hotkey_ok = false;
+    let mut error = None;
     match register_hotkey(&engine.config.hotkey) {
         Ok((m, id)) => {
             let ctx = ctx.clone();
@@ -32,15 +33,17 @@ pub(super) fn install_hotkey(
                 }
             }));
             manager = Some(m);
-            hotkey_ok = true;
             eprintln!(
                 "ashdash: press {} to open (Esc to close, Cmd+Q to quit)",
                 engine.config.hotkey
             );
         }
-        Err(e) => eprintln!("ashdash: could not register hotkey '{}': {e:#}", engine.config.hotkey),
+        Err(e) => {
+            eprintln!("ashdash: could not register hotkey '{}': {e:#}", engine.config.hotkey);
+            error = Some(format!("{e:#}"));
+        }
     }
-    (manager, toggle_rx, hotkey_ok)
+    (manager, toggle_rx, error)
 }
 
 fn register_hotkey(spec: &str) -> Result<(GlobalHotKeyManager, u32)> {
@@ -52,7 +55,9 @@ fn register_hotkey(spec: &str) -> Result<(GlobalHotKeyManager, u32)> {
 
 impl LauncherApp {
     pub(super) fn show(&mut self, ctx: &egui::Context) {
+        trace::trace(|| "show".into());
         self.visible = true;
+        self.focus_seen = None;
         self.shown_at = Instant::now();
         self.want_focus = true;
         self.query.clear();
@@ -65,16 +70,9 @@ impl LauncherApp {
         self.generation += 1;
         self.last_height = 0.0;
         self.last_pointer = None;
-        let width = self.theme.window_width;
-        let monitor = ctx.input(|i| i.viewport().monitor_size);
-        if let Some(m) = monitor {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
-                ((m.x - width) / 2.0).max(0.0),
-                m.y * 0.2,
-            )));
-        } else if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
-            ctx.send_viewport_cmd(cmd);
-        }
+        self.overlay = None;
+        mac::style_launcher_window(super::WINDOW_TITLE, &style::window_style(&self.theme));
+        self.position_launcher(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
@@ -83,19 +81,66 @@ impl LauncherApp {
         if !self.visible {
             return;
         }
+        trace::trace(|| "hide".into());
         self.visible = false;
+        self.quicklook.close();
+        self.quicklook_for = None;
+        self.overlay = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         mac::hide_app();
     }
 
-    /// Resize the viewport when the wanted height changed.
+    /// Put the launcher on the monitor that contains the mouse.
+    pub(super) fn position_launcher(&self, ctx: &egui::Context) {
+        let width = f64::from(self.theme.window_width);
+        let target = mac::screens_and_mouse()
+            .and_then(|(monitors, mouse)| geometry::launcher_position(&monitors, mouse, width, 0.2));
+        if let Some((x, y)) = target {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(x as f32, y as f32)));
+        } else if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+            ctx.send_viewport_cmd(cmd);
+        }
+    }
+
+    /// Handle menu-bar status item clicks.
+    pub(super) fn poll_menu(&mut self, ctx: &egui::Context) {
+        while let Ok(cmd) = self.menu_rx.try_recv() {
+            match cmd {
+                MenuCmd::Show => {
+                    if !self.visible {
+                        self.show(ctx);
+                    }
+                }
+                MenuCmd::Reload => {
+                    let engine = std::sync::Arc::clone(&self.engine);
+                    std::thread::spawn(move || engine.reload());
+                }
+                MenuCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    /// Resize the viewport when the wanted height changed. The very first
+    /// resize after startup can be dropped by the OS, so while the real
+    /// content height still differs, the command is repeated a few times.
     pub(super) fn sync_height(&mut self, ctx: &egui::Context, total_h: f32) {
-        if (total_h - self.last_height).abs() > 0.5 {
+        let changed = (total_h - self.last_height).abs() > 0.5;
+        if changed {
             self.last_height = total_h;
+            self.resize_retries = 0;
+        }
+        let actual = ctx.content_rect().height();
+        let stuck = !changed && (actual - total_h).abs() > 1.5 && self.resize_retries < 10;
+        if changed || stuck {
+            if stuck {
+                self.resize_retries += 1;
+                ctx.request_repaint_after(std::time::Duration::from_millis(80));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                 self.theme.window_width,
                 total_h,
             )));
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
     }
 }

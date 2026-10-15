@@ -1,9 +1,17 @@
 //! The launcher window (egui) plus the hotkey, clipboard watcher and
 //! background workers that feed it.
 
+mod geometry;
+mod keynames;
 mod keys;
+mod largetype;
 mod mac;
+mod quicklook;
 mod results;
+mod rowhint;
+mod statusitem;
+mod style;
+mod trace;
 mod window;
 mod workers;
 
@@ -19,6 +27,7 @@ use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Pos2, Vec2};
 use global_hotkey::GlobalHotKeyManager;
 
+const WINDOW_TITLE: &str = "Ashdash";
 const VISIBLE_ROWS: usize = 9;
 const ROW_HEIGHT: f32 = 48.0;
 
@@ -45,7 +54,21 @@ struct LauncherApp {
     shown_at: Instant,
     want_focus: bool,
     last_height: f32,
+    resize_retries: u8,
     last_pointer: Option<Pos2>,
+    focus_seen: Option<bool>,
+
+    /// Set while the window is stretched over a monitor for Large Type.
+    overlay: Option<geometry::Rect>,
+    quicklook: quicklook::QuickLook,
+    quicklook_for: Option<String>,
+    quicklook_was_open: bool,
+    shift_tap: quicklook::ShiftTap,
+    started: Instant,
+    /// Why the global hotkey could not be registered, if it could not.
+    hotkey_error: Option<String>,
+    menu_rx: Receiver<statusitem::MenuCmd>,
+    _status_item: Option<statusitem::StatusItem>,
 
     status: Option<String>,
     confirming: Option<String>,
@@ -75,7 +98,7 @@ pub fn run(engine: Arc<Engine>) -> Result<()> {
     };
 
     let viewport = egui::ViewportBuilder::default()
-        .with_title("Ashdash")
+        .with_title(WINDOW_TITLE)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
@@ -119,7 +142,11 @@ impl LauncherApp {
         workers::spawn_query_worker(Arc::clone(&engine), ctx.clone(), req_rx, res_tx);
 
         // Global hotkey.
-        let (manager, toggle_rx, hotkey_ok) = window::install_hotkey(&engine, &ctx);
+        let (manager, toggle_rx, hotkey_error) = window::install_hotkey(&engine, &ctx);
+        let hotkey_ok = hotkey_error.is_none();
+
+        let (menu_tx, menu_rx) = channel();
+        let status_item = statusitem::install(menu_tx, ctx.clone());
 
         workers::spawn_clipboard_watcher(Arc::clone(&engine));
 
@@ -137,7 +164,18 @@ impl LauncherApp {
             shown_at: Instant::now(),
             want_focus: false,
             last_height: 0.0,
+            resize_retries: 0,
             last_pointer: None,
+            focus_seen: None,
+            overlay: None,
+            quicklook: quicklook::QuickLook::default(),
+            quicklook_for: None,
+            quicklook_was_open: false,
+            shift_tap: quicklook::ShiftTap::default(),
+            started: Instant::now(),
+            hotkey_error,
+            menu_rx,
+            _status_item: status_item,
             status: None,
             confirming: None,
             large_type: None,
@@ -201,6 +239,7 @@ impl LauncherApp {
 impl eframe::App for LauncherApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background(ctx);
+        self.poll_menu(ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -214,9 +253,16 @@ impl eframe::App for LauncherApp {
         }
 
         // Close when the window loses focus (after a short grace period while
-        // the OS hands focus over).
+        // the OS hands focus over). While a Quick Look preview is up, focus
+        // legitimately lives in the preview process.
         let focused = ctx.input(|i| i.viewport().focused);
-        if focused == Some(false) && self.shown_at.elapsed() > Duration::from_millis(400) {
+        if focused != self.focus_seen {
+            self.focus_seen = focused;
+            let since = self.shown_at.elapsed().as_millis();
+            trace::trace(|| format!("focus={focused:?} +{since}ms after show"));
+        }
+        self.tick_quicklook(&ctx);
+        if focused == Some(false) && self.shown_at.elapsed() > Duration::from_millis(400) && !self.quicklook.is_open() {
             self.hide(&ctx);
             return;
         }
@@ -226,10 +272,22 @@ impl eframe::App for LauncherApp {
             return;
         }
 
+        if self.large_type.is_some() {
+            self.draw_large_type(ui, &ctx);
+            return;
+        }
+        if self.overlay.is_some() {
+            self.leave_overlay(&ctx);
+        }
+
         let t = self.theme.clone();
         let rows = self.items.len().min(VISIBLE_ROWS);
-        let large = self.large_type.is_some();
-        let body_h = if large { 220.0 } else { rows as f32 * ROW_HEIGHT };
+        let hint = self.startup_hint();
+        let body_h = if hint.is_some() {
+            ROW_HEIGHT
+        } else {
+            rows as f32 * ROW_HEIGHT
+        };
         let status_h = if self.status.is_some() { 26.0 } else { 0.0 };
         let sep = if body_h > 0.0 { 9.0 } else { 0.0 };
         let total_h = header_height(&t) + sep + body_h + status_h;
@@ -264,19 +322,15 @@ impl eframe::App for LauncherApp {
                     if resp.changed() {
                         self.confirming = None;
                         self.status = None;
-                        self.large_type = None;
                         self.selected = 0;
+                        trace::trace(|| format!("query={:?}", self.query));
                         self.request_query();
                     }
                 });
 
-            if let Some(text) = self.large_type.clone() {
+            if let Some(text) = hint {
                 ui.add_space(9.0);
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(text).size(32.0).color(c(t.result_text_selected))).wrap(),
-                    );
-                });
+                self.draw_hint_row(ui, &t, &text);
             } else if rows > 0 {
                 ui.add_space(9.0);
                 self.draw_results(ui, &ctx, &t);
