@@ -911,3 +911,68 @@ fn bundled_reference_templates_load_and_report_unsupported_objects() {
     let _ = std::fs::remove_dir_all(r);
     let _ = std::fs::remove_dir_all(root);
 }
+
+// ---------------------------------------------------------------- SEC-17 icon confinement
+
+#[test]
+fn item_icons_are_confined_to_the_workflow_directory() {
+    use crate::item::Icon;
+    use std::os::unix::fs::symlink;
+
+    let script = r#"printf '{"items":[
+        {"title":"own","icon":{"path":"img/ok.png"}},
+        {"title":"dotdot","icon":{"path":"../../outside.png"}},
+        {"title":"abs-outside","icon":{"path":"%s"}},
+        {"title":"abs-inside","icon":{"path":"%s"}},
+        {"title":"link","icon":{"path":"link.png"}},
+        {"title":"dirlink","icon":{"path":"dirlink/outside.png"}}
+    ]}' "$OUTSIDE" "$INSIDE""#;
+    let (wf, paths, root) = load(
+        "icon-confine",
+        json!({"objects": [obj("SF", KIND_SCRIPT_FILTER, json!({
+            "keyword": "ic", "withspace": true, "argumenttype": 1, "type": 0, "scriptargtype": 1,
+            "title": "I", "subtext": "", "script": script}))], "connections": {}}),
+    );
+    let outside = root.join("outside.png");
+    std::fs::write(&outside, b"png").unwrap();
+    std::fs::create_dir_all(wf.dir.join("img")).unwrap();
+    std::fs::write(wf.dir.join("img/ok.png"), b"png").unwrap();
+    symlink(&outside, wf.dir.join("link.png")).unwrap();
+    symlink(&root, wf.dir.join("dirlink")).unwrap();
+    // the script gets the two absolute paths through the process environment
+    let mut wf = wf;
+    wf.variables.insert("OUTSIDE".into(), outside.display().to_string());
+    wf.variables
+        .insert("INSIDE".into(), wf.dir.join("img/ok.png").display().to_string());
+
+    let (items, _) = wf.keyword_items("ic x", &paths);
+    let icon = |t: &str| items.iter().find(|i| i.title == t).unwrap_or_else(|| panic!("{t}: {items:?}")).icon.clone();
+    assert_eq!(icon("own"), Icon::Image(wf.dir.join("img/ok.png")));
+    assert_eq!(icon("abs-inside"), Icon::Image(wf.dir.join("img/ok.png")));
+    for t in ["dotdot", "abs-outside", "link", "dirlink"] {
+        assert_eq!(icon(t), Icon::None, "{t} must not resolve to an image");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn workflow_icon_png_symlink_falls_back_to_the_glyph() {
+    use crate::item::Icon;
+    let (wf, paths, root) = load(
+        "icon-link",
+        json!({"objects": [obj("K", KIND_KEYWORD, json!({
+            "keyword": "ik", "withspace": true, "argumenttype": 1, "text": "T", "subtext": ""}))],
+            "connections": {}}),
+    );
+    let outside = root.join("evil.png");
+    std::fs::write(&outside, b"png").unwrap();
+    std::os::unix::fs::symlink(&outside, wf.dir.join("icon.png")).unwrap();
+    let (items, _) = wf.keyword_items("ik x", &paths);
+    assert!(!items.is_empty());
+    assert!(items.iter().all(|i| i.icon == Icon::Glyph("◆")), "{items:?}");
+    std::fs::remove_file(wf.dir.join("icon.png")).unwrap();
+    std::fs::write(wf.dir.join("icon.png"), b"png").unwrap();
+    let (items, _) = wf.keyword_items("ik x", &paths);
+    assert!(items.iter().all(|i| i.icon == Icon::Image(wf.dir.join("icon.png"))));
+    let _ = std::fs::remove_dir_all(root);
+}

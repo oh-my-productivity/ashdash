@@ -7,6 +7,7 @@ pub mod brand;
 pub mod calc;
 pub mod clipboard;
 pub mod config;
+pub mod confine;
 pub mod engine;
 pub mod files;
 pub mod fuzzy;

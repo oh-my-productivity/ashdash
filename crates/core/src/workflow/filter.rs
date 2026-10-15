@@ -15,7 +15,7 @@
 //! item's (script-level ones remain), as documented by the reference launcher.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -150,22 +150,19 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
         }
         "filetype" => Icon::Glyph("▤"),
         _ => {
-            let p = if Path::new(path).is_absolute() {
-                PathBuf::from(path)
-            } else {
-                wf.dir.join(path)
-            };
-            if p.is_file() { Icon::Image(p) } else { Icon::None }
+            // SEC-17: only regular files inside the workflow directory, no symlinks.
+            match crate::confine::confined_file(&wf.dir, Path::new(path)) {
+                Some(p) => Icon::Image(p),
+                None => Icon::None,
+            }
         }
     }
 }
 
 fn workflow_icon(wf: &Workflow) -> Icon {
-    let p = wf.dir.join("icon.png");
-    if p.is_file() {
-        Icon::Image(p)
-    } else {
-        Icon::Glyph("◆")
+    match crate::confine::confined_file(&wf.dir, Path::new("icon.png")) {
+        Some(p) => Icon::Image(p),
+        None => Icon::Glyph("◆"),
     }
 }
 

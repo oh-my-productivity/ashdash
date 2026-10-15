@@ -44,11 +44,16 @@ fn icns_path(app: &Path) -> Option<PathBuf> {
     let resources = app.join("Contents/Resources");
     let info = plist::Value::from_file(app.join("Contents/Info.plist")).ok()?;
     let name = info.as_dictionary()?.get("CFBundleIconFile")?.as_string()?.to_string();
-    let mut p = resources.join(&name);
-    if p.extension().is_none() {
-        p.set_extension("icns");
+    // SEC-17: `CFBundleIconFile` is a plain file name inside Resources; anything with a
+    // separator, `..` or an absolute path (and any symlink) is refused.
+    let mut rel = PathBuf::from(&name);
+    if rel.extension().is_none() {
+        rel.set_extension("icns");
     }
-    p.exists().then_some(p)
+    if name.contains(['/', '\\', '\0']) {
+        return None;
+    }
+    crate::confine::confined_file(&resources, &rel)
 }
 
 /// Convert the app's icon to a small PNG (cached) using the system `sips`
@@ -138,5 +143,40 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1, "no .part leftovers");
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    fn fake_app(root: &Path, icon_file: &str) -> PathBuf {
+        let app = root.join("Evil.app");
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        let mut d = plist::Dictionary::new();
+        d.insert("CFBundleIconFile".into(), icon_file.into());
+        plist::Value::Dictionary(d)
+            .to_file_xml(app.join("Contents/Info.plist"))
+            .unwrap();
+        app
+    }
+
+    #[test]
+    fn icon_file_name_is_confined_to_resources() {
+        // SEC-17
+        let root = std::env::temp_dir().join(format!("oa-apps-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("secret.icns"), b"x").unwrap();
+        let secret_abs = root.join("secret.icns").display().to_string();
+        for bad in ["../../../secret.icns", "../secret", secret_abs.as_str(), "sub/x.icns", "a\\b"] {
+            let app = fake_app(&root, bad);
+            assert_eq!(icns_path(&app), None, "{bad}");
+            let _ = std::fs::remove_dir_all(&app);
+        }
+        // a symlink inside Resources is refused as well
+        let app = fake_app(&root, "icon");
+        std::os::unix::fs::symlink(root.join("secret.icns"), app.join("Contents/Resources/icon.icns")).unwrap();
+        assert_eq!(icns_path(&app), None);
+        std::fs::remove_file(app.join("Contents/Resources/icon.icns")).unwrap();
+        // ...while a normal icon, with or without extension, resolves
+        std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
+        assert_eq!(icns_path(&app), Some(app.join("Contents/Resources/icon.icns")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
