@@ -465,3 +465,16 @@ fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
     let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
     assert!(p95 < Duration::from_millis(25), "p95 = {p95:?}");
 }
+
+#[test]
+fn dropping_the_index_stops_its_background_thread() {
+    let env = Env::new("drop");
+    fake_app(&env.apps, "A");
+    drop(env.open(QUIET)); // write a cache so the next open refreshes in the background
+    let (idx, live) = env.open(IndexOptions::default());
+    wait_until("initial refresh", || idx.refreshed() && idx.watching());
+    assert!(Arc::strong_count(&live) > 1, "worker holds the list while running");
+    drop(idx);
+    // the worker owns the last other reference; it releases it when it exits
+    wait_until("worker exits", || Arc::strong_count(&live) == 1);
+}
