@@ -92,18 +92,18 @@ impl Provider for SnippetsProvider {
                         .filter(|p| !p.is_empty())
                         .collect::<Vec<_>>()
                         .join(" · ");
-                    let action = clip_action(
-                        ClipCommand::PasteText {
-                            text: ex.text.clone(),
-                            cursor_back: ex.cursor_back,
-                        },
-                        Action::Copy(ex.text.clone()),
-                    );
+                    let action = clip_action(ClipCommand::PasteText {
+                        text: ex.text.clone(),
+                        cursor_back: ex.cursor_back,
+                    });
                     let mut it = Item::new(id, &s.name)
                         .subtitle(sub)
                         .icon(Icon::Glyph("✂"))
                         .action(action)
                         .score(sc);
+                    // Cmd+Return only copies the expanded text.
+                    it.cmd_action = Some(Action::Copy(ex.text.clone()));
+                    it.copy_text = Some(ex.text.clone());
                     it.large_type = Some(ex.text);
                     it
                 })
@@ -118,6 +118,13 @@ mod tests {
     use super::*;
     use crate::clipboard::snippets::{Collection, collections_dir, save_collection};
     use crate::item::Action;
+
+    fn paste(text: &str, cursor_back: Option<usize>) -> Action {
+        Action::Clipboard(ClipCommand::PasteText {
+            text: text.into(),
+            cursor_back,
+        })
+    }
 
     fn snip(name: &str, kw: &str, text: &str, coll: &str) -> Snippet {
         Snippet {
@@ -145,7 +152,8 @@ mod tests {
         let r = e.query("snip sig");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].id, "snip:sig");
-        assert_eq!(r[0].action, Action::Copy("Regards".into()));
+        assert_eq!(r[0].action, paste("Regards", None));
+        assert_eq!(r[0].cmd_action, Some(Action::Copy("Regards".into())));
         assert_eq!(r[0].subtitle, "sig · Regards");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -167,7 +175,7 @@ mod tests {
             h.push("hedgehogs");
         }
         let r = e.query("snip re");
-        assert_eq!(r[0].action, Action::Copy("Hi Andrew, re: hedgehogs!".into()));
+        assert_eq!(r[0].action, paste("Hi Andrew, re: hedgehogs!", Some(1)));
         assert_eq!(r[0].large_type.as_deref(), Some("Hi Andrew, re: hedgehogs!"));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -253,7 +261,7 @@ mod tests {
         .unwrap();
         e.reload_blocking();
         let r = e.query("snip mail");
-        assert_eq!(r[0].action, Action::Copy("Hello\nRegards".into()));
+        assert_eq!(r[0].action, paste("Hello\nRegards", None));
         let _ = std::fs::remove_dir_all(root);
     }
 }
