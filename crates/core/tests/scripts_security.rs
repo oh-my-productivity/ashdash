@@ -551,5 +551,8 @@ fn unread_stdin_cannot_defeat_the_timeout() {
     let items = fx.items(&wf, &format!("sf {big}"));
     let took = start.elapsed();
     assert!(!items.is_empty());
-    assert!(took < Duration::from_secs(12), "returned after {took:?} (timeout is 10 s)");
+    assert!(
+        took < Duration::from_secs(12),
+        "returned after {took:?} (timeout is 10 s)"
+    );
 }
