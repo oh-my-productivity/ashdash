@@ -23,8 +23,8 @@ pub struct ScriptOutput {
     pub success: bool,
 }
 
-struct Interpreter {
-    program: &'static str,
+pub(super) struct Interpreter {
+    pub(super) program: &'static str,
     pre_args: &'static [&'static str],
     ext: &'static str,
 }
@@ -32,7 +32,7 @@ struct Interpreter {
 /// Script types. Values 0 (bash) and 5 (zsh) are confirmed by the bundled
 /// templates; the others follow the reference launcher's documented language list and are
 /// unverified against the binary.
-fn interpreter(kind: i64) -> Option<Interpreter> {
+pub(super) fn interpreter(kind: i64) -> Option<Interpreter> {
     Some(match kind {
         0 => Interpreter {
             program: "/bin/bash",
