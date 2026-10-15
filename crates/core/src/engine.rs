@@ -210,6 +210,7 @@ impl Engine {
                 arg: arg.to_string(),
                 vars: Default::default(),
                 mods: vec![],
+                ..Default::default()
             };
             wf.run(&act, Mods::NONE, &self.paths)
         };
@@ -248,6 +249,19 @@ fn apply_effects(effects: Vec<Effect>) -> String {
             Effect::Terminal(c) => run_in_terminal(&c),
             Effect::Warn(w) => {
                 errors.push(w);
+                Ok(())
+            }
+            Effect::Delay { seconds, resume } => {
+                workflow::spawn_delayed(seconds, *resume, apply_effects);
+                Ok(())
+            }
+            Effect::WriteFile(w) => w.perform(),
+            Effect::AppleScript(s) => workflow::run_osascript(&s).map(|_| ()),
+            Effect::ShowLauncher { query } => Err(anyhow::anyhow!(
+                "showing the launcher with '{query}' from a workflow is not wired up yet"
+            )),
+            Effect::Debug(t) => {
+                workflow::debug_log(&t);
                 Ok(())
             }
         };

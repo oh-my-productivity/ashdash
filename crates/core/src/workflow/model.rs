@@ -2,9 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
+
+use super::runtime::Runtime;
+use super::userconfig::{self, ConfigVar};
+use crate::config::Paths;
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -33,6 +38,10 @@ impl Node {
 pub struct Connection {
     pub dest: String,
     pub modifiers: u64,
+    /// `sourceoutputuid`: which output of the source object this wire leaves
+    /// from. Only Conditional objects have several outputs; the else output
+    /// (and every ordinary object) has none.
+    pub source_output: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +54,17 @@ pub struct Workflow {
     pub disabled: bool,
     pub nodes: Vec<Node>,
     pub connections: HashMap<String, Vec<Connection>>,
+    /// Workflow variables: the `variables` dictionary of `info.plist`, with
+    /// the defaults of every user-configuration entry filled in.
     pub variables: BTreeMap<String, String>,
+    pub version: String,
+    /// Entries of the workflow configuration sheet (`userconfigurationconfig`).
+    pub user_config: Vec<ConfigVar>,
+    /// Variables the reference launcher strips when exporting (`variablesdontexport`).
+    pub dont_export: Vec<String>,
+    /// Session variables, script-filter cache and user-set values. Shared by
+    /// clones so a deferred (delayed) continuation sees the same state.
+    pub(super) runtime: Arc<Runtime>,
 }
 
 // ---------------------------------------------------------------- loading
@@ -118,11 +137,39 @@ impl Workflow {
                     connections.entry(from.clone()).or_default().push(Connection {
                         dest: dest.to_string(),
                         modifiers: c.get("modifiers").and_then(Value::as_u64).unwrap_or(0),
+                        source_output: c
+                            .get("sourceoutputuid")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
                     });
                 }
             }
         }
+        // Streams leaving one object run top to bottom by the Y position of
+        // their destination on the canvas (observed in the reference launcher's "Stream
+        // Order" template). The sort is stable, so without `uidata` the file
+        // order is kept.
+        let ypos = |uid: &str| {
+            j.get("uidata")
+                .and_then(|u| u.get(uid))
+                .and_then(|u| u.get("ypos"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        for list in connections.values_mut() {
+            list.sort_by(|a, b| {
+                ypos(&a.dest)
+                    .partial_cmp(&ypos(&b.dest))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
         let text = |k: &str| j.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let mut variables = str_map(j.get("variables"));
+        let user_config = userconfig::parse(j.get("userconfigurationconfig"));
+        for c in &user_config {
+            variables.entry(c.variable.clone()).or_insert_with(|| c.default.clone());
+        }
         Ok(Workflow {
             id: id.to_string(),
             dir: dir.to_path_buf(),
@@ -131,12 +178,54 @@ impl Workflow {
             disabled: j.get("disabled").and_then(Value::as_bool).unwrap_or(false),
             nodes,
             connections,
-            variables: str_map(j.get("variables")),
+            variables,
+            version: text("version"),
+            user_config,
+            dont_export: j
+                .get("variablesdontexport")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
+            runtime: Arc::new(Runtime::default()),
         })
     }
 
     pub(super) fn node(&self, uid: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.uid == uid)
+    }
+
+    /// Workflow variables as scripts and templates see them: `info.plist`
+    /// variables and configuration defaults, overridden by values the user
+    /// saved for this workflow (see [`Workflow::user_values_file`]).
+    pub fn base_vars(&self, paths: &Paths) -> BTreeMap<String, String> {
+        let mut vars = self.variables.clone();
+        vars.extend(self.runtime.user_values(&self.user_values_file(paths)));
+        vars
+    }
+
+    /// Where user-set configuration values live: a flat JSON object
+    /// `{"variable": "value"}` per workflow. A preferences UI writes it; it is
+    /// read once per loaded workflow and again after a reload.
+    pub fn user_values_file(&self, paths: &Paths) -> PathBuf {
+        paths
+            .data
+            .join("workflow-config")
+            .join(format!("{}.json", self.data_key().replace(['/', '\\'], "_")))
+    }
+
+    /// Variables that survive an export (everything but `variablesdontexport`).
+    pub fn exportable_variables(&self) -> BTreeMap<String, String> {
+        self.variables
+            .iter()
+            .filter(|(k, _)| !self.dont_export.contains(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Forget session variables and cached Script Filter output (what the reference launcher
+    /// does when the launcher closes / the workflow is reloaded).
+    pub fn reset_session(&self) {
+        self.runtime.reset();
     }
 
     pub(super) fn data_key(&self) -> String {
