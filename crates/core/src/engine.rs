@@ -23,6 +23,8 @@ pub enum Outcome {
     Done,
     /// Show this text in Large Type.
     LargeType(String),
+    /// Show the launcher with this text typed in (a workflow's Open Launcher object).
+    ShowLauncher(String),
     /// The action is destructive; ask the user and call again with `confirmed`.
     Confirm(String),
     Error(String),
@@ -378,6 +380,28 @@ impl Engine {
         actions::actions_for(item)
     }
 
+    /// Placeholder rows (`runningsubtext`) for Script Filters that would run for
+    /// `query`, cheap enough to show while the real, slow query is in flight.
+    pub fn pending_items(&self, query: &str) -> Vec<Item> {
+        let q = query.trim_start();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let wfs = self.workflows.read().unwrap();
+        wfs.iter().flat_map(|w| w.pending_items(q, &self.paths)).collect()
+    }
+
+    /// Applications to offer for "Open With..." on `path`, filtered by `filter`.
+    pub fn open_with_items(&self, path: &Path, filter: &str, limit: usize) -> Vec<Item> {
+        actions::open_with_items(self.os.as_ref(), &self.config.app_dirs, path, filter, limit)
+    }
+
+    /// Start Quick Look on `paths` through the engine's [`Os`] and return the
+    /// handle; `kill()` on it dismisses the preview.
+    pub fn spawn_quick_look(&self, paths: &[PathBuf]) -> Result<Box<dyn actions::Process>> {
+        actions::spawn_quick_look(self.os.as_ref(), paths)
+    }
+
     // ------------------------------------------------------------ execution
 
     /// The action `item` runs for `mods` (the Cmd variant when Cmd is held).
@@ -413,7 +437,7 @@ impl Engine {
         // (`act:copy:<text>`); recording that would write it, unbounded and in
         // plaintext, to usage.json. They are never ranked, so nothing is lost.
         let learnable = !matches!(action, Action::Universal(_)) && !matches!(item.action, Action::Universal(_));
-        if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_))) {
+        if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_) | Outcome::ShowLauncher(_))) {
             self.usage.lock().unwrap().record(query, &item.id);
         }
         outcome
@@ -433,12 +457,12 @@ impl Engine {
                 Action::Clipboard(c) => match clipboard::command::run_with(&self.clipboard, c, &*self.clip_env) {
                     Outcome::Error(m) => bail!("{m}"),
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
-                    Outcome::Done | Outcome::Confirm(_) => {}
+                    Outcome::Done | Outcome::Confirm(_) | Outcome::ShowLauncher(_) => {}
                 },
                 Action::Universal(u) => match actions::run(self.os.as_ref(), u) {
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
                     Outcome::Error(e) => bail!("{e}"),
-                    Outcome::Done | Outcome::Confirm(_) => {}
+                    Outcome::Done | Outcome::Confirm(_) | Outcome::ShowLauncher(_) => {}
                 },
             }
             Ok(None)
@@ -486,12 +510,15 @@ impl Engine {
 // Effects are reported back as a tagged string so `perform` can stay uniform.
 const TAG_LARGE: &str = "\u{1}large:";
 const TAG_ERR: &str = "\u{1}err:";
+const TAG_SHOW: &str = "\u{1}show:";
 
 fn msg_to_outcome(m: String) -> Outcome {
     if let Some(t) = m.strip_prefix(TAG_LARGE) {
         Outcome::LargeType(t.to_string())
     } else if let Some(e) = m.strip_prefix(TAG_ERR) {
         Outcome::Error(e.to_string())
+    } else if let Some(q) = m.strip_prefix(TAG_SHOW) {
+        Outcome::ShowLauncher(q.to_string())
     } else {
         Outcome::Done
     }
@@ -499,6 +526,7 @@ fn msg_to_outcome(m: String) -> Outcome {
 
 fn apply_effects(effects: Vec<Effect>) -> String {
     let mut large = None;
+    let mut show = None;
     let mut errors = Vec::new();
     for fx in effects {
         let r: Result<()> = match fx {
@@ -522,9 +550,10 @@ fn apply_effects(effects: Vec<Effect>) -> String {
             }
             Effect::WriteFile(w) => w.perform(),
             Effect::AppleScript(s) => workflow::run_osascript(&s).map(|_| ()),
-            Effect::ShowLauncher { query } => Err(anyhow::anyhow!(
-                "showing the launcher with '{query}' from a workflow is not wired up yet"
-            )),
+            Effect::ShowLauncher { query } => {
+                show = Some(query);
+                Ok(())
+            }
             Effect::Debug(t) => {
                 workflow::debug_log(&t);
                 Ok(())
@@ -536,6 +565,8 @@ fn apply_effects(effects: Vec<Effect>) -> String {
     }
     if !errors.is_empty() {
         format!("{TAG_ERR}{}", errors.join("; "))
+    } else if let Some(q) = show {
+        format!("{TAG_SHOW}{q}")
     } else if let Some(t) = large {
         format!("{TAG_LARGE}{t}")
     } else {

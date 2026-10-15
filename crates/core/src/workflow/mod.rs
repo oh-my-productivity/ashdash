@@ -26,7 +26,7 @@ pub use compat::{ENTRY_KINDS, FLOW_KINDS, INPUT_KINDS, is_supported, unsupported
 pub use exec::{Effect, Resume, WriteFile, WriteMode, debug_log, render, spawn_delayed};
 pub use filter::{KeywordResults, ModOverride, WorkflowAction, rerun_interval};
 pub use model::{Connection, Node, Workflow, load_all};
-pub use package::import_package;
+pub use package::{PackagePreview, import_package, preview_package};
 pub use script::{ScriptOutput, run_osascript};
 pub use trust::TrustSummary;
 pub use userconfig::ConfigVar;
