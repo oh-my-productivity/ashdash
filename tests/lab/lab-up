@@ -6,7 +6,7 @@
 # stdout: one line `<vm-name> <ip>`; everything else goes to stderr. Idempotent: with the same
 # --id an existing, running VM is reused (its slot is kept).
 set -euo pipefail
-# shellcheck source=tests/lab/lib.sh
+# shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 
 id="" image=$LAB_GOLDEN qtimeout=$LAB_QUEUE_TIMEOUT

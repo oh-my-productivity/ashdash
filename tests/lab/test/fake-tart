@@ -6,12 +6,12 @@ mkdir -p "$home/vms"
 cmd=${1:-}; shift || true
 case "$cmd" in
   list)
-    fmt=text; quiet=0
+    fmt=text
     while [ $# -gt 0 ]; do
       case "$1" in
         --format) fmt=$2; shift 2 ;;
         --source) shift 2 ;;
-        -q|--quiet) quiet=1; shift ;;
+        -q|--quiet) shift ;;
         *) shift ;;
       esac
     done
@@ -47,8 +47,14 @@ case "$cmd" in
     while :; do sleep 1; done
     ;;
   ip)
-    [ "$(cat "$home/vms/$1/state" 2>/dev/null)" = running ] || exit 1
-    echo 192.0.2.10
+    name=$1; shift; wait=0
+    [ "${1:-}" = "--wait" ] && wait=$2
+    [ "$wait" -gt 20 ] && wait=20   # like tart: poll until the VM is up (capped to keep failures quick)
+    for _ in $(seq 0 "$wait"); do
+      if [ "$(cat "$home/vms/$name/state" 2>/dev/null)" = running ]; then echo 192.0.2.10; exit 0; fi
+      sleep 1
+    done
+    exit 1
     ;;
   stop)
     name=$1

@@ -1,2 +1,5 @@
 /target
 /.worktrees
+
+# Test lab artifacts (screenshots, logs) - never commit
+/lab-out/

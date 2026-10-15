@@ -7,7 +7,7 @@
 # Inside the VM, $LAB_ARTIFACTS is a fresh directory; with --artifacts DIR its contents are copied
 # to DIR on the host afterwards (also when the command failed). Screenshots belong there, never in git.
 set -euo pipefail
-# shellcheck source=tests/lab/lib.sh
+# shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 
 vm="" artifacts="" sync=1 src=$LAB_REPO_ROOT envs=()

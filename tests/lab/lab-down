@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lab-down <vm>...   Stop and delete disposable run VMs and release their slot. Idempotent.
 set -euo pipefail
-# shellcheck source=tests/lab/lib.sh
+# shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 [ $# -gt 0 ] || lab_die "usage: lab-down <vm>..."
 lab_need_tart

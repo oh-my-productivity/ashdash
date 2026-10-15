@@ -7,6 +7,7 @@
 LAB_REAL_HOME=${LAB_REAL_HOME:-$(eval echo "~$(id -un)")}
 LAB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LAB_REPO_ROOT=$(cd "$LAB_DIR/../.." && pwd)
+export LAB_REPO_ROOT
 
 : "${TART_BIN:=$LAB_REAL_HOME/.local/bin/tart}"
 if [ ! -x "$TART_BIN" ]; then TART_BIN=$(command -v tart || true); fi
@@ -82,6 +83,7 @@ lab_ssh() {
   local ip=$1; shift
   local opts=()
   while IFS= read -r line; do opts+=("$line"); done < <(lab_ssh_opts)
+  # shellcheck disable=SC2029  # the remote command string is built (and quoted) by the callers
   ssh "${opts[@]}" "$LAB_USER@$ip" "$@"
 }
 

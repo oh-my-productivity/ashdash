@@ -2,7 +2,7 @@
 # lab-gc [--max-age SECS]   Watchdog: delete ashdash-run-* VMs older than 30 min (LAB_MAX_VM_AGE).
 # lab-up runs it before every clone; run it by hand after a crash. Never touches other VMs.
 set -euo pipefail
-# shellcheck source=tests/lab/lib.sh
+# shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 max=$LAB_MAX_VM_AGE
 while [ $# -gt 0 ]; do

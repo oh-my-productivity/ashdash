@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Host-side tests of the lab scripts against a fake `tart` and a fake `ssh` (no VM needed, ~40 s).
 # Usage: tests/lab/test/run-tests.sh
+# shellcheck disable=SC2015  # "test && ok || bad" is the reporting idiom here
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 lab=$(cd "$here/.." && pwd)
@@ -34,7 +35,6 @@ slots() { python3 "$lab/slot.py" --run-dir "$LAB_RUN_DIR" "$@"; }
 echo "== slot semaphore"
 slots acquire --name a --timeout 5 >/dev/null; check "first slot acquired" slots holds --name a
 slots acquire --name b --timeout 5 >/dev/null; check "second slot acquired" slots holds --name b
-start=$(date +%s)
 slots acquire --name c --timeout 2 >/dev/null 2>&1; rc=$?
 [ "$rc" = 3 ] && ok "third acquire times out (exit 3) instead of taking a slot" || bad "third acquire rc=$rc"
 slots release --name a; check "release frees slot a" bash -c "! python3 '$lab/slot.py' --run-dir '$LAB_RUN_DIR' holds --name a"
@@ -63,7 +63,7 @@ out=$("$lab/lab-with-vm" -- uname -s 2>"$tmp/uname.err"); rc=$?
 [ "$(run_vms)" = 0 ] && ok "cleanup after failing command" || bad "VM left after failure"
 FAKE_TART_CLONE_FAIL=1 "$lab/lab-with-vm" -- true >/dev/null 2>&1; rc=$?
 [ $rc != 0 ] && ok "clone failure is loud (rc=$rc)" || bad "clone failure ignored"
-[ "$(run_vms)" = 0 ] && [ -z "$(slots status | grep -v free)" ] && ok "clone failure leaves no VM and no slot" || bad "leak after clone failure: $(slots status)"
+[ "$(run_vms)" = 0 ] && ! slots status | grep -qv free && ok "clone failure leaves no VM and no slot" || bad "leak after clone failure: $(slots status)"
 
 echo "== cleanup trap on signals"
 "$lab/lab-with-vm" --id sigtest -- sleep 60 >/dev/null 2>&1 &
@@ -79,6 +79,7 @@ echo "== artifacts and sync"
 src="$tmp/src"; mkdir -p "$src/target" "$src/.worktrees/x" "$src/keep" "$src/.git"
 echo hi >"$src/keep/a.txt"; echo big >"$src/target/b.bin"; echo w >"$src/.worktrees/x/c"; echo g >"$src/.git/HEAD"
 printf 'ignored.log\n' >"$src/.gitignore"; echo l >"$src/ignored.log"
+# shellcheck disable=SC2016  # expanded in the (fake) guest
 "$lab/lab-with-vm" --src "$src" --artifacts "$tmp/art" -- sh -c 'echo shot >"$LAB_ARTIFACTS/s.txt"; ls -A >"$LAB_ARTIFACTS/ls.txt"' >/dev/null 2>&1; rc=$?
 [ $rc = 0 ] && ok "job with --src/--artifacts succeeds" || bad "rc=$rc"
 [ -f "$tmp/art/s.txt" ] && ok "artifact copied out" || bad "artifact missing"
@@ -114,7 +115,7 @@ running=$(run_vms)
 wait
 t=()
 for n in 1 2 3; do t+=("$(head -1 "$tmp/conc$n.out" 2>/dev/null)"); done
-if [ -n "${t[2]}" ] && [ "${t[2]}" -ge "$(( (${t[0]} < ${t[1]} ? ${t[0]} : ${t[1]}) + 5 ))" ]; then ok "third job started only after a slot freed (${t[*]})"; else bad "third job did not queue: ${t[*]}"; fi
+if [ -n "${t[2]}" ] && [ "${t[2]}" -ge "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then ok "third job started only after a slot freed (${t[*]})"; else bad "third job did not queue: ${t[*]}"; fi
 [ "$(run_vms)" = 0 ] && ok "all VMs cleaned up" || bad "VMs left over"
 
 echo

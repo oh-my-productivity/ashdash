@@ -5,7 +5,7 @@
 # deleted and its slot released on success, failure, Ctrl-C or SIGTERM (only SIGKILL of this script
 # escapes it; the 30-minute watchdog in lab-gc/lab-up then reaps the VM). Exit code = the command's.
 set -euo pipefail
-# shellcheck source=tests/lab/lib.sh
+# shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 
 up_args=() run_args=()
@@ -22,6 +22,7 @@ done
 [ $# -gt 0 ] || lab_die "usage: lab-with-vm [options] -- <cmd> [args...]"
 
 vm=""
+# shellcheck disable=SC2329  # invoked through the EXIT trap
 cleanup() {
   local rc=$?
   trap - EXIT INT TERM HUP
