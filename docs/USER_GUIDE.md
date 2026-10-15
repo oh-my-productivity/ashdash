@@ -60,7 +60,7 @@ There is no preferences window yet; settings are a JSON file edited by hand or w
 ashdash login-item enable | disable | status
 ```
 
-This needs the app bundle (`Ashdash.app`); from a bare `cargo run` binary the command answers "unavailable: launch at login
+This needs the app bundle (`Ashdash.app`, best in `/Applications`) and macOS 13 or newer; from a bare `cargo run` binary the command answers "unavailable: launch at login
 needs the app bundle".
 
 ## 3. Permissions
@@ -155,9 +155,12 @@ Details worth knowing:
 
 ## 6. Themes and workflows
 
-* A theme is an `.alfredappearance` file. Double-click one (with the app bundle installed), run `ashdash theme <file>` to
-  apply it to the running launcher, or set `theme` in the config to its path to use it at every start.
-* Workflows (`.alfredworkflow` files made for the reference launcher): `ashdash import <file>`, or double-click the file. Only import
+* A theme is an `.alfredappearance` file. Opening one with Ashdash copies it to `themes/` and selects it in `config.json`;
+  `ashdash theme <file>` applies one to the running launcher (it only parses the file when Ashdash is not running); or set
+  `theme` in the config to its path to use it at every start.
+* Double-clicking works when Ashdash is the handler for the file. If the reference launcher is installed it stays the default opener: use
+  right-click > Open With > Ashdash, or `open -a /Applications/Ashdash.app file.alfredworkflow`.
+* Workflows (`.alfredworkflow` files made for the reference launcher): `ashdash import <file>`, or open the file with Ashdash (confirmation dialog). Only import
   workflows you trust, they can run arbitrary scripts: read [WORKFLOWS.md](WORKFLOWS.md) first.
 
 ## 7. Your data and privacy
