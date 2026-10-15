@@ -65,6 +65,11 @@ FAKE_TART_CLONE_FAIL=1 "$lab/lab-with-vm" -- true >/dev/null 2>&1; rc=$?
 [ $rc != 0 ] && ok "clone failure is loud (rc=$rc)" || bad "clone failure ignored"
 [ "$(run_vms)" = 0 ] && ! slots status | grep -qv free && ok "clone failure leaves no VM and no slot" || bad "leak after clone failure: $(slots status)"
 
+s0=$(date +%s)
+FAKE_TART_RUN_FAIL=1 "$lab/lab-with-vm" -- true >"$tmp/runfail.out" 2>"$tmp/runfail.err"; rc=$?
+[ $rc != 0 ] && grep -q "exited early" "$tmp/runfail.err" && [ $(( $(date +%s) - s0 )) -lt 30 ] && ok "a VM that fails to boot fails fast with the tart log" || bad "boot failure: rc=$rc $(tail -2 "$tmp/runfail.err")"
+[ "$(run_vms)" = 0 ] && slots status | grep -qx 'slot0: free, slot1: free' && ok "boot failure leaves no VM and no slot" || bad "leak after boot failure: $(slots status)"
+
 echo "== cleanup trap on signals"
 "$lab/lab-with-vm" --id sigtest -- sleep 60 >/dev/null 2>&1 &
 jp=$!

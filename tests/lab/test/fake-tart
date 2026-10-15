@@ -40,6 +40,7 @@ case "$cmd" in
     name=""
     for a in "$@"; do case "$a" in -*) ;; *) name=$a ;; esac; done
     [ -d "$home/vms/$name" ] || { echo "no such VM: $name" >&2; exit 1; }
+    [ -n "${FAKE_TART_RUN_FAIL:-}" ] && { echo "VZErrorDomain: VM limit exceeded (injected)" >&2; exit 1; }
     echo running >"$home/vms/$name/state"
     echo $$ >"$home/vms/$name/run.pid"
     trap 'echo stopped >"$home/vms/$name/state"; exit 0' TERM INT

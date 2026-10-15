@@ -59,7 +59,17 @@ else
   disown 2>/dev/null || true
 fi
 
-ip=$(lab_vm_ip "$vm" 180) || fail "$vm got no IP within 180s (see $LAB_RUN_DIR/logs/$vm.log)"
+# Poll for the IP in short slices so a `tart run` that died at once (VM limit, corrupt image) fails fast with its log.
+ip=""
+for _ in $(seq 1 36); do
+  ip=$(lab_vm_ip "$vm" 5) && break
+  ip=""
+  pid=$(cat "$LAB_RUN_DIR/pids/$vm.pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+    fail "tart run for $vm exited early: $(tail -3 "$LAB_RUN_DIR/logs/$vm.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
+[ -n "$ip" ] || fail "$vm got no IP within 180s (see $LAB_RUN_DIR/logs/$vm.log)"
 lab_log "$vm has IP $ip; waiting for ssh"
 ok=""
 for _ in $(seq 1 90); do
