@@ -1,0 +1,70 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
+#
+#   cargo deny check              # everything
+#   cargo deny check licenses     # offline, no advisory database needed
+#
+# Policy: Ashdash is MIT OR Apache-2.0 (LICENSE-MIT, LICENSE-APACHE). Every dependency must be
+# under a permissive licence that can be shipped inside such a binary. Copyleft (GPL/LGPL/AGPL)
+# is not allowed; weak copyleft (MPL-2.0) and the font licences are allowed only for the single
+# crate named in `exceptions` below, with the reason next to it.
+
+[graph]
+# Only what ships on macOS. This also lets the check run on a Linux CI runner.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = false
+
+[advisories]
+# RustSec advisory database. Vulnerabilities, unsound and unmaintained crates fail the check;
+# yanked crates fail as well. To accept a known problem add it to `ignore` with a reason.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Compatible with shipping under "MIT OR Apache-2.0". An SPDX `OR` expression passes when one
+# alternative is allowed (e.g. "Apache-2.0 OR GPL-2.0-only" passes via Apache-2.0).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # Not needed today: add "Apache-2.0 WITH LLVM-exception" / "BSL-1.0" when a dependency starts using them.
+    # libbz2-rs-sys: the bzip2 licence (BSD-style), SPDX id as spelled by that crate.
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.8
+exceptions = [
+    # option-ext (via dirs -> dirs-sys): MPL-2.0 is file-level copyleft. Allowed because the crate
+    # is used unmodified from crates.io; if it is ever patched or vendored, the patched files must
+    # be published under MPL-2.0.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # epaint_default_fonts (via egui/eframe `default_fonts`): the fonts embedded in the launcher
+    # window. OFL-1.1 (Noto Emoji) and the Ubuntu Font Licence 1.0 (Ubuntu-Light) allow bundling
+    # unmodified fonts with software if the notices travel with it (NOTICE lists them).
+    { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
+]
+
+[bans]
+multiple-versions = "warn"
+# Workspace crates depend on each other by path + version, which is not a wildcard.
+wildcards = "deny"
+highlight = "all"
+deny = [
+    # No TLS / HTTP stack: the core makes no network connections of its own (docs/SECURITY.md).
+    # If one is ever needed, discuss it first; remove the ban deliberately, not by accident.
+    { crate = "openssl", reason = "no network stack in the launcher; see docs/SECURITY.md" },
+    { crate = "openssl-sys", reason = "no network stack in the launcher; see docs/SECURITY.md" },
+    { crate = "reqwest", reason = "no network stack in the launcher; see docs/SECURITY.md" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

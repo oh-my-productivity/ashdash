@@ -2,6 +2,8 @@
 name = "ashdash-core"
 version = "0.1.0"
 edition = "2024"
+description = "Ashdash core: query engine, providers, workflows and data stores (no UI)"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.104"
