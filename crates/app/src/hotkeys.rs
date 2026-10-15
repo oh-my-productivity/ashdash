@@ -524,6 +524,10 @@ impl HotkeyHost for AppHost {
             .frontmostApplication()
             .and_then(|a| a.bundleIdentifier())
             .map(|s| s.to_string())
+            // The launcher itself can be the active app (it activates at startup and
+            // while its window is up); that says nothing about where the user is.
+            // An unbundled dev build has no bundle id at all and yields None above.
+            .filter(|id| id != ashdash_core::brand::BUNDLE_ID)
     }
 
     fn read_argument(&self, source: ArgSource) -> Result<String, String> {
