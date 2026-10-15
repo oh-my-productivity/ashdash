@@ -39,6 +39,8 @@ pub(super) struct Glue {
     pub theme_epoch: u64,
     /// Points the Large Type text is to be scrolled by on the next frame.
     pub large_scroll: f32,
+    /// The query was replaced by code: put the text cursor at its end before the next draw.
+    pub cursor_to_end: bool,
 }
 
 impl Glue {
@@ -55,6 +57,7 @@ impl Glue {
             rx,
             theme_epoch: crate::mac::opendocs::theme_epoch(),
             large_scroll: 0.0,
+            cursor_to_end: false,
         }
     }
 
@@ -231,7 +234,20 @@ impl LauncherApp {
     pub(super) fn show_with_query(&mut self, ctx: &egui::Context, query: String) {
         self.show(ctx);
         self.query = query;
+        self.glue.cursor_to_end = true;
         self.request_query();
+    }
+
+    /// Move the query field's text cursor to the end of the (programmatically replaced) text.
+    pub(super) fn apply_cursor_flag(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.glue.cursor_to_end) {
+            return;
+        }
+        if let Some(mut state) = egui::TextEdit::load_state(ctx, super::query_id()) {
+            let end = egui::text::CCursor::new(self.query.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+            state.store(ctx, super::query_id());
+        }
     }
 
     /// An outcome that arrived without the window (hotkey, URL, workflow).

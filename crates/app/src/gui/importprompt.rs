@@ -204,7 +204,7 @@ pub fn confirm_ready(shown_for: Duration) -> bool {
 pub fn prompt_height(text: &PromptText, width: f32, font_size: f32) -> f32 {
     let cols = ((width - 24.0) / (font_size * 0.5)).floor().max(10.0) as usize;
     let rows: usize = 1 + text.lines.iter().map(|l| wrapped_lines(l, cols)).sum::<usize>() + 1;
-    (rows as f32 * font_size * 1.35 + 20.0).min(super::VISIBLE_ROWS as f32 * ROW_HEIGHT)
+    (rows as f32 * font_size * 1.2 + 16.0).min(super::VISIBLE_ROWS as f32 * ROW_HEIGHT)
 }
 
 /// A prompt that is up, waiting for Return or Esc.
@@ -407,10 +407,12 @@ mod tests {
         let (hs, hb) = (prompt_height(&small, 600.0, 13.0), prompt_height(&big, 600.0, 13.0));
         assert!(hs < hb, "{hs} {hb}");
         assert!(hb <= super::super::VISIBLE_ROWS as f32 * ROW_HEIGHT);
+        // long lists are cut in the text itself ("+195 more"), so only a very narrow window hits the cap
         let mut huge = preview();
         huge.trust.terminal_commands = (0..200).map(|i| format!("command number {i}")).collect();
+        assert!(prompt_text(&huge).plain().contains("(+195 more)"));
         assert_eq!(
-            prompt_height(&prompt_text(&huge), 300.0, 13.0),
+            prompt_height(&prompt_text(&huge), 60.0, 13.0),
             super::super::VISIBLE_ROWS as f32 * ROW_HEIGHT
         );
     }

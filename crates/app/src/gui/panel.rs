@@ -204,7 +204,7 @@ pub fn left_goes_back(cursor_at_start: bool, modifiers_held: bool, panel_open: b
 pub fn buffer_line(len: usize) -> Option<String> {
     (len > 0).then(|| {
         format!(
-            "Buffer: {len} item{} · → actions · ⌥↓ remove",
+            "Buffer: {len} item{} · Right: actions · Alt+Down: remove",
             if len == 1 { "" } else { "s" }
         )
     })
@@ -280,6 +280,7 @@ impl LauncherApp {
         self.confirming = None;
         self.status = None;
         self.want_focus = true;
+        self.glue.cursor_to_end = true;
     }
 
     /// Right Arrow: open the actions for the buffer, or for the selected result.
@@ -354,6 +355,7 @@ impl LauncherApp {
         self.confirming = None;
         self.status = None;
         self.want_focus = true;
+        self.glue.cursor_to_end = true;
         self.query = level.restore.text.clone();
         if self.glue.panels.is_open() {
             // back to the previous panel level: its list as it was
@@ -607,7 +609,7 @@ mod tests {
         assert!(!buf.add(a.clone()).unwrap(), "no duplicates");
         assert_eq!(
             buffer_line(buf.len()).unwrap(),
-            "Buffer: 2 items · → actions · ⌥↓ remove"
+            "Buffer: 2 items · Right: actions · Alt+Down: remove"
         );
         assert!(buffer_line(1).unwrap().starts_with("Buffer: 1 item "));
         let rows = buf.actions();

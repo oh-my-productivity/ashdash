@@ -301,11 +301,7 @@ impl LauncherApp {
             match ev {
                 Show if !self.visible => self.show(ctx),
                 Show => {}
-                Search(text) => {
-                    self.show(ctx);
-                    self.query = text;
-                    self.request_query();
-                }
+                Search(text) => self.show_with_query(ctx, text),
                 Reload => {
                     let engine = Arc::clone(&self.engine);
                     std::thread::spawn(move || engine.reload());
@@ -359,6 +355,7 @@ impl eframe::App for LauncherApp {
         if !self.visible {
             return;
         }
+        self.apply_cursor_flag(&ctx);
         self.poll_dropped_files(&ctx);
 
         if self.large_type.is_some() {
