@@ -27,7 +27,12 @@ pub const UI_INSTALL_PREFIX: &str = "ui:install:";
 const OPEN_WITH_LIMIT: usize = 200;
 
 /// File extensions of the reference launcher workflow packages (all the same zip format).
-const WORKFLOW_EXTENSIONS: [&str; 4] = ["alfredworkflow", "alfred3workflow", "alfred4workflow", "alfred5workflow"];
+const WORKFLOW_EXTENSIONS: [&str; 4] = [
+    "alfredworkflow",
+    "alfred3workflow",
+    "alfred4workflow",
+    "alfred5workflow",
+];
 
 pub fn is_workflow_package(p: &Path) -> bool {
     p.extension()
@@ -176,7 +181,11 @@ pub fn filter_entries(entries: &[Item], text: &str) -> Vec<Item> {
         .enumerate()
         .filter_map(|(i, e)| fuzzy::score(text, &e.title).map(|s| (s, i)))
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
     scored.into_iter().map(|(_, i)| entries[i].clone()).collect()
 }
 
@@ -307,10 +316,9 @@ impl LauncherApp {
 
     /// "Open With...": list the applications (Spotlight, so off the UI thread).
     pub(super) fn open_with(&mut self, ctx: &egui::Context, path: PathBuf) {
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+        let name = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let title = title_for(Kind::OpenWith, &Item::new("", name), 0);
         self.push_level(Kind::OpenWith, title, Vec::new());
         self.glue.loading = true;
@@ -509,17 +517,31 @@ mod tests {
         let txt = dir.join("a.txt");
         std::fs::write(&txt, "x").unwrap();
         let rows = build_actions(&file_item(&txt), actions_for(&file_item(&txt)));
-        assert!(rows.iter().all(|r| ui_action(r) != Some(UiAction::InstallWorkflow(txt.clone()))));
+        assert!(
+            rows.iter()
+                .all(|r| ui_action(r) != Some(UiAction::InstallWorkflow(txt.clone())))
+        );
         assert!(rows.iter().all(|r| r.title != "Install Workflow…"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn extensions_are_matched_case_insensitively() {
-        for ok in ["a.alfredworkflow", "/x/A.ALFRED5WORKFLOW", "b.alfred3workflow", "c.alfred4workflow"] {
+        for ok in [
+            "a.alfredworkflow",
+            "/x/A.ALFRED5WORKFLOW",
+            "b.alfred3workflow",
+            "c.alfred4workflow",
+        ] {
             assert!(is_workflow_package(Path::new(ok)), "{ok}");
         }
-        for no in ["a.zip", "alfredworkflow", "a.alfredworkflow.txt", "a.alfredsnippets", ""] {
+        for no in [
+            "a.zip",
+            "alfredworkflow",
+            "a.alfredworkflow.txt",
+            "a.alfredsnippets",
+            "",
+        ] {
             assert!(!is_workflow_package(Path::new(no)), "{no}");
         }
     }
@@ -554,7 +576,10 @@ mod tests {
         assert_eq!(filter_entries(&rows, ""), rows);
         assert_eq!(filter_entries(&rows, "   "), rows);
         let hits = filter_entries(&rows, "copy");
-        assert!(hits.len() >= 3 && hits.iter().all(|r| r.title.to_lowercase().contains("copy")), "{hits:?}");
+        assert!(
+            hits.len() >= 3 && hits.iter().all(|r| r.title.to_lowercase().contains("copy")),
+            "{hits:?}"
+        );
         let hits = filter_entries(&rows, "trash");
         assert_eq!(hits[0].title, "Move to Trash");
         assert!(filter_entries(&rows, "zzzzqq").is_empty());
@@ -568,7 +593,10 @@ mod tests {
         std::fs::write(&a, "x").unwrap();
         std::fs::write(&b, "x").unwrap();
         assert_eq!(source_path(&file_item(&a)), Some(a.clone()));
-        assert_eq!(source_path(&Item::new("u", "u").action(Action::OpenUrl("https://x.y".into()))), None);
+        assert_eq!(
+            source_path(&Item::new("u", "u").action(Action::OpenUrl("https://x.y".into()))),
+            None
+        );
         assert_eq!(source_path(&Item::new("s", "s").action(Action::None)), None);
 
         let mut buf = ashdash_core::actions::Buffer::new();
@@ -577,12 +605,21 @@ mod tests {
         buf.add(a.clone()).unwrap();
         buf.add(b.clone()).unwrap();
         assert!(!buf.add(a.clone()).unwrap(), "no duplicates");
-        assert_eq!(buffer_line(buf.len()).unwrap(), "Buffer: 2 items · → actions · ⌥↓ remove");
+        assert_eq!(
+            buffer_line(buf.len()).unwrap(),
+            "Buffer: 2 items · → actions · ⌥↓ remove"
+        );
         assert!(buffer_line(1).unwrap().starts_with("Buffer: 1 item "));
         let rows = buf.actions();
         assert!(rows.iter().any(|r| r.title == "Copy 2 items"), "{rows:?}");
-        assert_eq!(title_for(Kind::Buffer, &Item::new("", ""), 2), "Actions for 2 buffered items");
-        assert_eq!(title_for(Kind::Buffer, &Item::new("", ""), 1), "Actions for 1 buffered item");
+        assert_eq!(
+            title_for(Kind::Buffer, &Item::new("", ""), 2),
+            "Actions for 2 buffered items"
+        );
+        assert_eq!(
+            title_for(Kind::Buffer, &Item::new("", ""), 1),
+            "Actions for 1 buffered item"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -591,7 +628,10 @@ mod tests {
         let long = "x".repeat(200);
         let t = title_for(Kind::Actions, &Item::new("", long), 0);
         assert!(t.chars().count() < 60);
-        assert_eq!(title_for(Kind::OpenWith, &Item::new("", "a.pdf"), 0), "Open a.pdf with…");
+        assert_eq!(
+            title_for(Kind::OpenWith, &Item::new("", "a.pdf"), 0),
+            "Open a.pdf with…"
+        );
     }
 
     #[test]

@@ -114,7 +114,10 @@ fn capability_lines(t: &TrustSummary) -> Vec<String> {
     if !t.terminal_commands.is_empty() {
         out.push(format!(
             "Runs in Terminal: {}",
-            listed(&t.terminal_commands.iter().map(|c| format!("“{c}”")).collect::<Vec<_>>(), MAX_COMMAND)
+            listed(
+                &t.terminal_commands.iter().map(|c| format!("“{c}”")).collect::<Vec<_>>(),
+                MAX_COMMAND
+            )
         ));
     }
     if !t.open_url_schemes.is_empty() {
@@ -243,8 +246,13 @@ impl LauncherApp {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
                 ui.add(
-                    egui::Label::new(egui::RichText::new(&p.text.title).strong().size(size + 2.0).color(c(t.result_text)))
-                        .wrap(),
+                    egui::Label::new(
+                        egui::RichText::new(&p.text.title)
+                            .strong()
+                            .size(size + 2.0)
+                            .color(c(t.result_text)),
+                    )
+                    .wrap(),
                 );
                 for line in &p.text.lines {
                     if line.is_empty() {
@@ -347,7 +355,10 @@ mod tests {
         assert!(t.title.chars().all(|c| !c.is_control()));
         assert_eq!(t.title.matches('\n').count(), 0);
         for line in &t.lines {
-            assert!(!line.contains('\n') && !line.contains('\r') && !line.contains('\u{7}'), "{line:?}");
+            assert!(
+                !line.contains('\n') && !line.contains('\r') && !line.contains('\u{7}'),
+                "{line:?}"
+            );
             assert!(line.chars().count() < 800, "{}", line.chars().count());
         }
         // "Author:" / "Bundle id:" only ever start the lines we wrote

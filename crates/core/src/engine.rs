@@ -437,7 +437,9 @@ impl Engine {
         // (`act:copy:<text>`); recording that would write it, unbounded and in
         // plaintext, to usage.json. They are never ranked, so nothing is lost.
         let learnable = !matches!(action, Action::Universal(_)) && !matches!(item.action, Action::Universal(_));
-        if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_) | Outcome::ShowLauncher(_))) {
+        if learnable
+            && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_) | Outcome::ShowLauncher(_)))
+        {
             self.usage.lock().unwrap().record(query, &item.id);
         }
         outcome

@@ -409,7 +409,9 @@ impl eframe::App for LauncherApp {
                     let edit = egui::TextEdit::singleline(&mut self.query)
                         .font(FontId::proportional(t.search_size))
                         .text_color(c(t.search_text))
-                        .hint_text(egui::RichText::new(search_hint.clone()).color(c(t.search_text).gamma_multiply(0.35)))
+                        .hint_text(
+                            egui::RichText::new(search_hint.clone()).color(c(t.search_text).gamma_multiply(0.35)),
+                        )
                         .interactive(prompt_h.is_none())
                         .frame(egui::Frame::NONE)
                         .id(query_id())

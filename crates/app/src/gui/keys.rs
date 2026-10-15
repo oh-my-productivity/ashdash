@@ -185,7 +185,10 @@ impl LauncherApp {
         }
         // Universal Actions: Right opens the panel (or the next level), Left goes back,
         // but only where the arrow would not move the text cursor.
-        if keys.right && self.large_type.is_none() && panel::right_opens_panel(at_end, false, true) && self.open_actions(ctx)
+        if keys.right
+            && self.large_type.is_none()
+            && panel::right_opens_panel(at_end, false, true)
+            && self.open_actions(ctx)
         {
             ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight));
         }

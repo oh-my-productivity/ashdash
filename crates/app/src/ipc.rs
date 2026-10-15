@@ -519,6 +519,8 @@ mod tests {
                 .push((bundle.into(), id.into(), arg.into()));
             if id == "big" {
                 Outcome::LargeType("HELLO".into())
+            } else if id == "browse" {
+                Outcome::ShowLauncher("open docs".into())
             } else if id == "missing" {
                 Outcome::Error("no such trigger".into())
             } else {
@@ -615,6 +617,26 @@ mod tests {
             assert_eq!(back.error, r.error);
         }
         assert!(Response::parse("{}").is_err());
+    }
+
+    #[test]
+    fn an_open_launcher_trigger_shows_the_window_with_its_query() {
+        let (h, sink, _) = handler(true);
+        let r = h.handle(Request::Trigger {
+            bundle: "b".into(),
+            id: "browse".into(),
+            arg: String::new(),
+        });
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sink.take(), vec![AppEvent::Search("open docs".into())]);
+        // a trigger that only shows Large Type opens nothing
+        let r = h.handle(Request::Trigger {
+            bundle: "b".into(),
+            id: "big".into(),
+            arg: String::new(),
+        });
+        assert!(r.large);
+        assert!(sink.take().is_empty());
     }
 
     #[test]

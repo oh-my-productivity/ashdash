@@ -19,7 +19,7 @@ pub(super) enum AsyncMsg {
     /// Applications for an "Open With..." level.
     List { token: u64, entries: Vec<Item> },
     /// A workflow package was opened for inspection (or could not be).
-    Preview(Result<(PathBuf, PackagePreview), String>),
+    Preview(Result<Box<(PathBuf, PackagePreview)>, String>),
     /// An installation finished (name or error).
     Installed(Result<String, String>),
 }
@@ -130,7 +130,7 @@ impl LauncherApp {
         let (tx, ctx) = (self.glue.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let r = ashdash_core::workflow::preview_package(&path)
-                .map(|p| (path, p))
+                .map(|p| Box::new((path, p)))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AsyncMsg::Preview(r));
             ctx.request_repaint();
@@ -185,7 +185,8 @@ impl LauncherApp {
     pub(super) fn apply_async(&mut self, ctx: &egui::Context, msg: AsyncMsg) {
         match msg {
             list @ AsyncMsg::List { .. } => self.panel_apply(&list),
-            AsyncMsg::Preview(Ok((path, preview))) => {
+            AsyncMsg::Preview(Ok(found)) => {
+                let (path, preview) = *found;
                 self.status = None;
                 self.glue.import = Some(ImportPrompt::new(path, &preview));
                 self.want_focus = true;

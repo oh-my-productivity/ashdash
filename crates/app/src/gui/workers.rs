@@ -103,7 +103,14 @@ pub(super) fn spawn_query_worker(
             };
             sched.finished(generation, Instant::now(), workflow::rerun_interval(&items));
             let kind = if is_rerun { Kind::Rerun } else { Kind::Final };
-            if res_tx.send(QueryResult { generation, kind, items }).is_err() {
+            if res_tx
+                .send(QueryResult {
+                    generation,
+                    kind,
+                    items,
+                })
+                .is_err()
+            {
                 break;
             }
             ctx.request_repaint();

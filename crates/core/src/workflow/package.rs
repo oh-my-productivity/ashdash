@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use super::{TrustSummary, Workflow};
 use super::script::safe_key;
+use super::{TrustSummary, Workflow};
 
 /// Most entries (files, directories, links) an archive may contain.
 pub const MAX_ENTRIES: usize = 2_000;
@@ -356,7 +356,8 @@ mod tests {
 </array></dict></plist>"#;
         let f = std::fs::File::create(path).unwrap();
         let mut z = zip::ZipWriter::new(f);
-        z.start_file("info.plist", zip::write::SimpleFileOptions::default()).unwrap();
+        z.start_file("info.plist", zip::write::SimpleFileOptions::default())
+            .unwrap();
         z.write_all(plist.as_bytes()).unwrap();
         z.finish().unwrap();
     }

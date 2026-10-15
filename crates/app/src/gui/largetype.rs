@@ -86,7 +86,14 @@ impl LauncherApp {
                     }
                     ui.set_width(max_w);
                     ui.vertical_centered(|ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&text_for_scroll).size(font_size).color(Color32::WHITE)).wrap());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&text_for_scroll)
+                                    .size(font_size)
+                                    .color(Color32::WHITE),
+                            )
+                            .wrap(),
+                        );
                     });
                 });
             });

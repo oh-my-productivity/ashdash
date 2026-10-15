@@ -290,9 +290,7 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     } else {
         theme.name.clone()
     };
-    Ok(format!(
-        "Theme \"{shown}\" installed and applied."
-    ))
+    Ok(format!("Theme \"{shown}\" installed and applied."))
 }
 
 /// Post a user notification through `osascript` (title/body as argv, never as script text).
@@ -653,6 +651,22 @@ mod tests {
         let shown = display_name(Path::new(&long));
         assert_eq!(shown.chars().count(), 80);
         assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn dialog_text_travels_as_arguments_never_as_script() {
+        let nasty = "x\" & (do shell script \"touch /tmp/pwned\") & \"";
+        let args = alert_args(nasty, "line1\nline2", true);
+        let dashdash = args.iter().position(|a| a == "--").expect("separator");
+        assert_eq!(&args[dashdash + 1..], [nasty, "line1\nline2"]);
+        // nothing before the separator contains the untrusted text
+        assert!(
+            args[..dashdash]
+                .iter()
+                .all(|a| !a.contains("pwned") && !a.contains("line1"))
+        );
+        assert!(args.join(" ").contains("buttons {\"Cancel\", \"Import\"}"));
+        assert!(alert_args("t", "m", false).join(" ").contains("buttons {\"OK\"}"));
     }
 
     #[test]
