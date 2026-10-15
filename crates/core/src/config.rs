@@ -120,10 +120,10 @@ impl Config {
                 "config.json was written by a newer version; refusing to overwrite it",
             ));
         }
-        std::fs::create_dir_all(&paths.data)?;
         let mut out = self.clone();
         out.version = CURRENT_VERSION;
-        std::fs::write(paths.config_file(), serde_json::to_vec_pretty(&out)?)
+        // 0600, written through a unique temp file and renamed (SEC-18)
+        write_private(&paths.config_file(), &serde_json::to_vec_pretty(&out)?)
     }
 }
 
@@ -147,23 +147,37 @@ fn migrate(mut raw: serde_json::Value) -> serde_json::Value {
     raw
 }
 
-/// Write a file readable only by the current user (used for clipboard data).
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write a file readable only by the current user (config, usage, clipboard data).
+///
+/// Missing parent directories are created 0700. The bytes go to a uniquely named, exclusively
+/// created 0600 temp file next to the target (so concurrent writers and stale leftovers cannot
+/// interfere or leak an old, laxer mode) which is then renamed over the target (SEC-18).
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    std::fs::rename(tmp, path)
+    let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -183,6 +197,57 @@ mod tests {
     }
 
     use serde_json::json;
+
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn config_and_data_dir_are_private() {
+        let root = std::env::temp_dir().join(format!("oa-cfg-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        Config::default().save(&paths).unwrap();
+        assert_eq!(mode(&paths.config_file()), 0o600);
+        assert_eq!(mode(&paths.data), 0o700);
+        // saving again replaces the file without loosening it, and leaves no temp files behind
+        Config::default().save(&paths).unwrap();
+        assert_eq!(mode(&paths.config_file()), 0o600);
+        let names: Vec<_> = std::fs::read_dir(&paths.data).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_private_ignores_stale_loose_temp_files_and_concurrent_writers() {
+        let root = std::env::temp_dir().join(format!("oa-wp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("f.json");
+        // a crash leftover with the old shared name and a loose mode
+        let stale = root.join("f.tmp");
+        std::fs::write(&stale, b"old").unwrap();
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let target = target.clone();
+                s.spawn(move || {
+                    for j in 0..20 {
+                        write_private(&target, format!("{i}-{j}").as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(mode(&target), 0o600);
+        assert!(std::fs::read_to_string(&target).unwrap().contains('-'));
+        let tmps = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp") && e.path() != stale)
+            .count();
+        assert_eq!(tmps, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn migrates_unversioned_config_to_current() {
