@@ -28,18 +28,15 @@
 //! take hundreds of milliseconds and the Carbon callback runs on the main
 //! thread.
 //!
-//! Firing needs no change in `ashdash-core`: the hotkey object is started as a
-//! `Workflow` action whose `from_uid` is the hotkey node
-//! (`Engine::execute` with `Action::Workflow`). Side effect: the engine
-//! records the run in `usage.json` with an empty query; a dedicated
-//! `Engine::run_node(bundle, node_uid, arg, vars)` would avoid that.
+//! Firing goes through `Engine::run_node(bundle, node_uid, arg, vars)`, which starts the
+//! workflow at the hotkey node and records nothing in `usage.json`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use ashdash_core::workflow::{self, Workflow, WorkflowAction};
-use ashdash_core::{Action, Engine, Item, Mods, Outcome, Paths};
+use ashdash_core::workflow::{self, Workflow};
+use ashdash_core::{Engine, Outcome, Paths};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
@@ -541,19 +538,7 @@ impl HotkeyHost for AppHost {
     }
 
     fn run_node(&self, spec: &HotkeySpec, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
-        let action = WorkflowAction {
-            workflow: spec.workflow_id.clone(),
-            from_uid: spec.node_uid.clone(),
-            arg: arg.to_string(),
-            vars,
-            ..Default::default()
-        };
-        let item = Item::new(
-            format!("hotkey:{}:{}", spec.workflow_id, spec.node_uid),
-            &spec.workflow_name,
-        )
-        .action(Action::Workflow(Box::new(action)));
-        self.engine.execute(&item, "", Mods::NONE, true)
+        self.engine.run_node(&spec.bundle_id, &spec.node_uid, arg, vars)
     }
 
     fn show_launcher(&self, query: Option<String>) {

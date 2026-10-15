@@ -442,3 +442,45 @@ fn external_trigger_runs_to_large_type() {
         Outcome::LargeType("got xyz".into())
     );
 }
+
+// ---------------------------------------------------------------- run_node (workflow hotkeys)
+
+fn hotkey_like_workflow(bundle: &str) -> serde_json::Value {
+    json!({
+        "name": "Hk", "bundleid": bundle,
+        "objects": [
+            {"uid": "H", "type": "alfred.workflow.trigger.hotkey", "config": {"hotkey": 0, "hotmod": 0}},
+            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "{var:who} got {query}"}}
+        ],
+        "connections": {"H": [{"destinationuid": "L", "modifiers": 0}]}
+    })
+}
+
+#[test]
+fn run_node_starts_at_the_node_with_arg_and_vars_and_records_no_usage() {
+    let env = Env::new("run-node", APPS);
+    env.install_workflow("user.workflow.hk", &hotkey_like_workflow("qa.hk"));
+    let e = env.engine();
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("who".to_string(), "me".to_string());
+    assert_eq!(
+        e.run_node("qa.hk", "H", "payload", vars),
+        Outcome::LargeType("me got payload".into())
+    );
+    let usage = std::fs::read_to_string(env.paths.usage_file()).unwrap_or_default();
+    assert!(!usage.contains("hotkey") && !usage.contains("qa.hk"), "usage: {usage}");
+}
+
+#[test]
+fn run_node_reports_unknown_bundle_node_and_disabled_workflows() {
+    let env = Env::new("run-node-err", APPS);
+    let mut doc = hotkey_like_workflow("qa.off");
+    env.install_workflow("user.workflow.hk", &hotkey_like_workflow("qa.hk"));
+    doc["disabled"] = json!(true);
+    env.install_workflow("user.workflow.off", &doc);
+    let e = env.engine();
+    let none = std::collections::BTreeMap::new;
+    assert!(matches!(e.run_node("no.such", "H", "", none()), Outcome::Error(_)));
+    assert!(matches!(e.run_node("qa.hk", "NOPE", "", none()), Outcome::Error(_)));
+    assert!(matches!(e.run_node("qa.off", "H", "", none()), Outcome::Error(_)));
+}

@@ -1,6 +1,7 @@
 //! The query engine: turns typed text into ranked results and performs the
 //! chosen action.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -457,6 +458,30 @@ impl Engine {
             wf.run(act, mods, &self.paths)
         };
         Some(apply_effects(effects))
+    }
+
+    /// Start an enabled workflow at one of its objects (a hotkey, say): `arg` and `vars` are
+    /// what that object would have produced. Unlike [`Engine::execute`] this records nothing
+    /// in the usage table.
+    pub fn run_node(&self, bundle_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
+        let effects = {
+            let wfs = self.workflows.read().unwrap();
+            let Some(wf) = wfs.iter().find(|w| w.bundle_id == bundle_id && !w.disabled) else {
+                return Outcome::Error(format!("no enabled workflow with bundle id '{bundle_id}'"));
+            };
+            if !wf.has_node(node_uid) {
+                return Outcome::Error(format!("workflow '{}' has no object '{node_uid}'", wf.name));
+            }
+            let act = WorkflowAction {
+                workflow: wf.id.clone(),
+                from_uid: node_uid.to_string(),
+                arg: arg.to_string(),
+                vars,
+                ..Default::default()
+            };
+            wf.run(&act, Mods::NONE, &self.paths)
+        };
+        msg_to_outcome(apply_effects(effects))
     }
 
     /// Fire a workflow's External Trigger, like `reference://runtrigger`.
