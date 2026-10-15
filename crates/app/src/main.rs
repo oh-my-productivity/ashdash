@@ -1,5 +1,6 @@
 mod clipboard_watch;
 mod gui;
+mod mac;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +21,8 @@ USAGE:
   ashdash trigger <bundle-id> <trigger-id> [argument]
                                       fire a workflow's External Trigger
   ashdash theme <file>            parse an .alfredappearance file and print it
+  ashdash login-item enable|disable|status
+                                      launch at login (needs the Ashdash.app bundle)
   ashdash paths                   print data / config locations
 ";
 
@@ -30,13 +33,16 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         None => {
-            let engine = Arc::new(Engine::new(paths, config));
+            let engine = Arc::new(Engine::new(paths.clone(), config));
+            // Double-clicked .alfredworkflow / .alfredappearance / .alfredsnippets files.
+            mac::opendocs::install(Arc::clone(&engine), paths);
             gui::run(engine)
         }
         Some("-h" | "--help" | "help") => {
             print!("{HELP}");
             Ok(())
         }
+        Some("login-item") => mac::loginitem::cli(args.get(1).map(String::as_str)),
         Some("paths") => {
             println!("data:      {}", paths.data.display());
             println!("config:    {}", paths.config_file().display());
