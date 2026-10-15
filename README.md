@@ -18,7 +18,11 @@ keyword inputs, Script Filters (JSON), Run Script, Open URL/File, notifications,
 clipboard, Large Type, Arg & Vars, modifier overrides, external triggers.
 
 Config: `~/Library/Application Support/ashdash/config.json` (hotkey, `theme`,
-`workflow_dirs`, `web_searches`). Run `ashdash paths` to see locations.
+`workflow_dirs`, `web_searches`, `clipboard`, `file_search`, `bookmarks`,
+`providers_disabled`). Run `ashdash paths` to see locations; edit any setting from
+the shell with `ashdash config get|set|keys|path` (e.g. `ashdash config set
+clipboard.max_age_days 14`, `ashdash config set providers_disabled calc,system`).
+Per-workflow settings live in `workflow-config/<bundle id>.json` next to it.
 
 Security notes: workflows run arbitrary scripts, so only import ones you trust.
 Clipboard history is stored in plain JSON (mode 0600) and cannot skip entries
