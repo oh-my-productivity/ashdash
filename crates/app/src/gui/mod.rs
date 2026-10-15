@@ -246,31 +246,29 @@ impl LauncherApp {
 }
 
 impl LauncherApp {
-    /// Apply events from the CLI socket, URL scheme and workflow hotkeys.
+    /// Events from the CLI socket, URL scheme, AppleScript and workflow hotkeys.
     fn poll_automation(&mut self, ctx: &egui::Context) {
-        use crate::events::AppEvent;
+        use crate::events::AppEvent::*;
         while let Some(ev) = self.automation.try_recv() {
             match ev {
-                AppEvent::Show if !self.visible => self.show(ctx),
-                AppEvent::Show => {}
-                AppEvent::Search(text) => {
+                Show if !self.visible => self.show(ctx),
+                Show => {}
+                Search(text) => {
                     self.show(ctx);
                     self.query = text;
                     self.request_query();
                 }
-                AppEvent::Reload => {
+                Reload => {
                     let engine = Arc::clone(&self.engine);
                     std::thread::spawn(move || engine.reload());
                     self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
                 }
-                AppEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                AppEvent::Theme(file) => match Theme::load(&file) {
+                Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Theme(file) => match ashdash_core::theme::Theme::load(&file) {
                     Ok(t) => self.theme = t,
                     Err(e) => eprintln!("ashdash: theme {}: {e:#}", file.display()),
                 },
-                AppEvent::Outcome(o) => {
-                    let _ = self.outcome_tx.send(o);
-                }
+                Outcome(o) => drop(self.outcome_tx.send(o)),
             }
         }
     }

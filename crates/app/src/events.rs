@@ -86,11 +86,15 @@ impl Automation {
         hotkeys: crate::hotkeys::WorkflowHotkeys,
         url: Option<Arc<crate::urlscheme::UrlDispatcher>>,
     ) -> Self {
+        // Early registration catches the URL that launched the app, which
+        // AppKit may deliver before the window exists. AppKit installs its own
+        // handler during launch, so `attach` registers again afterwards.
+        let _url_handler = url.clone().and_then(crate::urlscheme::install_apple_event_handler);
         Automation {
             inbox,
             hotkeys,
             url,
-            _url_handler: None,
+            _url_handler,
         }
     }
 

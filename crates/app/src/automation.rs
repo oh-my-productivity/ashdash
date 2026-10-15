@@ -69,13 +69,12 @@ pub fn start(engine: &Arc<Engine>, primary: Option<ipc::Primary>) -> Started {
         engine: Arc::clone(engine),
     });
 
-    let server = primary.map(|p| {
-        let handler = AppHandler {
-            sink: Arc::clone(&sink),
-            backend: host.clone(),
-        };
-        ipc::serve(p, Arc::new(handler), ipc::current_uid())
+    let handler: Arc<dyn ipc::Handler> = Arc::new(AppHandler {
+        sink: Arc::clone(&sink),
+        backend: host.clone(),
     });
+    let server = primary.map(|p| ipc::serve(p, Arc::clone(&handler), ipc::current_uid()));
+    crate::scripting::install(handler);
 
     let dispatcher = Arc::new(UrlDispatcher::new(
         Arc::clone(&sink),

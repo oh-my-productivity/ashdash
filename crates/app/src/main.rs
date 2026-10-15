@@ -4,6 +4,7 @@ mod events;
 mod gui;
 mod hotkeys;
 mod ipc;
+mod scripting;
 mod urlscheme;
 
 use std::path::PathBuf;
