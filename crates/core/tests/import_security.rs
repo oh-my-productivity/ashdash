@@ -451,7 +451,6 @@ fn hostile_entry_names_do_not_panic() {
 
 /// A rejected import must not leave its staging directory behind.
 #[test]
-#[ignore = "known: SEC-10 (failed import leaks .import-<pid> staging dir)"]
 fn failed_import_cleans_up_staging_dir() {
     let (sb, _before, r) = attempt("leak", &[Entry::File("readme.txt", b"x".to_vec())]);
     assert!(r.is_err());
@@ -491,7 +490,6 @@ fn preplanted_staging_symlink_is_not_followed() {
 
 /// Decompression bombs: an archive that expands to hundreds of MB is accepted without limits.
 #[test]
-#[ignore = "known: SEC-07 (no size/entry-count limit on extraction); writes ~300 MB to a temp dir"]
 fn zip_bomb_is_rejected() {
     let sb = Sandbox::new("bomb");
     let zeros = vec![0u8; 100 * 1024 * 1024];
@@ -514,7 +512,6 @@ fn zip_bomb_is_rejected() {
 /// the same process (e.g. a CLI/GUI drop of several packages) extract into the same directory:
 /// one removes the other's files, or installs a mixture of both archives.
 #[test]
-#[ignore = "known: SEC-11 (staging dir is per-process, not per-import; concurrent imports corrupt each other)"]
 fn concurrent_imports_do_not_interfere() {
     let root = TempDir::new("concurrent");
     let dest_root = root.join("workflows");
@@ -558,4 +555,99 @@ fn concurrent_imports_do_not_interfere() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------- limits and install semantics (FIX-B)
+
+fn leftovers(dest_root: &Path) -> Vec<String> {
+    std::fs::read_dir(dest_root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".import-"))
+        .collect()
+}
+
+#[test]
+fn too_many_entries_are_rejected_without_leftovers() {
+    let sb = Sandbox::new("many");
+    let mut entries = vec![Entry::File("info.plist", sb.plist())];
+    let names: Vec<String> = (0..2100).map(|i| format!("f{i}.txt")).collect();
+    for n in &names {
+        entries.push(Entry::File(n, b"x".to_vec()));
+    }
+    write_zip(&sb.pkg, &entries);
+    let err = import_package(&sb.pkg, &sb.dest_root).unwrap_err();
+    assert!(format!("{err:#}").contains("entries"), "{err:#}");
+    assert!(leftovers(&sb.dest_root).is_empty());
+    assert!(
+        !sb.dest_root.join("user.workflow.qa.imported").exists(),
+        "partial install"
+    );
+}
+
+#[test]
+fn highly_compressible_archive_is_rejected_by_ratio() {
+    let sb = Sandbox::new("ratio");
+    // 40 MiB of zeros deflates ~1000:1, under the 100 MiB total cap but over the ratio ceiling
+    write_zip(
+        &sb.pkg,
+        &[
+            Entry::File("info.plist", sb.plist()),
+            Entry::File("z.bin", vec![0u8; 40 * 1024 * 1024]),
+        ],
+    );
+    let err = import_package(&sb.pkg, &sb.dest_root).unwrap_err();
+    assert!(format!("{err:#}").contains("ratio"), "{err:#}");
+    assert!(leftovers(&sb.dest_root).is_empty());
+}
+
+#[test]
+fn leading_dot_slash_entries_and_exec_bits_are_handled() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new("dotslash");
+    let f = std::fs::File::create(&sb.pkg).unwrap();
+    let mut z = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default().unix_permissions(0o4755);
+    z.start_file("./info.plist", opts).unwrap();
+    std::io::Write::write_all(&mut z, &sb.plist()).unwrap();
+    z.start_file("./bin/run.sh", opts).unwrap();
+    std::io::Write::write_all(&mut z, b"#!/bin/sh\n").unwrap();
+    z.finish().unwrap();
+    let dest = import_package(&sb.pkg, &sb.dest_root).unwrap();
+    let mode = std::fs::metadata(dest.join("bin/run.sh")).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o755, "setuid must be dropped, exec kept: {mode:o}");
+}
+
+#[test]
+fn failed_reimport_keeps_the_installed_version() {
+    let sb = Sandbox::new("keep-old");
+    write_zip(
+        &sb.pkg,
+        &[
+            Entry::File("info.plist", sb.plist()),
+            Entry::File("v1.txt", b"1".to_vec()),
+        ],
+    );
+    let dest = import_package(&sb.pkg, &sb.dest_root).unwrap();
+    // same bundle id, but the archive is hostile and gets rejected
+    write_zip(
+        &sb.pkg,
+        &[
+            Entry::File("info.plist", sb.plist()),
+            Entry::Symlink("evil", "/etc"),
+        ],
+    );
+    assert!(import_package(&sb.pkg, &sb.dest_root).is_err());
+    assert!(dest.join("v1.txt").exists(), "previous version lost");
+    assert!(leftovers(&sb.dest_root).is_empty());
+}
+
+#[test]
+fn successful_import_leaves_no_staging_or_backup_dirs() {
+    let sb = Sandbox::new("clean");
+    write_zip(&sb.pkg, &[Entry::File("info.plist", sb.plist())]);
+    import_package(&sb.pkg, &sb.dest_root).unwrap();
+    import_package(&sb.pkg, &sb.dest_root).unwrap(); // replace path
+    assert!(leftovers(&sb.dest_root).is_empty());
 }
