@@ -9,13 +9,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{Result, bail};
 
 use crate::apps::{self, AppEntry};
-use crate::calc;
 use crate::clipboard::{self, ClipboardHistory, Snippet};
 use crate::config::{Config, Paths};
-use crate::files;
-use crate::fuzzy;
-use crate::item::{Action, Icon, Item, Mods};
-use crate::system::SystemCommand;
+use crate::item::{Action, Item, Mods};
+use crate::providers::{self, EngineState, Placement, Provider, QueryCtx, sort_items};
 use crate::usage::Usage;
 use crate::workflow::{self, Effect, Workflow, WorkflowAction};
 
@@ -37,22 +34,7 @@ pub struct Engine {
     snippets: RwLock<Vec<Snippet>>,
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
-}
-
-/// If `q` is `keyword` or `keyword <rest>`, return the (left-trimmed) rest.
-fn strip_keyword<'a>(q: &'a str, keyword: &str) -> Option<&'a str> {
-    let head = q.get(..keyword.len())?;
-    if !head.eq_ignore_ascii_case(keyword) {
-        return None;
-    }
-    let rest = &q[keyword.len()..];
-    if rest.is_empty() {
-        Some("")
-    } else if rest.starts_with(' ') {
-        Some(rest.trim_start())
-    } else {
-        None
-    }
+    providers: Vec<Box<dyn Provider>>,
 }
 
 impl Engine {
@@ -67,6 +49,7 @@ impl Engine {
             snippets: RwLock::new(Vec::new()),
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
+            providers: providers::registry(),
         };
         e.reload();
         e
@@ -107,107 +90,38 @@ impl Engine {
 
     // ------------------------------------------------------------ query
 
+    /// Ask each provider in registry order. An exclusive answer is returned
+    /// as-is; everything else is pooled, usage-boosted, sorted and truncated,
+    /// and `Trailing` providers (fallback searches) close the list.
     pub fn query(&self, input: &str) -> Vec<Item> {
         let q = input.trim_start();
         if q.trim().is_empty() {
             return Vec::new();
         }
-        let max = self.config.max_results;
+        let state = EngineState {
+            config: &self.config,
+            paths: &self.paths,
+            apps: &self.apps,
+            workflows: &self.workflows,
+            snippets: &self.snippets,
+            clipboard: &self.clipboard,
+        };
+        let ctx = QueryCtx {
+            query: q,
+            raw: input,
+            engine_state: &state,
+        };
 
-        // 1. Workflow keywords take over the list when one is fully typed.
-        let mut wf_items = Vec::new();
-        let mut exclusive = false;
-        for wf in self.workflows.read().unwrap().iter() {
-            let (items, ex) = wf.keyword_items(q, &self.paths);
-            exclusive |= ex;
-            wf_items.extend(items);
-        }
-        if exclusive {
-            sort_items(&mut wf_items);
-            wf_items.truncate(max);
-            return wf_items;
-        }
-
-        // 2. Built-in prefixed commands.
-        if let Some(cmd) = q.strip_prefix('>') {
-            let cmd = cmd.trim();
-            let it = Item::new(
-                "shell",
-                if cmd.is_empty() {
-                    "Run a command in Terminal".to_string()
-                } else {
-                    format!("Run in Terminal: {cmd}")
-                },
-            )
-            .subtitle("↩ to run")
-            .icon(Icon::Glyph(">"))
-            .valid(!cmd.is_empty())
-            .action(Action::Shell(cmd.to_string()));
-            return vec![it];
-        }
-        for kw in ["open", "find"] {
-            if let Some(rest) = strip_keyword(q, kw) {
-                return self.file_items(kw, rest);
+        let mut items = Vec::new();
+        let mut trailing = Vec::new();
+        for p in &self.providers {
+            let out = p.query(&ctx);
+            if out.exclusive {
+                return out.items;
             }
-        }
-        if let Some(rest) = strip_keyword(q, "clipboard").or_else(|| strip_keyword(q, "clip")) {
-            return self.clipboard_items(rest);
-        }
-        if let Some(rest) = strip_keyword(q, "snip") {
-            return self.snippet_items(rest);
-        }
-        for ws in &self.config.web_searches {
-            if let Some(rest) = strip_keyword(q, &ws.keyword)
-                && !rest.is_empty()
-            {
-                return vec![web_item(&ws.title, &ws.url_for(rest), rest)];
-            }
-        }
-        if q.starts_with('/') || q.starts_with('~') {
-            let paths = files::browse(q, max);
-            if !paths.is_empty() {
-                return paths.iter().map(|p| path_item(p)).collect();
-            }
-        }
-
-        // 3. General search.
-        let mut items = wf_items;
-        let expr = q
-            .strip_prefix('=')
-            .map(str::trim)
-            .or_else(|| calc::looks_like_expression(q).then_some(q));
-        if let Some(v) = expr.and_then(calc::eval) {
-            let s = calc::format(v);
-            let mut it = Item::new(format!("calc:{s}"), s.clone())
-                .subtitle(format!("{} = {s} — ↩ to copy", expr.unwrap_or("")))
-                .icon(Icon::Glyph("="))
-                .action(Action::Copy(s.clone()))
-                .score(5000.0);
-            it.large_type = Some(s.clone());
-            it.copy_text = Some(s);
-            items.push(it);
-        }
-
-        for app in self.apps.read().unwrap().iter() {
-            if let Some(s) = fuzzy::score(q, &app.name) {
-                let mut it = Item::new(format!("app:{}", app.path.display()), &app.name)
-                    .subtitle(files::tilde(&app.path))
-                    .icon(Icon::App(app.path.clone()))
-                    .action(Action::Open(app.path.clone()))
-                    .score(s);
-                it.cmd_action = Some(Action::Reveal(app.path.clone()));
-                items.push(it);
-            }
-        }
-        for sc in SystemCommand::ALL {
-            if let Some(s) = fuzzy::score(q, sc.title()) {
-                items.push(
-                    Item::new(sc.id(), sc.title())
-                        .subtitle(sc.subtitle())
-                        .icon(Icon::Glyph("⚙"))
-                        .action(Action::System(sc))
-                        .score(s),
-                );
+            match p.placement() {
+                Placement::Ranked => items.extend(out.items),
+                Placement::Trailing => trailing.extend(out.items),
             }
         }
 
@@ -218,98 +132,9 @@ impl Engine {
             }
         }
         sort_items(&mut items);
-        items.truncate(max);
-
-        // 4. Fallback web searches always close the list.
-        for (i, ws) in self.config.web_searches.iter().filter(|w| w.fallback).enumerate() {
-            let mut it = web_item(&ws.title, &ws.url_for(q.trim()), q.trim());
-            it.id = format!("fallback:{}", ws.keyword);
-            it.score = -1000.0 - i as f64;
-            items.push(it);
-        }
+        items.truncate(self.config.max_results);
+        items.extend(trailing);
         items
-    }
-
-    fn file_items(&self, kw: &str, rest: &str) -> Vec<Item> {
-        if rest.is_empty() {
-            return vec![
-                Item::new(format!("kw:{kw}"), format!("{kw} <file name>"))
-                    .subtitle("Search files in your home folder by name")
-                    .icon(Icon::Glyph("▤"))
-                    .valid(false),
-            ];
-        }
-        let found = files::search(rest, self.config.max_results);
-        if found.is_empty() {
-            return vec![
-                Item::new("nofiles", "No files found")
-                    .subtitle(rest.to_string())
-                    .valid(false),
-            ];
-        }
-        found.iter().map(|p| path_item(p)).collect()
-    }
-
-    fn clipboard_items(&self, rest: &str) -> Vec<Item> {
-        let hits = self.clipboard.lock().unwrap().search(rest, self.config.max_results);
-        if hits.is_empty() {
-            return vec![Item::new("noclip", "Clipboard history is empty").valid(false)];
-        }
-        hits.iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let first = e.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-                let lines = e.text.lines().count();
-                let mut it = Item::new(format!("clip:{i}:{}", e.ts), truncate(first, 120))
-                    .subtitle(format!(
-                        "{} chars, {} line(s) — ↩ to copy",
-                        e.text.chars().count(),
-                        lines
-                    ))
-                    .icon(Icon::Glyph("⎘"))
-                    .action(Action::Copy(e.text.clone()))
-                    .score(10_000.0 - i as f64);
-                it.large_type = Some(e.text.clone());
-                it
-            })
-            .collect()
-    }
-
-    fn snippet_items(&self, rest: &str) -> Vec<Item> {
-        let clip = self.clipboard.lock().unwrap().latest().unwrap_or("").to_string();
-        let snippets = self.snippets.read().unwrap();
-        let mut v: Vec<(f64, &Snippet)> = snippets
-            .iter()
-            .filter_map(|s| {
-                let a = fuzzy::score(rest, &s.name);
-                let b = fuzzy::score(rest, &s.keyword);
-                match (a, b) {
-                    (Some(x), Some(y)) => Some(x.max(y)),
-                    (x, y) => x.or(y),
-                }
-                .map(|sc| (sc, s))
-            })
-            .collect();
-        v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        if v.is_empty() {
-            return vec![
-                Item::new("nosnip", "No snippets")
-                    .subtitle(format!("Add some to {}", self.paths.snippets_file().display()))
-                    .valid(false),
-            ];
-        }
-        v.into_iter()
-            .map(|(sc, s)| {
-                let text = clipboard::expand_snippet(&s.text, &clip);
-                let mut it = Item::new(format!("snip:{}", s.keyword), &s.name)
-                    .subtitle(truncate(text.lines().next().unwrap_or(""), 100))
-                    .icon(Icon::Glyph("✂"))
-                    .action(Action::Copy(text.clone()))
-                    .score(sc);
-                it.large_type = Some(text);
-                it
-            })
-            .collect()
     }
 
     // ------------------------------------------------------------ execution
@@ -433,57 +258,6 @@ fn apply_effects(effects: Vec<Effect>) -> String {
     } else {
         String::new()
     }
-}
-
-fn sort_items(items: &mut [Item]) {
-    items.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-    });
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(n).collect();
-        format!("{t}…")
-    }
-}
-
-fn web_item(engine: &str, url: &str, query: &str) -> Item {
-    Item::new(
-        format!("web:{engine}:{query}"),
-        format!("Search {engine} for '{query}'"),
-    )
-    .subtitle(url.to_string())
-    .icon(Icon::Glyph("🔍"))
-    .action(Action::OpenUrl(url.to_string()))
-}
-
-fn path_item(p: &Path) -> Item {
-    let name = p
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| p.display().to_string());
-    let is_app = p.extension().is_some_and(|e| e == "app");
-    let mut it = Item::new(format!("file:{}", p.display()), name)
-        .subtitle(files::tilde(p))
-        .icon(if is_app {
-            Icon::App(p.to_path_buf())
-        } else if p.is_dir() {
-            Icon::Glyph("▸")
-        } else {
-            Icon::Glyph("▤")
-        })
-        .action(Action::Open(p.to_path_buf()));
-    it.cmd_action = Some(Action::Reveal(p.to_path_buf()));
-    if p.is_dir() {
-        it.autocomplete = Some(format!("{}/", files::tilde(p)));
-    }
-    it
 }
 
 // ---------------------------------------------------------------- OS actions
