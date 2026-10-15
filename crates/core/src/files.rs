@@ -1,5 +1,12 @@
 //! File search (Spotlight with a directory-walk fallback), scope/exclusion
 //! rules, kind filters, recency ranking and path navigation.
+//!
+//! A search is a stream: a backend feeds hits to a [`Ranker`], which applies
+//! the scope while reading and keeps only the best `limit` (bounded heap), so
+//! the result cap is applied after ranking. Spotlight runs under the scope's
+//! [`SearchBudget`] (wall-clock timeout and output cap; the process is killed
+//! and the hits read so far are used); the directory-walk fallback, used only
+//! when `mdfind` cannot be run at all, is bounded by time and entries.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
@@ -747,6 +754,7 @@ pub fn browse(query: &str, limit: usize) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use crate::actions::testing::{FakeOs, How};
+    use crate::actions::{Os, OutputBudget};
 
     /// Temp tree (canonical root; removed on drop):
     /// docs/{Annual Report.pdf, report-draft.txt("quarterly numbers"), notes.md, blob.bin}
@@ -1162,6 +1170,235 @@ mod tests {
         assert_eq!(recency_boost(None, now), 0.0);
         // a timestamp in the future counts as "just now"
         assert!((recency_boost(Some(now + Duration::from_secs(3600)), now) - 60.0).abs() < 0.01);
+    }
+
+    // ---- review fixes: scope before cap, bounded work, multi-word names
+
+    fn plain_lines(paths: impl IntoIterator<Item = String>) -> String {
+        paths.into_iter().collect::<Vec<_>>().join("\n") + "\n"
+    }
+
+    #[test]
+    fn scope_filtering_happens_before_any_cap() {
+        // 6 000 noise hits come first in Spotlight order (more than the old 5 000 cut),
+        // then the three the user actually wants.
+        let t = Tree::new("scope-first");
+        let noise = (0..6000).map(|i| t.p(&format!("node_modules/m{i}/report.pdf")).display().to_string());
+        let wanted = ["docs/Annual Report.pdf", "docs/report-draft.txt", "pics/report.png"]
+            .iter()
+            .map(|r| t.p(r).display().to_string());
+        let os = FakeOs::with_output(&plain_lines(noise.chain(wanted)));
+        let q = FileQuery::parse(SearchMode::Name, "report");
+        let found = search_files(&os, &t.scope(), &q, 10);
+        assert_eq!(
+            t.rel(&found),
+            ["docs/Annual Report.pdf", "docs/report-draft.txt", "pics/report.png"]
+        );
+    }
+
+    #[test]
+    fn the_cap_applies_after_ranking_not_in_spotlight_order() {
+        let t = Tree::new("rank-then-cap");
+        let old = "2001-01-01 00:00:00 +0000";
+        let recent = "2999-01-01 00:00:00 +0000";
+        let rec = |name: &str, d: &str| format!("{}   kMDItemLastUsedDate = {d}", t.p(name).display());
+        // listed first: 300 old files; listed last: one recently used file
+        let mut recs: Vec<String> = (0..300).map(|i| rec(&format!("docs/plan {i}.txt"), old)).collect();
+        recs.push(rec("docs/plan latest.txt", recent));
+        let os = FakeOs::with_output(&recs.join("\0"));
+        let q = FileQuery::parse(SearchMode::Name, "plan");
+        let found = search_files(&os, &t.scope(), &q, 3);
+        assert_eq!(found.len(), 3);
+        assert_eq!(
+            found[0],
+            t.p("docs/plan latest.txt"),
+            "the recent file survives the cap"
+        );
+    }
+
+    #[test]
+    fn bounded_heap_matches_a_full_sort() {
+        let now = SystemTime::now();
+        let scope = FileSearchScope::new(vec![PathBuf::from("/r")], vec![]);
+        let q = FileQuery::parse(SearchMode::Name, "doc");
+        let hits: Vec<Hit> = (0..200)
+            .map(|i| hit(&format!("/r/d{}/doc {i}.txt", i % 7), Some((i * 37 % 100) as f64), now))
+            .collect();
+        let all = rank(hits.clone(), &scope, &q, usize::MAX, now);
+        for limit in [0, 1, 5, 50, 199, 200, 500] {
+            let top = rank(hits.clone(), &scope, &q, limit, now);
+            assert_eq!(top, all[..limit.min(all.len())], "limit {limit}");
+        }
+    }
+
+    #[test]
+    fn multi_word_queries_keep_hits_whose_words_are_out_of_order() {
+        let t = Tree::new("multiword");
+        let os = FakeOs::with_output(&plain_lines(
+            ["docs/Annual Report.pdf", "docs/report-draft.txt", "docs/notes.md"]
+                .iter()
+                .map(|r| t.p(r).display().to_string()),
+        ));
+        let found = |text: &str| {
+            let q = FileQuery::parse(SearchMode::Name, text);
+            t.rel(&search_files(&os, &t.scope(), &q, 10))
+        };
+        // Spotlight matches each word anywhere in the name; so do we, in any order
+        assert_eq!(found("report annual"), ["docs/Annual Report.pdf"]);
+        assert_eq!(found("ann port"), ["docs/Annual Report.pdf"]);
+        assert_eq!(found("pdf REPORT"), ["docs/Annual Report.pdf"]);
+        // every word must be inside the name
+        assert!(found("report missing").is_empty());
+        // in-order matches still come first
+        let q = FileQuery::parse(SearchMode::Name, "report draft");
+        assert_eq!(t.rel(&search_files(&os, &t.scope(), &q, 10)), ["docs/report-draft.txt"]);
+    }
+
+    #[test]
+    fn a_fuzzy_match_outranks_an_all_words_match() {
+        let now = SystemTime::now();
+        let scope = FileSearchScope::new(vec![PathBuf::from("/r")], vec![]);
+        let q = FileQuery::parse(SearchMode::Name, "annual report");
+        let hits = vec![
+            hit("/r/report annual.txt", Some(0.0), now),   // only the fallback matches
+            hit("/r/Annual Report.txt", Some(300.0), now), // ordered word prefixes
+        ];
+        let v = rank(hits, &scope, &q, 10, now);
+        assert_eq!(
+            v,
+            [
+                PathBuf::from("/r/Annual Report.txt"),
+                PathBuf::from("/r/report annual.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn mdfind_gets_the_scopes_budget() {
+        let t = Tree::new("budget");
+        let os = FakeOs::default();
+        let budget = SearchBudget {
+            mdfind_timeout: Duration::from_millis(1234),
+            mdfind_max_bytes: 4321,
+            ..SearchBudget::default()
+        };
+        let scope = t.scope().with_budget(budget);
+        let q = FileQuery::parse(SearchMode::Name, "report");
+        search_files(&os, &scope, &q, 5);
+        assert_eq!(
+            os.budgets.lock().unwrap().as_slice(),
+            [OutputBudget {
+                timeout: Duration::from_millis(1234),
+                max_bytes: 4321
+            }]
+        );
+        // defaults are sane: seconds, megabytes
+        let d = SearchBudget::default();
+        assert!(d.mdfind_timeout >= Duration::from_secs(1) && d.mdfind_timeout <= Duration::from_secs(10));
+        assert!(d.mdfind_max_bytes >= 1 << 20);
+    }
+
+    #[test]
+    fn a_cut_off_final_record_is_dropped_but_complete_ones_survive() {
+        let mut got = Vec::new();
+        for_each_mdfind(b"/a/one\0/b/two\0/c/thr", true, &mut |h| got.push(h.path));
+        assert_eq!(got, [PathBuf::from("/a/one"), PathBuf::from("/b/two")]);
+        // output that ended exactly on a separator loses nothing
+        let mut got = Vec::new();
+        for_each_mdfind(b"/a/one\0/b/two\0", true, &mut |h| got.push(h.path));
+        assert_eq!(got.len(), 2);
+        // untruncated output keeps an unterminated final record
+        let mut got = Vec::new();
+        for_each_mdfind(b"/a/one\0/b/two", false, &mut |h| got.push(h.path));
+        assert_eq!(got.len(), 2);
+    }
+
+    /// Runs another command in place of the one it is asked to run, through the
+    /// real bounded runner: a stand-in for a hung or runaway `mdfind`.
+    struct Stand(Cmd);
+
+    impl Os for Stand {
+        fn run(&self, _: &Cmd) -> Result<()> {
+            unreachable!()
+        }
+        fn output(&self, _: &Cmd) -> Result<Vec<u8>> {
+            unreachable!()
+        }
+        fn output_bounded(&self, _: &Cmd, b: &OutputBudget) -> Result<crate::actions::BoundedOutput> {
+            crate::actions::RealOs.output_bounded(&self.0, b)
+        }
+        fn spawn(&self, _: &Cmd) -> Result<Box<dyn crate::actions::Process>> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_hung_mdfind_is_killed_and_the_search_returns_in_time() {
+        let t = Tree::new("hung");
+        let scope = t.scope().with_budget(SearchBudget {
+            mdfind_timeout: Duration::from_millis(300),
+            ..SearchBudget::default()
+        });
+        let q = FileQuery::parse(SearchMode::Name, "report");
+        let started = Instant::now();
+        let out = search_files_outcome(&Stand(Cmd::new("sleep").arg("30")), &scope, &q, 10);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(out.completeness, Completeness::Partial);
+        assert!(out.paths.is_empty());
+        // a timeout is not an mdfind failure: no slow directory walk is started on top of it
+    }
+
+    #[test]
+    fn a_runaway_mdfind_is_cut_at_the_byte_cap_and_keeps_what_it_found() {
+        let t = Tree::new("runaway");
+        let scope = t.scope().with_budget(SearchBudget {
+            mdfind_max_bytes: 50_000,
+            ..SearchBudget::default()
+        });
+        let q = FileQuery::parse(SearchMode::Name, "report");
+        let line = t.p("docs/Annual Report.pdf").display().to_string();
+        let started = Instant::now();
+        let out = search_files_outcome(&Stand(Cmd::new("yes").arg(&line)), &scope, &q, 10);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(out.completeness, Completeness::Partial);
+        assert_eq!(out.paths, [t.p("docs/Annual Report.pdf")], "deduplicated, in scope");
+    }
+
+    #[test]
+    fn walk_fallback_stops_at_its_entry_and_time_limits() {
+        let t = Tree::new("walk-bound");
+        let q = FileQuery::parse(SearchMode::Name, "report");
+        let few = WalkBackend {
+            max_entries: 3,
+            ..WalkBackend::default()
+        };
+        let mut n = 0;
+        let c = few.find(&t.scope(), &q, &mut |_| n += 1).unwrap();
+        assert_eq!(c, Completeness::Partial);
+        assert!(n <= 3);
+        // a deadline in the past stops it (checked every few hundred entries)
+        for i in 0..600 {
+            std::fs::write(t.p(&format!("docs/f{i}.txt")), b"x").unwrap();
+        }
+        let timed = WalkBackend {
+            max_entries: 0,
+            max_duration: Some(Duration::ZERO),
+        };
+        assert_eq!(timed.find(&t.scope(), &q, &mut |_| {}).unwrap(), Completeness::Partial);
+        // unbounded walk completes
+        let full = WalkBackend::default();
+        assert_eq!(full.find(&t.scope(), &q, &mut |_| {}).unwrap(), Completeness::Complete);
+        // a failed mdfind falls back to a walk built from the scope's budget
+        let os = FakeOs::default();
+        *os.fail.lock().unwrap() = true;
+        let scope = t.scope().with_budget(SearchBudget {
+            walk_max_entries: 2,
+            ..SearchBudget::default()
+        });
+        assert_eq!(
+            search_files_outcome(&os, &scope, &q, 10).completeness,
+            Completeness::Partial
+        );
     }
 
     #[test]

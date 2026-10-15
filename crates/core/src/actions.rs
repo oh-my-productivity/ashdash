@@ -13,9 +13,14 @@
 //!   never through a shell and never spliced into AppleScript source.
 //! * Every path must be absolute and must not start with `-` (so it can never
 //!   be read as an option); see [`safe_path`].
-//! * Move to Trash resolves the *parent* directory (so a symlink is trashed
-//!   itself, not its target), refuses top-level and system locations and the
-//!   home folder, and always needs confirmation.
+//! * Move to Trash resolves the *parent* directory and addresses the file to
+//!   Finder as `item (my POSIX file p)` (so a symlink is trashed itself, not
+//!   its target), refuses top-level and system locations, the home folder and
+//!   `~/Library` - and refuses a symlink whose resolved target is one of
+//!   those - and always needs confirmation (which names the full path).
+//! * Long-running or unbounded commands (Spotlight) go through
+//!   [`Os::output_bounded`] (wall-clock timeout, output cap, process killed);
+//!   background processes (Quick Look) return a [`Process`] handle with `kill()`.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};

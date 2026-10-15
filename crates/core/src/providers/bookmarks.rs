@@ -354,6 +354,58 @@ mod tests {
     }
 
     #[test]
+    fn file_bookmarks_are_dropped() {
+        // `open file:///...` would launch an app or run a .command; a browser only displays it
+        let list = vec![
+            bm("Calculator", "file:///System/Applications/Calculator.app", ""),
+            bm("Local Notes", "file:///Users/me/notes.html", ""),
+            bm("Calc Site", "https://calc.example/", ""),
+        ];
+        let p = provider(fake("a", Ok(list)), BookmarkSettings::default());
+        for q in ["bm calc", "calc", "bm local", "bm"] {
+            for it in run(&p, q).items {
+                assert!(
+                    !matches!(&it.action, Action::OpenUrl(u) if u.starts_with("file:")),
+                    "{q}: {:?}",
+                    it.action
+                );
+            }
+        }
+        assert_eq!(run(&p, "bm").items.len(), 1);
+    }
+
+    #[test]
+    fn scoring_thousands_of_bookmarks_per_keystroke_stays_cheap() {
+        let many: Vec<_> = (0..5000)
+            .map(|i| {
+                bm(
+                    &format!("Some Reasonably Long Bookmark Title Number {i} About Topic {}", i % 97),
+                    &format!("https://site{i}.example/page"),
+                    "",
+                )
+            })
+            .collect();
+        let cache = BookmarkCache::new(fake("a", Ok(many)));
+        cache.refresh_blocking();
+        let snap = cache.snapshot();
+        let mut times: Vec<std::time::Duration> = Vec::new();
+        for q in ["so", "som", "bookmark", "topic 4", "srbt", "zzzz", "number 12", "about"]
+            .iter()
+            .cycle()
+            .take(40)
+        {
+            let t = std::time::Instant::now();
+            let items = general_items(&snap, q);
+            times.push(t.elapsed());
+            assert!(items.len() <= GENERAL_LIMIT);
+        }
+        times.sort();
+        let p95 = times[times.len() * 95 / 100];
+        // generous: an unoptimised build on a loaded machine (measured here with 5 000 bookmarks: about 17 ms debug, 4.5 ms release)
+        assert!(p95 < std::time::Duration::from_millis(150), "p95 {p95:?}");
+    }
+
+    #[test]
     fn full_disk_access_denial_yields_one_explanatory_item() {
         let denied = SourceError {
             kind: SourceErrorKind::PermissionDenied,

@@ -199,7 +199,7 @@ impl Engine {
     // ------------------------------------------------------------ execution
 
     /// The action `item` runs for `mods` (the Cmd variant when Cmd is held).
-    fn effective_action<'a>(item: &'a Item, mods: Mods) -> &'a Action {
+    fn effective_action(item: &Item, mods: Mods) -> &Action {
         match (&item.cmd_action, mods.cmd) {
             (Some(a), true) => a,
             _ => &item.action,
@@ -601,6 +601,207 @@ mod tests {
         *e.snippets.write().unwrap() = snippets;
         assert_eq!(e.query("snip s").len(), 2);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // ---- Os / home injection, confirmation, usage (FIX-A)
+
+    use crate::actions::testing::{FakeOs, How};
+
+    /// An engine whose Os is a fake and whose home is a temp folder: it cannot touch the machine.
+    fn sandboxed(tag: &str) -> (Engine, Arc<FakeOs>, PathBuf) {
+        let root = std::env::temp_dir()
+            .join(format!("oa-eng-sbx-{tag}-{}", std::process::id()))
+            .canonicalize_or_create();
+        let fake = Arc::new(FakeOs::default());
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        let e = Engine::with_env(Paths::under(&root), config, Box::new(Arc::clone(&fake)), home);
+        (e, fake, root)
+    }
+
+    trait CanonOrCreate {
+        fn canonicalize_or_create(self) -> PathBuf;
+    }
+    impl CanonOrCreate for PathBuf {
+        fn canonicalize_or_create(self) -> PathBuf {
+            let _ = std::fs::remove_dir_all(&self);
+            std::fs::create_dir_all(&self).unwrap();
+            self.canonicalize().unwrap()
+        }
+    }
+
+    #[test]
+    fn move_to_trash_confirms_then_runs_through_the_injected_os() {
+        let (e, fake, root) = sandboxed("trash");
+        let f = root.join("files/report.pdf");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, b"x").unwrap();
+
+        let rows = e.query(&format!("actions {}", f.display()));
+        let trash = rows.iter().find(|i| i.title == "Move to Trash").expect("trash row");
+
+        // the question, with the full path
+        let ask = e.confirmation_for(trash, Mods::NONE).expect("destructive: must ask");
+        assert!(
+            ask.contains("\"report.pdf\"") && ask.contains(&f.display().to_string()),
+            "{ask}"
+        );
+        // execute is the authority: unconfirmed gives the same question and runs nothing
+        assert_eq!(e.execute(trash, "actions x", Mods::NONE, false), Outcome::Confirm(ask));
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+
+        // confirmed: exactly one Finder script, on the file, through the fake
+        assert_eq!(e.execute(trash, "actions x", Mods::NONE, true), Outcome::Done);
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].0, How::Run);
+        assert_eq!(
+            calls[0].1,
+            crate::actions::Cmd::osascript(actions::applescripts()[1].1, [&f])
+        );
+        assert!(f.exists(), "the fake deletes nothing");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_destructive_actions_do_not_ask_and_invalid_items_never_do() {
+        let (e, _fake, root) = sandboxed("noask");
+        let open = Item::new("o", "o").action(Action::Open(PathBuf::from("/tmp")));
+        assert_eq!(e.confirmation_for(&open, Mods::NONE), None);
+        let large = Item::new("l", "l").action(Action::Universal(actions::UniversalAction::LargeType("x".into())));
+        assert_eq!(e.confirmation_for(&large, Mods::NONE), None);
+        let shutdown = e
+            .query("shut down")
+            .into_iter()
+            .find(|i| i.title == "Shut Down")
+            .unwrap();
+        let ask = e.confirmation_for(&shutdown, Mods::NONE).expect("system command asks");
+        assert!(ask.contains("Shut Down"), "{ask}");
+        // the same string execute reports: one source of truth
+        assert_eq!(
+            e.execute(&shutdown, "shut down", Mods::NONE, false),
+            Outcome::Confirm(ask)
+        );
+        let invalid = Item::new("i", "i")
+            .action(Action::Universal(actions::UniversalAction::Trash(vec![
+                "/tmp/x".into(),
+            ])))
+            .valid(false);
+        assert_eq!(e.confirmation_for(&invalid, Mods::NONE), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_cmd_variant_is_what_gets_confirmed() {
+        let (e, fake, root) = sandboxed("cmdvariant");
+        let f = root.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let mut it = Item::new("file:a", "a.txt").action(Action::Open(f.clone()));
+        it.cmd_action = Some(Action::Universal(actions::UniversalAction::Trash(vec![f.clone()])));
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
+        assert_eq!(e.confirmation_for(&it, Mods::NONE), None, "plain Return just opens it");
+        assert!(e.confirmation_for(&it, cmd).is_some(), "Cmd+Return trashes: ask");
+        assert!(matches!(e.execute(&it, "a", cmd, false), Outcome::Confirm(_)));
+        assert!(fake.calls().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn universal_actions_are_never_written_to_usage() {
+        let (e, _fake, root) = sandboxed("usage");
+        let secret = "correct horse battery staple (copied from the clipboard history)";
+        let rows = e.query(&format!("actions {secret}"));
+        let copy = rows.iter().find(|i| i.title == "Copy").unwrap();
+        let large = rows.iter().find(|i| i.title == "Large Type").unwrap();
+        assert_eq!(e.execute(copy, "actions x", Mods::NONE, false), Outcome::Done);
+        assert!(matches!(
+            e.execute(large, "actions x", Mods::NONE, false),
+            Outcome::LargeType(_)
+        ));
+        assert_eq!(e.usage.lock().unwrap().boost("actions x", &copy.id), 0.0);
+        let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
+        assert!(!on_disk.contains("horse") && !on_disk.contains("act:"), "{on_disk}");
+
+        // ...while an ordinary result is still learned
+        let open = Item::new("file:/tmp/x", "x").action(Action::Open(PathBuf::from("/tmp/x")));
+        let _ = e.execute(&open, "x", Mods::NONE, true);
+        assert!(e.paths.usage_file().exists() || e.usage.lock().unwrap().boost("x", "file:/tmp/x") > 0.0);
+        // a Cmd variant that is Universal is not recorded either
+        let mut it = Item::new("file:/tmp/y", "y").action(Action::Open(PathBuf::from("/tmp/y")));
+        it.cmd_action = Some(Action::Universal(actions::UniversalAction::LargeType("zzz".into())));
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
+        let before = e.usage.lock().unwrap().boost("y", "file:/tmp/y");
+        let _ = e.execute(&it, "y", cmd, true);
+        assert_eq!(e.usage.lock().unwrap().boost("y", "file:/tmp/y"), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn injected_home_decides_which_bookmarks_and_which_files_are_visible() {
+        let root = std::env::temp_dir()
+            .join(format!("oa-eng-home-{}", std::process::id()))
+            .canonicalize_or_create();
+        let home = root.join("home");
+        let chrome = home.join("Library/Application Support/Google/Chrome/Default");
+        std::fs::create_dir_all(&chrome).unwrap();
+        std::fs::write(
+            chrome.join("Bookmarks"),
+            r#"{"roots":{"bookmark_bar":{"type":"folder","name":"bar","children":[
+                {"type":"url","name":"Synthetic Fixture Site","url":"https://fixture.example/"}]}}}"#,
+        )
+        .unwrap();
+        let fake = Arc::new(FakeOs::default());
+        let config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        let e = Engine::with_env(Paths::under(&root), config, Box::new(Arc::clone(&fake)), home.clone());
+
+        // bookmarks come from the injected home (loaded in the background)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let found = loop {
+            let r = e.query("bm synthetic");
+            if r.iter().any(|i| i.title == "Synthetic Fixture Site") || std::time::Instant::now() > deadline {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(found.iter().any(|i| i.title == "Synthetic Fixture Site"), "{found:?}");
+
+        // file search is scoped to that home and goes through the fake Os, not the real mdfind
+        let _ = e.query("find anything");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].1.program, "mdfind");
+        assert!(
+            calls[0].1.args.iter().any(|a| *a == home.as_os_str()),
+            "{:?}",
+            calls[0].1.args
+        );
+        assert!(
+            !calls[0]
+                .1
+                .args
+                .iter()
+                .any(|a| *a == dirs::home_dir().unwrap().as_os_str())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plain_engine_new_in_tests_gets_a_sandboxed_home() {
+        // unit tests must never read real browser data or search the real home
+        assert!(!providers::ambient_home().exists());
     }
 
     fn json_to_plist(j: &serde_json::Value) -> plist::Value {

@@ -284,6 +284,33 @@ mod tests {
     }
 
     #[test]
+    fn a_search_that_ran_out_of_budget_says_so_instead_of_claiming_nothing_exists() {
+        let (root, scope) = scoped("partial");
+        let scope = scope.with_budget(crate::files::SearchBudget {
+            mdfind_max_bytes: 10,
+            ..Default::default()
+        });
+        let os = FakeOs::with_output("/elsewhere/a-very-long-path-name-beyond-the-cap\n");
+        let items = file_items(&os, &scope, "find", SearchMode::Name, "name", 10);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "nofiles-partial");
+        assert!(!items[0].valid);
+        assert!(items[0].subtitle.contains("limit"), "{}", items[0].subtitle);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn multi_word_search_finds_out_of_order_names() {
+        let (root, scope) = scoped("multi");
+        let hit = root.join("docs/Annual Report.pdf");
+        let os = FakeOs::with_output(&format!("{}\n", hit.display()));
+        let items = file_items(&os, &scope, "find", SearchMode::Name, "report annual", 10);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Annual Report.pdf");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn path_browse_is_exclusive_only_when_it_matches() {
         let (e, root) = engine("files-path");
         let dir = root.join("browse");

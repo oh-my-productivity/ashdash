@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use ashdash_core::theme::{Rgba, Theme};
-use ashdash_core::{Action, Engine, Item, Mods, Outcome};
+use ashdash_core::{Engine, Item, Mods, Outcome};
 use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Pos2, Vec2};
 use global_hotkey::GlobalHotKeyManager;
@@ -215,12 +215,13 @@ impl LauncherApp {
         if !item.valid {
             return;
         }
-        if let Action::System(cmd) = &item.action
-            && cmd.needs_confirmation()
-            && self.confirming.as_deref() != Some(item.id.as_str())
-        {
-            self.confirming = Some(item.id.clone());
-            self.status = Some(format!("{}? Press Return again to confirm.", cmd.title()));
+        // The engine alone decides what needs confirming (system commands,
+        // Move to Trash, whatever the Cmd variant does); we only ask, once.
+        let key = confirm_key(&item.id, mods);
+        let prompt = self.engine.confirmation_for(&item, mods);
+        if let ConfirmStep::Ask(msg) = confirm_step(self.confirming.as_deref(), &key, prompt) {
+            self.confirming = Some(key);
+            self.status = Some(msg);
             return;
         }
         let query = self.query.clone();
@@ -233,6 +234,35 @@ impl LauncherApp {
             let _ = tx.send(out);
             ctx2.request_repaint();
         });
+    }
+}
+
+/// What Return does with an item that may need confirming.
+#[derive(Debug, PartialEq, Eq)]
+enum ConfirmStep {
+    /// Run it (confirmed, or nothing to confirm).
+    Run,
+    /// Show this question and wait for a second Return.
+    Ask(String),
+}
+
+/// Identifies "this item with this action": Cmd+Return can run a different
+/// (possibly destructive) action than Return, so a confirmation given for one
+/// must not carry over to the other.
+fn confirm_key(item_id: &str, mods: Mods) -> String {
+    if mods.cmd {
+        format!("{item_id}\u{0}cmd")
+    } else {
+        item_id.to_string()
+    }
+}
+
+/// `armed` is the key already confirmed-for-asking by a previous Return,
+/// `prompt` the engine's question for this item (None = harmless).
+fn confirm_step(armed: Option<&str>, key: &str, prompt: Option<String>) -> ConfirmStep {
+    match prompt {
+        Some(question) if armed != Some(key) => ConfirmStep::Ask(question),
+        _ => ConfirmStep::Run,
     }
 }
 
@@ -345,5 +375,95 @@ impl eframe::App for LauncherApp {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ashdash_core::Action;
+    use ashdash_core::actions::UniversalAction;
+    use ashdash_core::config::{Config, Paths};
+
+    use super::*;
+
+    const ASK: &str = "Move \"a.txt\" to Trash? /tmp/a.txt. Press ↩ again to confirm.";
+
+    #[test]
+    fn a_harmless_item_runs_at_once() {
+        assert_eq!(confirm_step(None, "k", None), ConfirmStep::Run);
+        assert_eq!(confirm_step(Some("other"), "k", None), ConfirmStep::Run);
+    }
+
+    #[test]
+    fn a_destructive_item_asks_first_and_runs_on_the_second_return() {
+        assert_eq!(confirm_step(None, "k", Some(ASK.into())), ConfirmStep::Ask(ASK.into()));
+        assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into())), ConfirmStep::Run);
+    }
+
+    #[test]
+    fn confirming_one_item_does_not_confirm_another() {
+        assert_eq!(
+            confirm_step(Some("a"), "b", Some(ASK.into())),
+            ConfirmStep::Ask(ASK.into())
+        );
+    }
+
+    #[test]
+    fn plain_and_cmd_return_are_confirmed_separately() {
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
+        assert_ne!(confirm_key("file:x", Mods::NONE), confirm_key("file:x", cmd));
+        // Return confirmed an Open; Cmd+Return (trash) must still ask
+        let armed = confirm_key("file:x", Mods::NONE);
+        assert_eq!(
+            confirm_step(Some(&armed), &confirm_key("file:x", cmd), Some(ASK.into())),
+            ConfirmStep::Ask(ASK.into())
+        );
+    }
+
+    /// The real engine decides; the GUI only asks it. A fake Os keeps this off the machine.
+    #[test]
+    fn move_to_trash_from_the_actions_list_is_asked_about_through_the_engine() {
+        struct NoOs;
+        impl ashdash_core::actions::Os for NoOs {
+            fn run(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<()> {
+                panic!("nothing may run")
+            }
+            fn output(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
+            fn spawn(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
+                panic!("nothing may run")
+            }
+        }
+        let root = std::env::temp_dir().join(format!("oa-gui-confirm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        let engine = Engine::with_env(Paths::under(&root), config, Box::new(NoOs), root.join("home"));
+
+        let trash = Item::new("act:trash:/tmp/a.txt", "Move to Trash")
+            .action(Action::Universal(UniversalAction::Trash(vec!["/tmp/a.txt".into()])));
+        let question = engine.confirmation_for(&trash, Mods::NONE).expect("must ask");
+        assert!(question.contains("/tmp/a.txt"), "{question}");
+
+        // the sequence activate() follows: ask, then (same key armed) run
+        let key = confirm_key(&trash.id, Mods::NONE);
+        assert_eq!(
+            confirm_step(None, &key, Some(question.clone())),
+            ConfirmStep::Ask(question.clone())
+        );
+        assert_eq!(confirm_step(Some(&key), &key, Some(question)), ConfirmStep::Run);
+
+        // and a harmless action never asks
+        let open = Item::new("act:open:/tmp/a.txt", "Open")
+            .action(Action::Universal(UniversalAction::Open("/tmp/a.txt".into())));
+        assert_eq!(engine.confirmation_for(&open, Mods::NONE), None);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
