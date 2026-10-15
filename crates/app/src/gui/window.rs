@@ -11,7 +11,7 @@ use eframe::egui::{self, Pos2, Vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
-use super::{LauncherApp, mac};
+use super::{LauncherApp, geometry, mac, style, trace};
 
 /// Register the configured global hotkey. Returns the manager (which must be
 /// kept alive), the toggle channel and whether registration succeeded.
@@ -52,7 +52,9 @@ fn register_hotkey(spec: &str) -> Result<(GlobalHotKeyManager, u32)> {
 
 impl LauncherApp {
     pub(super) fn show(&mut self, ctx: &egui::Context) {
+        trace::trace(|| "show".into());
         self.visible = true;
+        self.focus_seen = None;
         self.shown_at = Instant::now();
         self.want_focus = true;
         self.query.clear();
@@ -66,12 +68,11 @@ impl LauncherApp {
         self.last_height = 0.0;
         self.last_pointer = None;
         let width = self.theme.window_width;
-        let monitor = ctx.input(|i| i.viewport().monitor_size);
-        if let Some(m) = monitor {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
-                ((m.x - width) / 2.0).max(0.0),
-                m.y * 0.2,
-            )));
+        mac::style_launcher_window(super::WINDOW_TITLE, &style::window_style(&self.theme));
+        let target = mac::screens_and_mouse()
+            .and_then(|(monitors, mouse)| geometry::launcher_position(&monitors, mouse, f64::from(width), 0.2));
+        if let Some((x, y)) = target {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(x as f32, y as f32)));
         } else if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
             ctx.send_viewport_cmd(cmd);
         }
@@ -83,6 +84,7 @@ impl LauncherApp {
         if !self.visible {
             return;
         }
+        trace::trace(|| "hide".into());
         self.visible = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         mac::hide_app();

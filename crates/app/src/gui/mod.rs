@@ -1,9 +1,12 @@
 //! The launcher window (egui) plus the hotkey, clipboard watcher and
 //! background workers that feed it.
 
+mod geometry;
 mod keys;
 mod mac;
 mod results;
+mod style;
+mod trace;
 mod window;
 mod workers;
 
@@ -19,6 +22,7 @@ use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Pos2, Vec2};
 use global_hotkey::GlobalHotKeyManager;
 
+const WINDOW_TITLE: &str = "Ashdash";
 const VISIBLE_ROWS: usize = 9;
 const ROW_HEIGHT: f32 = 48.0;
 
@@ -46,6 +50,7 @@ struct LauncherApp {
     want_focus: bool,
     last_height: f32,
     last_pointer: Option<Pos2>,
+    focus_seen: Option<bool>,
 
     status: Option<String>,
     confirming: Option<String>,
@@ -75,7 +80,7 @@ pub fn run(engine: Arc<Engine>) -> Result<()> {
     };
 
     let viewport = egui::ViewportBuilder::default()
-        .with_title("Ashdash")
+        .with_title(WINDOW_TITLE)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
@@ -138,6 +143,7 @@ impl LauncherApp {
             want_focus: false,
             last_height: 0.0,
             last_pointer: None,
+            focus_seen: None,
             status: None,
             confirming: None,
             large_type: None,
@@ -216,6 +222,11 @@ impl eframe::App for LauncherApp {
         // Close when the window loses focus (after a short grace period while
         // the OS hands focus over).
         let focused = ctx.input(|i| i.viewport().focused);
+        if focused != self.focus_seen {
+            self.focus_seen = focused;
+            let since = self.shown_at.elapsed().as_millis();
+            trace::trace(|| format!("focus={focused:?} +{since}ms after show"));
+        }
         if focused == Some(false) && self.shown_at.elapsed() > Duration::from_millis(400) {
             self.hide(&ctx);
             return;
@@ -266,6 +277,7 @@ impl eframe::App for LauncherApp {
                         self.status = None;
                         self.large_type = None;
                         self.selected = 0;
+                        trace::trace(|| format!("query={:?}", self.query));
                         self.request_query();
                     }
                 });
