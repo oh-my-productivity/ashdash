@@ -514,7 +514,6 @@ fn open_helpers_refuse_option_like_arguments() {
 
 /// `reveal` runs `open -R <path>`; a path starting with `-` is read by `open` as an option.
 #[test]
-#[ignore = "known: SEC-04 (reveal lacks the leading '-' guard the other open helpers have)"]
 fn reveal_refuses_option_like_paths() {
     // "-@" is not an `open` option, so on a build without the guard `open` itself rejects it
     // ("illegal option"); the point is that *we* must refuse before spawning it.
@@ -529,7 +528,6 @@ fn reveal_refuses_option_like_paths() {
 /// so notification text controlled by an attacker runs a shell command.
 /// (The test shows a harmless `touch` of a temp file; on a fixed build the text is just displayed.)
 #[test]
-#[ignore = "known: SEC-01 (osascript option injection through notification text); may flash a notification"]
 fn notification_text_cannot_inject_applescript() {
     let t = TempDir::new("osa-inject");
     let marker = t.join("pwned");
