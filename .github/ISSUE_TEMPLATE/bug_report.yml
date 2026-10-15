@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Please check [docs/TROUBLESHOOTING.md](../blob/main/docs/TROUBLESHOOTING.md) first.
+        Thanks for reporting. Please check `docs/TROUBLESHOOTING.md` first.
 
         **Do not paste** your clipboard history, `usage.json`, snippets, workflows you do not own, or screenshots of your whole
         desktop. Use harmless example text. **Security problems:** do not publish exploit details here; no private channel

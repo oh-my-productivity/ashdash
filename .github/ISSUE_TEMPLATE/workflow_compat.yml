@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        See [docs/WORKFLOWS.md](../blob/main/docs/WORKFLOWS.md) for the objects that are supported. Only report workflows you may share
+        See `docs/WORKFLOWS.md` for the objects that are supported. Only report workflows you may share
         details about, and **never** attach a workflow you do not have the right to share. A minimal synthetic workflow that
         shows the problem is best. Describe object types and settings, do not paste secrets or API keys.
   - type: input
