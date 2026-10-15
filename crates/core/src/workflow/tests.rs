@@ -946,7 +946,14 @@ fn item_icons_are_confined_to_the_workflow_directory() {
         .insert("INSIDE".into(), wf.dir.join("img/ok.png").display().to_string());
 
     let (items, _) = wf.keyword_items("ic x", &paths);
-    let icon = |t: &str| items.iter().find(|i| i.title == t).unwrap_or_else(|| panic!("{t}: {items:?}")).icon.clone();
+    let icon = |t: &str| {
+        items
+            .iter()
+            .find(|i| i.title == t)
+            .unwrap_or_else(|| panic!("{t}: {items:?}"))
+            .icon
+            .clone()
+    };
     assert_eq!(icon("own"), Icon::Image(wf.dir.join("img/ok.png")));
     assert_eq!(icon("abs-inside"), Icon::Image(wf.dir.join("img/ok.png")));
     for t in ["dotdot", "abs-outside", "link", "dirlink"] {

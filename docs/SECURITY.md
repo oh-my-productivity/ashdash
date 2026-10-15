@@ -403,8 +403,8 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   or any row (re-verified end to end with a fake pasteboard: `clipboard_privacy.rs`). (b) Clipboard text only appears
   behind the `clip` / `clipboard` keyword: ordinary queries, `snip`, `open`, `bm` never include it. (c) A snippet whose
   expansion depends on the clipboard (directly, with an index, or through `{snippet:..}`; decided by expanding twice with
-  different clipboards) shows "expands using the clipboard" instead of the expanded first line and has no Large Type /
-  copy text; Return still pastes it. (d) `Engine::execute` no longer records clipboard actions in `usage.json`: the typed
+  different clipboards) shows "expands using the clipboard" instead of the expanded first line in its subtitle; Return,
+  Cmd+Return, Large Type and copy still use the real expansion (explicit requests, and an existing test pins them). (d) `Engine::execute` no longer records clipboard actions in `usage.json`: the typed
   query (`clip hunter2-corr`) is stored in clear text there and clipboard rows are ordered by recency anyway.
   *Left to the UI:* a "hide clipboard contents while the screen is shared" preference; Large Type of a plain `clip` row
   still shows the entry (the user asked for it explicitly).

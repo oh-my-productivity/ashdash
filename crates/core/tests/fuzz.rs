@@ -441,10 +441,7 @@ impl ashdash_core::actions::Os for NullOs {
     fn output(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Vec<u8>> {
         Ok(Vec::new())
     }
-    fn spawn(
-        &self,
-        _: &ashdash_core::actions::Cmd,
-    ) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
+    fn spawn(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
         anyhow::bail!("no processes in this test")
     }
 }
@@ -510,10 +507,28 @@ fn arb_path() -> impl Strategy<Value = String> {
     prop_oneof![
         prop::sample::select(keys),
         prop::sample::select(vec![
-            "", ".", "..", "a..b", "clipboard.", ".clipboard", "clipboard..max_entries", "web_searches.0",
-            "web_searches.0.url", "web_searches.99999999999999999999", "web_searches.-1", "web_searches.00",
-            "file_search.roots.0", "file_search.roots.99", "providers_disabled.0", "theme.x", "version",
-            "bookmarks", "clipboard", "file_search", "hotkey.x", "max_results.1",
+            "",
+            ".",
+            "..",
+            "a..b",
+            "clipboard.",
+            ".clipboard",
+            "clipboard..max_entries",
+            "web_searches.0",
+            "web_searches.0.url",
+            "web_searches.99999999999999999999",
+            "web_searches.-1",
+            "web_searches.00",
+            "file_search.roots.0",
+            "file_search.roots.99",
+            "providers_disabled.0",
+            "theme.x",
+            "version",
+            "bookmarks",
+            "clipboard",
+            "file_search",
+            "hotkey.x",
+            "max_results.1",
         ])
         .prop_map(String::from),
         "[a-z_.0-9]{0,24}",

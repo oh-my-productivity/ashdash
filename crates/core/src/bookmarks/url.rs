@@ -84,11 +84,7 @@ mod tests {
 
     #[test]
     fn allows_only_safe_schemes() {
-        for ok in [
-            "http://a.com",
-            "HTTPS://a.com/x?y=1#z",
-            "  https://a.com  ",
-        ] {
+        for ok in ["http://a.com", "HTTPS://a.com/x?y=1#z", "  https://a.com  "] {
             assert!(clean_url(ok).is_some(), "{ok}");
         }
         for bad in [

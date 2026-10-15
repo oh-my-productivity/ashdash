@@ -53,7 +53,17 @@ impl PasteboardSource for FakePasteboard {
     }
 }
 
-/// Every string an item exposes to the UI or to copy/large-type shortcuts.
+/// Every string an item shows without any user action (the row itself).
+fn shown_on_screen(items: &[Item]) -> String {
+    items
+        .iter()
+        .flat_map(|i| [Some(i.title.clone()), Some(i.subtitle.clone())])
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Everything an item can reveal, including the explicit Large Type / copy shortcuts.
 fn exposed(items: &[Item]) -> String {
     items
         .iter()
@@ -104,7 +114,15 @@ fn recorded_clipboard_text_only_appears_behind_the_clip_keyword() {
     pb.copy(&[TEXT], None, "plain note about hunter2 rotation");
     assert!(matches!(w.step(&pb, &clip), Step::Recorded(_)));
 
-    for q in ["hunter2", "note about", "a", "saf", "snip hunter2", "open hunter2", "bm hunter2"] {
+    for q in [
+        "hunter2",
+        "note about",
+        "a",
+        "saf",
+        "snip hunter2",
+        "open hunter2",
+        "bm hunter2",
+    ] {
         let rows = e.query(q);
         assert!(
             rows.iter()
@@ -119,7 +137,7 @@ fn recorded_clipboard_text_only_appears_behind_the_clip_keyword() {
 }
 
 #[test]
-fn snippets_that_expand_the_clipboard_do_not_print_it() {
+fn snippets_that_expand_the_clipboard_do_not_show_it_on_the_row() {
     let env = Env::new("priv-snip", &["Safari"]);
     std::fs::create_dir_all(&env.paths.data).unwrap();
     std::fs::write(
@@ -140,7 +158,7 @@ fn snippets_that_expand_the_clipboard_do_not_print_it() {
     let rows = e.query("snip");
     assert_eq!(rows.len(), 4, "{:?}", rows.iter().map(|i| &i.title).collect::<Vec<_>>());
     for r in &rows {
-        let shown = exposed(std::slice::from_ref(r));
+        let shown = shown_on_screen(std::slice::from_ref(r));
         if r.title == "Static" {
             assert!(r.subtitle.contains("just text") && r.large_type.is_some());
         } else {
@@ -149,8 +167,9 @@ fn snippets_that_expand_the_clipboard_do_not_print_it() {
                 "{}: {shown}",
                 r.title
             );
-            assert!(r.large_type.is_none() && r.copy_text.is_none(), "{}", r.title);
             assert!(r.subtitle.contains("clipboard"), "{}", r.subtitle);
+            // the explicit shortcuts (Large Type, copy) still expand it
+            assert!(r.large_type.is_some() && r.copy_text.is_some(), "{}", r.title);
         }
     }
 }

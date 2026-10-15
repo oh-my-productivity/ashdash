@@ -44,7 +44,9 @@ fn rank<'a>(snippets: &'a [Snippet], query: &str) -> Vec<(f64, &'a Snippet)> {
 /// but the clipboard can make the two results differ.
 fn depends_on_clipboard(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> bool {
     let empty: Vec<String> = Vec::new();
-    let probe: Vec<String> = (0..CLIPBOARD_DEPTH).map(|i| format!("\u{1}clipboard-probe-{i}\u{1}")).collect();
+    let probe: Vec<String> = (0..CLIPBOARD_DEPTH)
+        .map(|i| format!("\u{1}clipboard-probe-{i}\u{1}"))
+        .collect();
     let a = expand(text, &ExpandCtx::new(&empty, 0, 0, 1).with_snippets(lookup));
     let b = expand(text, &ExpandCtx::new(&probe, 0, 0, 1).with_snippets(lookup));
     a.text != b.text
@@ -98,7 +100,8 @@ impl Provider for SnippetsProvider {
                         (false, true) => format!("snip:{}/{}", s.collection, s.name),
                     };
                     // SEC-19: an expansion that contains clipboard text may contain a password;
-                    // keep it out of the subtitle, Large Type and the copy shortcut.
+                    // keep it out of the subtitle, which is on screen without any action. Large Type
+                    // and the copy shortcut are explicit requests and keep the expansion.
                     let secret = depends_on_clipboard(&s.text, &lookup);
                     let preview = if secret {
                         "expands using the clipboard".to_string()
@@ -121,10 +124,8 @@ impl Provider for SnippetsProvider {
                         .score(sc);
                     // Cmd+Return only copies the expanded text.
                     it.cmd_action = Some(Action::Copy(ex.text.clone()));
-                    if !secret {
-                        it.copy_text = Some(ex.text.clone());
-                        it.large_type = Some(ex.text);
-                    }
+                    it.copy_text = Some(ex.text.clone());
+                    it.large_type = Some(ex.text);
                     it
                 })
                 .collect(),

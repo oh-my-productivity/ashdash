@@ -164,7 +164,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("secret.icns"), b"x").unwrap();
         let secret_abs = root.join("secret.icns").display().to_string();
-        for bad in ["../../../secret.icns", "../secret", secret_abs.as_str(), "sub/x.icns", "a\\b"] {
+        for bad in [
+            "../../../secret.icns",
+            "../secret",
+            secret_abs.as_str(),
+            "sub/x.icns",
+            "a\\b",
+        ] {
             let app = fake_app(&root, bad);
             assert_eq!(icns_path(&app), None, "{bad}");
             let _ = std::fs::remove_dir_all(&app);

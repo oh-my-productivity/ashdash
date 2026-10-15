@@ -649,7 +649,10 @@ mod tests {
         let parsed = parse_script_filter(&big).unwrap();
         assert_eq!(parsed.items.len(), MAX_FILTER_ITEMS);
         assert_eq!(parsed.items[0]["title"], "t0", "the first items are kept");
-        assert_eq!(parse_script_filter(r#"{"items":[{"title":"a"}]}"#).unwrap().items.len(), 1);
+        assert_eq!(
+            parse_script_filter(r#"{"items":[{"title":"a"}]}"#).unwrap().items.len(),
+            1
+        );
     }
 
     #[test]

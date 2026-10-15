@@ -66,7 +66,7 @@ mod tests {
         std::fs::create_dir_all(d.join("img")).unwrap();
         std::fs::write(d.join("img/a.png"), b"x").unwrap();
         assert_eq!(confined_file(&d, Path::new("img/a.png")), Some(d.join("img/a.png")));
-        assert_eq!(confined_file(&d, Path::new("./img/a.png")).is_some(), true);
+        assert!(confined_file(&d, Path::new("./img/a.png")).is_some());
         assert!(confined_file(&d, &d.join("img/a.png")).is_some());
         let _ = std::fs::remove_dir_all(d);
     }
@@ -78,7 +78,15 @@ mod tests {
         std::fs::write(outside.join("secret.png"), b"x").unwrap();
         std::fs::create_dir_all(d.join("sub")).unwrap();
         std::fs::write(d.join("sub/in.png"), b"x").unwrap();
-        for p in ["../x.png", "sub/../sub/in.png", "", ".", "sub", "nope.png", "/etc/hosts"] {
+        for p in [
+            "../x.png",
+            "sub/../sub/in.png",
+            "",
+            ".",
+            "sub",
+            "nope.png",
+            "/etc/hosts",
+        ] {
             assert_eq!(confined_file(&d, Path::new(p)), None, "{p:?}");
         }
         assert_eq!(confined_file(&d, &outside.join("secret.png")), None);
@@ -107,7 +115,10 @@ mod tests {
     fn a_symlinked_root_itself_is_fine() {
         let real = tmp("root-real");
         std::fs::write(real.join("a.png"), b"x").unwrap();
-        let link = real.parent().unwrap().join(format!("oa-confine-rootlink-{}", std::process::id()));
+        let link = real
+            .parent()
+            .unwrap()
+            .join(format!("oa-confine-rootlink-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
         symlink(&real, &link).unwrap();
         assert!(confined_file(&link, Path::new("a.png")).is_some());

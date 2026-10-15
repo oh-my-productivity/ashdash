@@ -759,7 +759,10 @@ mod tests {
     fn file_search_budget_defaults_match_the_search_code() {
         let d = FileSearchSettings::default();
         assert_eq!(d.budget(), crate::files::SearchBudget::default());
-        assert_eq!(d.to_scope_in(Path::new("/h")).budget, crate::files::SearchBudget::default());
+        assert_eq!(
+            d.to_scope_in(Path::new("/h")).budget,
+            crate::files::SearchBudget::default()
+        );
     }
 
     #[test]
@@ -786,10 +789,17 @@ mod tests {
             ..FileSearchSettings::default()
         }
         .budget();
-        assert_eq!(wild.mdfind_timeout, Duration::from_millis(*MDFIND_TIMEOUT_MS_RANGE.start()));
+        assert_eq!(
+            wild.mdfind_timeout,
+            Duration::from_millis(*MDFIND_TIMEOUT_MS_RANGE.start())
+        );
         assert_eq!(wild.mdfind_max_bytes, *MDFIND_MAX_BYTES_RANGE.start());
         assert_eq!(wild.walk_timeout, Duration::from_millis(*WALK_TIMEOUT_MS_RANGE.end()));
-        assert_eq!(wild.walk_max_entries, *WALK_MAX_ENTRIES_RANGE.start(), "0 is not 'unlimited'");
+        assert_eq!(
+            wild.walk_max_entries,
+            *WALK_MAX_ENTRIES_RANGE.start(),
+            "0 is not 'unlimited'"
+        );
     }
 
     #[test]
@@ -831,7 +841,12 @@ mod tests {
             assert_eq!(c.file_search, before, "{k}={v} changed nothing");
         }
         let keys = crate::settings_view::keys(&c);
-        for k in ["mdfind_timeout_ms", "mdfind_max_bytes", "walk_timeout_ms", "walk_max_entries"] {
+        for k in [
+            "mdfind_timeout_ms",
+            "mdfind_max_bytes",
+            "walk_timeout_ms",
+            "walk_max_entries",
+        ] {
             assert!(keys.contains(&format!("file_search.{k}")), "{k}");
         }
     }
