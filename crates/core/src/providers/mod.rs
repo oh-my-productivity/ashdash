@@ -25,6 +25,7 @@ use crate::item::Item;
 use crate::workflow::Workflow;
 
 mod apps;
+mod bookmarks;
 mod calc;
 mod clipboard;
 mod files;
@@ -106,6 +107,7 @@ pub fn registry() -> Vec<Box<dyn Provider>> {
         Box::new(files::FilesProvider),
         Box::new(clipboard::ClipboardProvider),
         Box::new(snippets::SnippetsProvider),
+        Box::new(bookmarks::BookmarksProvider::new()),
         Box::new(websearch::WebKeywordProvider),
         Box::new(files::PathBrowseProvider),
         Box::new(calc::CalcProvider),
