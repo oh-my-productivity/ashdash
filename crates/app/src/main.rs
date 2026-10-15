@@ -33,9 +33,9 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         None => {
-            let engine = Arc::new(Engine::new(paths.clone(), config));
+            let engine = Arc::new(Engine::new(paths, config));
             // Double-clicked .alfredworkflow / .alfredappearance / .alfredsnippets files.
-            mac::opendocs::install(Arc::clone(&engine), paths);
+            mac::opendocs::install(Arc::clone(&engine));
             gui::run(engine)
         }
         Some("-h" | "--help" | "help") => {

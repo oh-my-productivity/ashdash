@@ -318,6 +318,15 @@ mod ae {
                     (self.ivars().on_files)(files);
                 }
             }
+
+            /// AppKit installs its own `odoc` handler while launching, which would replace one
+            /// registered earlier. Registering from this notification (sent before any
+            /// queued document event is dispatched) makes ours the last writer, so a file that
+            /// launched the app is not lost.
+            #[unsafe(method(applicationWillFinishLaunching:))]
+            fn application_will_finish_launching(&self, _notification: &AnyObject) {
+                attach(self);
+            }
         }
 
         unsafe impl NSObjectProtocol for Handler {}
@@ -358,6 +367,19 @@ mod ae {
         static HANDLER: std::cell::RefCell<Option<Retained<Handler>>> = const { std::cell::RefCell::new(None) };
     }
 
+    fn attach(handler: &Handler) {
+        unsafe {
+            let manager: Retained<AnyObject> = msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+            let _: () = msg_send![
+                &*manager,
+                setEventHandler: handler,
+                andSelector: sel!(handleOpenDocuments:withReplyEvent:),
+                forEventClass: CORE_EVENT_CLASS,
+                andEventID: OPEN_DOCUMENTS
+            ];
+        }
+    }
+
     pub fn register(on_files: Box<dyn Fn(Vec<PathBuf>)>) -> bool {
         let Some(mtm) = MainThreadMarker::new() else {
             return false;
@@ -366,14 +388,17 @@ mod ae {
             let this = Handler::alloc(mtm).set_ivars(Ivars { on_files });
             unsafe { msg_send![super(this), init] }
         };
+        // Now (covers installs after launch) and again when AppKit is about to finish launching.
+        attach(&handler);
         unsafe {
-            let manager: Retained<AnyObject> = msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+            let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
+            let name = NSString::from_str("NSApplicationWillFinishLaunchingNotification");
             let _: () = msg_send![
-                &*manager,
-                setEventHandler: &*handler,
-                andSelector: sel!(handleOpenDocuments:withReplyEvent:),
-                forEventClass: CORE_EVENT_CLASS,
-                andEventID: OPEN_DOCUMENTS
+                &*center,
+                addObserver: &*handler,
+                selector: sel!(applicationWillFinishLaunching:),
+                name: &*name,
+                object: None::<&AnyObject>
             ];
         }
         HANDLER.with(|h| *h.borrow_mut() = Some(handler));
@@ -384,7 +409,8 @@ mod ae {
 /// Register for the open-documents Apple Event. Call once, on the main thread, before the
 /// event loop starts. Imports run on a worker thread so the UI never blocks on a dialog.
 /// Returns `false` when called off the main thread.
-pub fn install(engine: Arc<Engine>, paths: Paths) -> bool {
+pub fn install(engine: Arc<Engine>) -> bool {
+    let paths = engine.paths.clone();
     let importer = Arc::new(SystemImporter { engine, paths });
     ae::register(Box::new(move |files| {
         let importer = Arc::clone(&importer);
