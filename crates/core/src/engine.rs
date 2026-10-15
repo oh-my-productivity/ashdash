@@ -108,29 +108,33 @@ impl Engine {
         };
         let ctx = QueryCtx {
             query: q,
-            raw: input,
             engine_state: &state,
         };
 
         let mut items = Vec::new();
+        let mut fixed = Vec::new(); // from providers that opt out of learning
         let mut trailing = Vec::new();
         for p in &self.providers {
             let out = p.query(&ctx);
             if out.exclusive {
-                return out.items;
+                let mut v = out.items;
+                v.truncate(self.config.max_results);
+                return v;
             }
-            match p.placement() {
-                Placement::Ranked => items.extend(out.items),
-                Placement::Trailing => trailing.extend(out.items),
+            match (p.placement(), p.learns()) {
+                (Placement::Trailing, _) => trailing.extend(out.items),
+                (Placement::Ranked, true) => items.extend(out.items),
+                (Placement::Ranked, false) => fixed.extend(out.items),
             }
         }
 
         {
             let usage = self.usage.lock().unwrap();
-            for it in items.iter_mut().filter(|i| i.score < 5000.0 && !i.id.starts_with("wf")) {
+            for it in items.iter_mut().filter(|i| i.score < 5000.0) {
                 it.score += usage.boost(q, &it.id);
             }
         }
+        items.extend(fixed);
         sort_items(&mut items);
         items.truncate(self.config.max_results);
         items.extend(trailing);
@@ -464,6 +468,45 @@ mod tests {
         );
         // argument required: without one the item is not actionable
         assert!(!e.query("shout ")[0].valid);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A workflow keyword equal to a built-in prefix must win: workflows are first in the registry.
+    #[test]
+    fn workflow_keyword_beats_builtin_prefixes() {
+        for builtin in ["clip", "snip", "g"] {
+            let (e, root) = engine(&format!("prec-{builtin}"));
+            let dir = e.paths.workflows_dir().join("user.workflow.p");
+            std::fs::create_dir_all(&dir).unwrap();
+            let doc = json!({
+                "name": "P", "bundleid": "p.p", "objects": [
+                    {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                        "keyword": builtin, "withspace": true, "argumenttype": 1, "text": "Mine", "subtext": ""}}
+                ],
+                "connections": {}
+            });
+            json_to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
+            e.reload();
+            let r = e.query(&format!("{builtin} x"));
+            assert_eq!(r.len(), 1, "{builtin}: {r:?}");
+            assert_eq!(r[0].title, "Mine", "{builtin}");
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn exclusive_output_is_truncated_by_the_engine() {
+        let (mut e, root) = engine("trunc");
+        e.config.max_results = 2;
+        let snippets: Vec<_> = (0..5)
+            .map(|i| crate::clipboard::Snippet {
+                name: format!("s{i}"),
+                keyword: format!("k{i}"),
+                text: "t".into(),
+            })
+            .collect();
+        *e.snippets.write().unwrap() = snippets;
+        assert_eq!(e.query("snip s").len(), 2);
         let _ = std::fs::remove_dir_all(root);
     }
 

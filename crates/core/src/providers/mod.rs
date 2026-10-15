@@ -49,15 +49,15 @@ pub struct EngineState<'a> {
 pub struct QueryCtx<'a> {
     /// The input with leading whitespace removed (never blank).
     pub query: &'a str,
-    /// The input exactly as typed.
-    pub raw: &'a str,
     pub engine_state: &'a EngineState<'a>,
 }
 
 #[derive(Default)]
 pub struct ProviderOutput {
     pub items: Vec<Item>,
-    /// When true, `items` is the complete, final answer to the query.
+    /// When true, `items` is the complete, final answer to the query: no other
+    /// provider is asked. The engine still truncates it to `max_results`, so
+    /// providers do not need to (but should avoid producing huge lists).
     pub exclusive: bool,
 }
 
@@ -85,7 +85,13 @@ pub enum Placement {
 }
 
 pub trait Provider: Send + Sync {
+    /// Unique, stable identifier (used for future per-provider settings).
     fn id(&self) -> &'static str;
+    /// Whether picks from this provider feed usage-based ranking. Providers
+    /// that control their own order (workflows) return false.
+    fn learns(&self) -> bool {
+        true
+    }
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput;
     fn placement(&self) -> Placement {
         Placement::Ranked
@@ -163,5 +169,19 @@ pub(crate) mod testutil {
             ..Config::default()
         };
         (Engine::new(Paths::under(&root), config), root)
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn registry_ids_are_unique() {
+        let ids: Vec<_> = registry().iter().map(|p| p.id()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(ids.len(), sorted.len(), "duplicate provider id in {ids:?}");
     }
 }

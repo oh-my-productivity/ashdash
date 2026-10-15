@@ -109,8 +109,17 @@ impl Config {
         }
     }
 
-    /// Always writes the current schema version.
+    /// Writes the current schema version. Refuses to overwrite a file written by a
+    /// newer build, which would silently drop settings this build does not know.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
+        if let Ok(bytes) = std::fs::read(paths.config_file())
+            && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && v.get("version").and_then(|n| n.as_u64()).unwrap_or(0) > CURRENT_VERSION as u64
+        {
+            return Err(std::io::Error::other(
+                "config.json was written by a newer version; refusing to overwrite it",
+            ));
+        }
         std::fs::create_dir_all(&paths.data)?;
         let mut out = self.clone();
         out.version = CURRENT_VERSION;
@@ -160,6 +169,19 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_refuses_to_clobber_newer_config() {
+        let root = std::env::temp_dir().join(format!("oa-cfg-newer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), r#"{"version": 99, "future": true}"#).unwrap();
+        assert!(Config::default().save(&paths).is_err());
+        assert!(std::fs::read_to_string(paths.config_file()).unwrap().contains("future"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use serde_json::json;
 
     #[test]

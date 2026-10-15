@@ -15,6 +15,10 @@ impl Provider for WorkflowProvider {
         "workflow"
     }
 
+    fn learns(&self) -> bool {
+        false
+    }
+
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput {
         let st = ctx.engine_state;
         let mut items: Vec<Item> = Vec::new();
