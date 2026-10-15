@@ -52,7 +52,11 @@ impl Sandbox {
     }
 
     fn assert_nothing_escaped(&self, before: &[String]) {
-        assert_eq!(&self.untouched_snapshot(), before, "files appeared outside the workflows dir");
+        assert_eq!(
+            &self.untouched_snapshot(),
+            before,
+            "files appeared outside the workflows dir"
+        );
         assert_eq!(
             std::fs::read(self.outside.join("canary.txt")).unwrap(),
             b"keep me",
@@ -76,7 +80,10 @@ fn escaping_symlinks(dir: &Path) -> Vec<String> {
     let mut bad = Vec::new();
     for rel in snapshot(dir) {
         let p = dir.join(&rel);
-        if std::fs::symlink_metadata(&p).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        if std::fs::symlink_metadata(&p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             let ok = p.canonicalize().map(|c| c.starts_with(&canon)).unwrap_or(true);
             if !ok {
                 bad.push(format!("{rel} -> {:?}", std::fs::read_link(&p).unwrap()));
@@ -95,7 +102,10 @@ fn well_formed_package_installs_and_is_found_by_the_engine() {
     write_zip(
         &pkg,
         &[
-            Entry::File("info.plist", plist_bytes(&keyword_workflow("Imported", "qa.imported", "imp"))),
+            Entry::File(
+                "info.plist",
+                plist_bytes(&keyword_workflow("Imported", "qa.imported", "imp")),
+            ),
             Entry::File("icon.png", vec![0x89, b'P', b'N', b'G']),
             Entry::Dir("sub/"),
             Entry::File("sub/helper.sh", b"#!/bin/sh\necho hi\n".to_vec()),
@@ -105,7 +115,10 @@ fn well_formed_package_installs_and_is_found_by_the_engine() {
     let dest = e.import_workflow(&pkg).expect("import");
     assert_eq!(dest, env.paths.workflows_dir().join("user.workflow.qa.imported"));
     assert!(dest.join("icon.png").is_file() && dest.join("sub/helper.sh").is_file());
-    assert_eq!(e.workflow_summaries(), vec![("Imported".into(), "qa.imported".into(), false)]);
+    assert_eq!(
+        e.workflow_summaries(),
+        vec![("Imported".into(), "qa.imported".into(), false)]
+    );
     assert_eq!(e.query("imp x")[0].title, "Imported");
     // staging dir is gone
     assert!(
@@ -128,7 +141,13 @@ fn reimport_replaces_the_previous_version_completely() {
     );
     let d1 = import_package(&sb.pkg, &sb.dest_root).unwrap();
     assert!(d1.join("old.txt").exists());
-    write_zip(&sb.pkg, &[Entry::File("info.plist", sb.plist()), Entry::File("new.txt", b"new".to_vec())]);
+    write_zip(
+        &sb.pkg,
+        &[
+            Entry::File("info.plist", sb.plist()),
+            Entry::File("new.txt", b"new".to_vec()),
+        ],
+    );
     let d2 = import_package(&sb.pkg, &sb.dest_root).unwrap();
     assert_eq!(d1, d2);
     assert!(!d2.join("old.txt").exists() && d2.join("new.txt").exists());
@@ -158,13 +177,19 @@ fn dotdot_entries_do_not_escape() {
     ] {
         let (sb, before, r) = attempt(
             "trav",
-            &[Entry::File("info.plist", plist.clone()), Entry::File(name, b"pwn".to_vec())],
+            &[
+                Entry::File("info.plist", plist.clone()),
+                Entry::File(name, b"pwn".to_vec()),
+            ],
         );
         // Either outcome is acceptable (reject or neutralise); escaping is not.
         let _ = r;
         sb.assert_nothing_escaped(&before);
         assert!(!sb.root.join("escape.txt").exists(), "{name}");
-        assert!(!sb.dest_root.join("escape.txt").exists(), "{name} landed in workflows dir");
+        assert!(
+            !sb.dest_root.join("escape.txt").exists(),
+            "{name} landed in workflows dir"
+        );
     }
 }
 
@@ -303,7 +328,15 @@ fn symlinked_info_plist_cannot_smuggle_an_outside_file_into_loading() {
 
 #[test]
 fn bundle_id_cannot_steer_the_destination() {
-    for bundle in ["../../evil", "/etc/passwd", "..", ".", "a/b/c", "x\u{0}y", "name with spaces & $(rm -rf)"] {
+    for bundle in [
+        "../../evil",
+        "/etc/passwd",
+        "..",
+        ".",
+        "a/b/c",
+        "x\u{0}y",
+        "name with spaces & $(rm -rf)",
+    ] {
         let sb = Sandbox::new("bundle");
         let doc = keyword_workflow("N", bundle, "k");
         write_zip(&sb.pkg, &[Entry::File("info.plist", plist_bytes(&doc))]);
@@ -359,8 +392,14 @@ fn malformed_archives_are_errors_not_panics() {
 fn missing_nested_or_broken_plist_is_rejected() {
     for (what, entries) in [
         ("no plist", vec![Entry::File("readme.txt", b"x".to_vec())]),
-        ("nested plist", vec![Entry::File("Folder/info.plist", Sandbox::new("y").plist())]),
-        ("garbage plist", vec![Entry::File("info.plist", b"<<<not a plist".to_vec())]),
+        (
+            "nested plist",
+            vec![Entry::File("Folder/info.plist", Sandbox::new("y").plist())],
+        ),
+        (
+            "garbage plist",
+            vec![Entry::File("info.plist", b"<<<not a plist".to_vec())],
+        ),
         ("plist is a dir", vec![Entry::Dir("info.plist/")]),
         (
             "object without uid",
@@ -400,7 +439,10 @@ fn hostile_entry_names_do_not_panic() {
     ] {
         let (sb, before, r) = attempt(
             "names",
-            &[Entry::File("info.plist", plist.clone()), Entry::File(name, b"x".to_vec())],
+            &[
+                Entry::File("info.plist", plist.clone()),
+                Entry::File(name, b"x".to_vec()),
+            ],
         );
         let _ = r; // reject or accept; only escaping/panicking is wrong
         sb.assert_nothing_escaped(&before);
@@ -427,10 +469,22 @@ fn preplanted_staging_symlink_is_not_followed() {
     let sb = Sandbox::new("staging-link");
     let staging = sb.dest_root.join(format!(".import-{}", std::process::id()));
     std::os::unix::fs::symlink(&sb.outside, &staging).unwrap();
-    write_zip(&sb.pkg, &[Entry::File("info.plist", sb.plist()), Entry::File("marker.txt", b"m".to_vec())]);
+    write_zip(
+        &sb.pkg,
+        &[
+            Entry::File("info.plist", sb.plist()),
+            Entry::File("marker.txt", b"m".to_vec()),
+        ],
+    );
     let r = import_package(&sb.pkg, &sb.dest_root);
-    assert!(sb.outside.join("canary.txt").exists(), "canary deleted via staging symlink");
-    assert!(!sb.outside.join("marker.txt").exists(), "extracted through staging symlink");
+    assert!(
+        sb.outside.join("canary.txt").exists(),
+        "canary deleted via staging symlink"
+    );
+    assert!(
+        !sb.outside.join("marker.txt").exists(),
+        "extracted through staging symlink"
+    );
     assert!(!sb.outside.join("info.plist").exists());
     let _ = r;
 }
@@ -450,5 +504,8 @@ fn zip_bomb_is_rejected() {
             Entry::File("c.bin", zeros),
         ],
     );
-    assert!(import_package(&sb.pkg, &sb.dest_root).is_err(), "300 MB of zeros was extracted");
+    assert!(
+        import_package(&sb.pkg, &sb.dest_root).is_err(),
+        "300 MB of zeros was extracted"
+    );
 }

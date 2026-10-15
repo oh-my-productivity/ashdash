@@ -134,7 +134,11 @@ fn documents_default_mask_leaves_shell_metacharacters_live() {
     let m = fx.root.join("m");
     let ms = m.display();
     for (what, script, arg) in [
-        ("semicolon, bare", "echo {query}".to_string(), format!("x; touch {ms}-semi")),
+        (
+            "semicolon, bare",
+            "echo {query}".to_string(),
+            format!("x; touch {ms}-semi"),
+        ),
         (
             "single-quote breakout",
             "echo '{query}'".to_string(),
@@ -253,7 +257,10 @@ fn documents_scripts_inherit_parent_environment() {
     let fx = Fx::new("env-inherit");
     let out = run_keyword_script(&fx, r#"printf '%s' "${HOME:-unset}""#, 1, 102, "x");
     let home = std::env::var("HOME").unwrap_or_default();
-    assert_eq!(notification_text(&out), if home.is_empty() { "unset".into() } else { home });
+    assert_eq!(
+        notification_text(&out),
+        if home.is_empty() { "unset".into() } else { home }
+    );
 }
 
 /// SEC-12: the per-workflow data directory is keyed on the raw bundle id, so a bundle id with
@@ -272,7 +279,11 @@ fn bundle_id_cannot_steer_workflow_data_dir() {
     let wf = fx.wf(&doc);
     let items = fx.items(&wf, "ks x");
     let _ = fx.effects(&wf, &items[0]);
-    assert!(!escape.exists(), "directory created outside the data root: {}", escape.display());
+    assert!(
+        !escape.exists(),
+        "directory created outside the data root: {}",
+        escape.display()
+    );
 }
 
 /// SEC-15: the temporary script file holds the substituted source (which may contain
@@ -291,7 +302,9 @@ fn temp_script_file_is_removed_after_the_run() {
     let fx = Fx::new("tmpclean");
     let _ = run_keyword_script(&fx, "echo -n hi", 1, 102, "x");
     let dir = fx.paths.cache.join("scripts");
-    let left: Vec<_> = std::fs::read_dir(&dir).map(|rd| rd.flatten().collect()).unwrap_or_default();
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().collect())
+        .unwrap_or_default();
     assert!(left.is_empty(), "left: {left:?}");
 }
 
@@ -337,7 +350,9 @@ fn timeout_kills_grandchildren() {
         .unwrap()
         .success();
     if alive {
-        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
     }
     assert!(!alive, "grandchild {pid} survived the timeout");
 }
@@ -351,7 +366,9 @@ fn huge_script_output_is_bounded() {
     let wf = fx.wf(&sf_workflow(script));
     let items = fx.items(&wf, "sf x");
     assert!(
-        items.iter().all(|i| i.title.len() < 1_000_000 && i.subtitle.len() < 1_000_000),
+        items
+            .iter()
+            .all(|i| i.title.len() < 1_000_000 && i.subtitle.len() < 1_000_000),
         "a {} byte title came through",
         items.iter().map(|i| i.title.len()).max().unwrap_or(0)
     );
@@ -381,7 +398,10 @@ fn script_failures_surface_as_error_items_not_panics() {
         let wf = fx.wf(&sf_workflow(script));
         let items = fx.items(&wf, "sf x");
         assert!(!items.is_empty(), "{script}");
-        assert!(items[0].title.contains("script error") || items[0].title == "No results", "{script}: {items:?}");
+        assert!(
+            items[0].title.contains("script error") || items[0].title == "No results",
+            "{script}: {items:?}"
+        );
     }
 }
 
@@ -422,7 +442,10 @@ fn long_chain_is_cut_off_with_a_warning_and_finishes_fast() {
         mods: vec![],
     };
     let fx_out = wf.run(&act, Mods::NONE, &fx.paths);
-    assert!(matches!(fx_out.last(), Some(Effect::Warn(w)) if w.contains("too deep")), "{fx_out:?}");
+    assert!(
+        matches!(fx_out.last(), Some(Effect::Warn(w)) if w.contains("too deep")),
+        "{fx_out:?}"
+    );
     assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
 }
 
@@ -455,12 +478,12 @@ fn wide_fanout_and_self_loops_are_bounded() {
 fn connections_to_missing_objects_and_odd_shapes_are_ignored() {
     let fx = Fx::new("odd");
     let doc = json!({"name": "Odd", "bundleid": "qa.odd",
-        "objects": [{"uid": "A", "type": "alfred.workflow.utility.junction", "config": null}],
-        "connections": {
-            "A": [{"destinationuid": "NOPE", "modifiers": 0}, {"destinationuid": 5}, "str", null, {"modifiers": 1}],
-            "B": "not-a-list",
-            "C": 7
-        }});
+    "objects": [{"uid": "A", "type": "alfred.workflow.utility.junction", "config": null}],
+    "connections": {
+        "A": [{"destinationuid": "NOPE", "modifiers": 0}, {"destinationuid": 5}, "str", null, {"modifiers": 1}],
+        "B": "not-a-list",
+        "C": 7
+    }});
     let wf = fx.wf(&doc);
     let act = ashdash_core::workflow::WorkflowAction {
         workflow: "wf".into(),

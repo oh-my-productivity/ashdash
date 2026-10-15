@@ -123,7 +123,11 @@ fn builtin_exclusive_prefixes_hide_everything_else() {
     for (q, what) in cases {
         let r = e.query(q);
         assert!(!r.is_empty(), "{what}: {q:?} gave nothing");
-        assert!(!r.iter().any(is_fallback), "{what}: {q:?} leaked fallbacks: {:?}", titles(&r));
+        assert!(
+            !r.iter().any(is_fallback),
+            "{what}: {q:?} leaked fallbacks: {:?}",
+            titles(&r)
+        );
         assert!(
             !r.iter().any(|i| APPS.contains(&i.title.as_str())),
             "{what}: {q:?} leaked apps"
@@ -191,7 +195,10 @@ fn disabled_workflow_does_not_shadow_builtins() {
     let e = env.engine();
     let r = e.query("g hello");
     assert_eq!(r.len(), 1);
-    assert_eq!(r[0].action, Action::OpenUrl("https://www.google.com/search?q=hello".into()));
+    assert_eq!(
+        r[0].action,
+        Action::OpenUrl("https://www.google.com/search?q=hello".into())
+    );
     assert_eq!(e.workflow_summaries(), vec![("Off".into(), "qa.off".into(), true)]);
 }
 
@@ -251,7 +258,12 @@ fn neutral(i: &Item) -> Item {
 #[test]
 fn usage_learning_persists_across_engine_instances() {
     let env = Env::new("usage", APPS);
-    let baseline: Vec<Item> = env.engine().query("a").into_iter().filter(|i| !is_fallback(i)).collect();
+    let baseline: Vec<Item> = env
+        .engine()
+        .query("a")
+        .into_iter()
+        .filter(|i| !is_fallback(i))
+        .collect();
     assert!(baseline.len() >= 4, "{:?}", titles(&baseline));
     // Pick a mid-ranked entry: repeated picks for this exact query must lift it to the top.
     let target = baseline[3].clone();
@@ -425,5 +437,8 @@ fn external_trigger_runs_to_large_type() {
     });
     env.install_workflow("user.workflow.trig", &doc);
     let e = env.engine();
-    assert_eq!(e.run_trigger("qa.trig", "go", "xyz"), Outcome::LargeType("got xyz".into()));
+    assert_eq!(
+        e.run_trigger("qa.trig", "go", "xyz"),
+        Outcome::LargeType("got xyz".into())
+    );
 }
