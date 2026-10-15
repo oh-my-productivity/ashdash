@@ -69,7 +69,8 @@ impl LauncherApp {
         self.large_type = None;
         self.confirming = None;
         self.status = None;
-        self.generation += 1;
+        self.glue.reset();
+        self.cancel_query();
         self.last_height = 0.0;
         self.last_pointer = None;
         self.overlay = None;
@@ -85,6 +86,8 @@ impl LauncherApp {
         }
         trace::trace(|| "hide".into());
         self.visible = false;
+        self.glue.reset();
+        self.cancel_query();
         self.quicklook.close();
         self.quicklook_for = None;
         self.overlay = None;

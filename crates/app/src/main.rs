@@ -23,7 +23,8 @@ USAGE:
   ashdash                         start the launcher (default hotkey: Option+Shift+Space)
   ashdash query <text>            print the ranked results for <text>
   ashdash run <text> [index]      run result <index> (default 0) for <text>
-  ashdash import <file>           install an .alfredworkflow package
+  ashdash import [--yes] <file>   install an .alfredworkflow package after showing what it can
+                                      do and asking (--yes: skip the question)
   ashdash workflows               list installed workflows
   ashdash trigger <bundle-id> <trigger-id> [argument]
                                       fire a workflow's External Trigger (through the
@@ -102,12 +103,20 @@ fn main() -> Result<()> {
             report(outcome)
         }
         Some("import") => {
-            let Some(file) = args.get(1) else {
-                bail!("usage: ashdash import <file.alfredworkflow>")
+            let yes = args[1..].iter().any(|a| a == "--yes");
+            let Some(file) = args[1..].iter().find(|a| !a.starts_with("--")) else {
+                bail!("usage: ashdash import [--yes] <file.alfredworkflow>")
             };
+            let file = PathBuf::from(file);
+            // A workflow is code that will run as you: show what it can do and ask first.
+            let preview = ashdash_core::workflow::preview_package(&file)?;
+            println!("{}\n", gui::importprompt::prompt_text(&preview).plain());
+            if !yes && !gui::importprompt::ask_yes_no("Install this workflow? [y/N] ")? {
+                bail!("not installed");
+            }
             let sock = socket_path(&paths);
             let engine = Engine::new(paths, config);
-            let dest = engine.import_workflow(&PathBuf::from(file))?;
+            let dest = engine.import_workflow(&file)?;
             println!("installed to {}", dest.display());
             // Best effort: let a running launcher pick up the new workflow and its hotkeys.
             let _ = ipc::send(&sock, &ipc::Request::Reload, CONTROL_TIMEOUT);
@@ -292,6 +301,10 @@ fn report(o: Outcome) -> Result<()> {
         Outcome::Done => Ok(()),
         Outcome::LargeType(t) => {
             println!("{t}");
+            Ok(())
+        }
+        Outcome::ShowLauncher(q) => {
+            eprintln!("ashdash: the workflow wants the launcher open with '{q}' (no launcher is running)");
             Ok(())
         }
         Outcome::Confirm(m) => bail!("{m}"),

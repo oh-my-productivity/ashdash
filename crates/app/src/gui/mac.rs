@@ -16,6 +16,21 @@ use super::style::WindowStyle;
 /// `NSStatusWindowLevel`: above normal and floating windows, below screen savers.
 const LEVEL_STATUS: isize = 25;
 
+/// `NSNormalWindowLevel`.
+const LEVEL_NORMAL: isize = 0;
+
+/// Raise the launcher to the status level (`true`) or drop it to the normal
+/// window level (`false`), so a Quick Look preview that has the focus is drawn
+/// above it instead of below.
+pub fn set_launcher_raised(title: &str, raised: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(window) = find_window(mtm, title) {
+        window.setLevel(if raised { LEVEL_STATUS } else { LEVEL_NORMAL });
+    }
+}
+
 /// Hide the whole application so macOS returns focus to the previous app.
 pub fn hide_app() {
     if let Some(mtm) = MainThreadMarker::new() {

@@ -3,7 +3,7 @@
 use ashdash_core::Mods;
 use eframe::egui::{self, Key, Modifiers};
 
-use super::{LauncherApp, VISIBLE_ROWS, query_id};
+use super::{LauncherApp, VISIBLE_ROWS, panel, query_id};
 
 struct Keys {
     up: bool,
@@ -16,6 +16,33 @@ struct Keys {
     quicklook: bool,
     page: i32,
     number: Option<usize>,
+    /// Option+Up / Option+Down: add to / remove from the buffer.
+    buffer_add: bool,
+    buffer_remove: bool,
+    /// A plain Right / Left Arrow was pressed (not consumed yet: the text
+    /// cursor position decides who gets it).
+    right: bool,
+    left: bool,
+}
+
+/// Whether the query field's text cursor is at the start / at the end, with
+/// no selection. Without a cursor state (never focused) it sits at the end.
+fn cursor_extent(ctx: &egui::Context, text: &str) -> (bool, bool) {
+    let len = text.chars().count();
+    match egui::TextEdit::load_state(ctx, query_id()).and_then(|s| s.cursor.char_range()) {
+        Some(r) => {
+            let (a, b) = (r.primary.index.0, r.secondary.index.0);
+            (a == 0 && b == 0, a == len && b == len)
+        }
+        None => (len == 0, true),
+    }
+}
+
+/// How far (points) the Large Type text scrolls for the keys pressed this frame.
+pub fn large_scroll_delta(up: bool, down: bool, page: i32) -> f32 {
+    const LINE: f32 = 48.0;
+    const PAGE: f32 = 480.0;
+    (i32::from(down) - i32::from(up)) as f32 * LINE + page as f32 * PAGE
 }
 
 impl LauncherApp {
@@ -39,6 +66,7 @@ impl LauncherApp {
             .shift_tap
             .update(shift, other_mods, other_input, self.started.elapsed());
 
+        let (at_start, at_end) = cursor_extent(ctx, &self.query);
         let keys = ctx.input_mut(|i| {
             let m = i.modifiers;
             let mods = Mods {
@@ -59,7 +87,16 @@ impl LauncherApp {
                 quicklook: false,
                 page: 0,
                 number: None,
+                buffer_add: false,
+                buffer_remove: false,
+                right: false,
+                left: false,
             };
+            // Option+arrows first: a plain-arrow shortcut also matches with Option held
+            k.buffer_add = i.consume_key(Modifiers::ALT, Key::ArrowUp);
+            k.buffer_remove = i.consume_key(Modifiers::ALT, Key::ArrowDown);
+            k.right = m.is_none() && i.key_pressed(Key::ArrowRight);
+            k.left = m.is_none() && i.key_pressed(Key::ArrowLeft);
             k.up = i.consume_key(Modifiers::NONE, Key::ArrowUp) || i.consume_key(Modifiers::CTRL, Key::P);
             k.down = i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::CTRL, Key::N);
             if i.key_pressed(Key::Enter) {
@@ -102,6 +139,29 @@ impl LauncherApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        // The workflow import prompt takes over the keyboard: Return installs, Esc cancels.
+        if self.glue.import.is_some() {
+            if keys.esc {
+                self.cancel_import();
+            } else if keys.enter.is_some_and(|m| m.is_none()) {
+                self.confirm_import(ctx);
+            }
+            return;
+        }
+        if self.large_type.is_some() {
+            self.glue.large_scroll += large_scroll_delta(keys.up, keys.down, keys.page);
+        }
+        let keys = if self.large_type.is_some() {
+            // arrows scroll the text, they do not move the (hidden) selection
+            Keys {
+                up: false,
+                down: false,
+                page: 0,
+                ..keys
+            }
+        } else {
+            keys
+        };
         if keys.esc {
             if self.quicklook.is_open() {
                 self.quicklook.close();
@@ -116,10 +176,28 @@ impl LauncherApp {
             } else if !self.query.is_empty() {
                 self.query.clear();
                 self.request_query();
+            } else if self.panel_open() {
+                self.panel_back();
             } else {
                 self.hide(ctx);
                 return;
             }
+        }
+        // Universal Actions: Right opens the panel (or the next level), Left goes back,
+        // but only where the arrow would not move the text cursor.
+        if keys.right && self.large_type.is_none() && panel::right_opens_panel(at_end, false, true) && self.open_actions(ctx)
+        {
+            ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight));
+        }
+        if keys.left && panel::left_goes_back(at_start, false, self.panel_open()) {
+            ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft));
+            self.panel_back();
+        }
+        if keys.buffer_add && self.large_type.is_none() && !self.panel_open() {
+            self.buffer_add();
+        }
+        if keys.buffer_remove && self.large_type.is_none() {
+            self.buffer_remove();
         }
         if keys.page != 0 && !self.items.is_empty() {
             let step = keys.page as isize * VISIBLE_ROWS as isize;

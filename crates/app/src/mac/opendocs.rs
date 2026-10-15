@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ashdash_core::clipboard::snippets::{collections_dir, safe_file_stem};
 use ashdash_core::config::write_private;
@@ -165,6 +166,31 @@ pub fn display_name(path: &Path) -> String {
     }
 }
 
+/// `osascript` arguments for a warning dialog. Title and message travel as argv after
+/// the script (`on run argv`), so they are never parsed as code. With `ask` the dialog has
+/// Cancel (default) and Import buttons, otherwise a single OK.
+pub fn alert_args(title: &str, message: &str, ask: bool) -> Vec<String> {
+    let buttons = if ask {
+        "buttons {\"Cancel\", \"Import\"} default button \"Cancel\" cancel button \"Cancel\" giving up after 300"
+    } else {
+        "buttons {\"OK\"} default button \"OK\" giving up after 300"
+    };
+    [
+        "-e",
+        "on run argv",
+        "-e",
+        &format!("display alert (item 1 of argv) message (item 2 of argv) as warning {buttons}"),
+        "-e",
+        "end run",
+        "--",
+        title,
+        message,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Did the `osascript` dialog end with the user pressing the confirm button?
 /// (`display alert` prints `button returned:Import, gave up:false`; Cancel exits non-zero.)
 pub fn dialog_confirmed(exit_ok: bool, stdout: &str) -> bool {
@@ -181,25 +207,20 @@ pub struct SystemImporter {
 
 impl Importer for SystemImporter {
     fn confirm_workflow(&self, file: &Path) -> bool {
-        // Args go after the script (`on run argv`), so the file name is never parsed as code.
-        let message = format!(
-            "Import the workflow \"{}\"?\n\nA workflow is a set of scripts that will run on your Mac with your \
-             permissions. Only import workflows from people you trust.",
-            display_name(file)
-        );
+        // What the package says it is and what it can do, read without installing it.
+        let preview = match ashdash_core::workflow::preview_package(file) {
+            Ok(p) => p,
+            Err(e) => {
+                let title = format!("Cannot read {}", display_name(file));
+                let _ = Command::new("osascript")
+                    .args(alert_args(&title, &format!("{e:#}"), false))
+                    .output();
+                return false;
+            }
+        };
+        let text = crate::gui::importprompt::prompt_text(&preview);
         let out = Command::new("osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "display alert (item 1 of argv) message (item 2 of argv) as warning buttons {\"Cancel\", \"Import\"} \
-                 default button \"Cancel\" cancel button \"Cancel\" giving up after 300",
-                "-e",
-                "end run",
-                "--",
-                &format!("Import workflow into {}?", brand::NAME),
-                &message,
-            ])
+            .args(alert_args(&text.title, &text.lines.join("\n"), true))
             .output();
         match out {
             Ok(o) => dialog_confirmed(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
@@ -237,6 +258,14 @@ impl Importer for SystemImporter {
     }
 }
 
+/// Bumped every time a theme was installed and selected, so a running window can
+/// notice and apply it without a restart (`gui` compares it once per frame).
+static THEME_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn theme_epoch() -> u64 {
+    THEME_EPOCH.load(Ordering::Acquire)
+}
+
 /// Validate, copy to `<data>/themes/` and select a theme in `config.json`.
 pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     let size = std::fs::metadata(file)?.len();
@@ -255,14 +284,14 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     let mut config = Config::load(paths);
     config.theme = Some(dest);
     config.save(paths).context("saving config.json")?;
+    THEME_EPOCH.fetch_add(1, Ordering::AcqRel);
     let shown = if theme.name.is_empty() {
         stem
     } else {
         theme.name.clone()
     };
     Ok(format!(
-        "Theme \"{shown}\" installed. It applies the next time {} starts.",
-        brand::NAME
+        "Theme \"{shown}\" installed and applied."
     ))
 }
 

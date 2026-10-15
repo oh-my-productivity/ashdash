@@ -91,7 +91,7 @@ impl Response {
     }
     pub fn from_outcome(o: Outcome) -> Self {
         match o {
-            Outcome::Done => Response::ok(""),
+            Outcome::Done | Outcome::ShowLauncher(_) => Response::ok(""),
             Outcome::LargeType(t) => Response {
                 large: true,
                 ..Response::ok(t)
@@ -231,7 +231,12 @@ impl Handler for AppHandler {
                 Response::ok("")
             }
             Request::Trigger { bundle, id, arg } => {
-                Response::from_outcome(self.backend.run_trigger(&bundle, &id, &arg))
+                let outcome = self.backend.run_trigger(&bundle, &id, &arg);
+                // an Open Launcher object: show the window as `search` does
+                if let Outcome::ShowLauncher(query) = &outcome {
+                    self.sink.emit(AppEvent::Search(query.clone()));
+                }
+                Response::from_outcome(outcome)
             }
             Request::Theme { file } => match self.backend.validate_theme(&file) {
                 Ok(()) => {

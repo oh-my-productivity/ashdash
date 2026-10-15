@@ -2,13 +2,17 @@
 //! background workers that feed it.
 
 mod geometry;
+mod glue;
+pub(crate) mod importprompt;
 mod keynames;
 mod keys;
 mod largetype;
 mod mac;
+mod panel;
 mod quicklook;
 mod results;
 mod rowhint;
+mod schedule;
 mod statusitem;
 mod style;
 mod trace;
@@ -76,7 +80,7 @@ struct LauncherApp {
 
     generation: u64,
     req_tx: Sender<(u64, String)>,
-    res_rx: Receiver<(u64, Vec<Item>)>,
+    res_rx: Receiver<workers::QueryResult>,
     toggle_rx: Receiver<()>,
     outcome_rx: Receiver<Outcome>,
     outcome_tx: Sender<Outcome>,
@@ -88,6 +92,8 @@ struct LauncherApp {
     _hotkey_manager: Option<GlobalHotKeyManager>,
     /// CLI socket, URL scheme and workflow-hotkey events (see `crate::events`).
     automation: crate::events::Automation,
+    /// Actions panel, buffer, import prompt (see `glue.rs`).
+    glue: glue::Glue,
 }
 
 pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result<()> {
@@ -145,7 +151,7 @@ fn header_height(t: &Theme) -> f32 {
 impl LauncherApp {
     fn new(ctx: egui::Context, engine: Arc<Engine>, theme: Theme, mut automation: crate::events::Automation) -> Self {
         let (req_tx, req_rx) = channel::<(u64, String)>();
-        let (res_tx, res_rx) = channel::<(u64, Vec<Item>)>();
+        let (res_tx, res_rx) = channel::<workers::QueryResult>();
         workers::spawn_query_worker(Arc::clone(&engine), ctx.clone(), req_rx, res_tx);
 
         // Global hotkey.
@@ -198,6 +204,7 @@ impl LauncherApp {
             icon_rx,
             _hotkey_manager: manager,
             automation,
+            glue: glue::Glue::new(),
         };
         if !hotkey_ok {
             // Without a hotkey the window would be unreachable; show it now.
@@ -207,11 +214,18 @@ impl LauncherApp {
     }
 
     fn request_query(&mut self) {
+        if self.panel_open() {
+            // the field filters the panel's rows; the engine is not asked
+            self.refilter_panel();
+            return;
+        }
         self.generation += 1;
         self.sent_query = self.query.clone();
         if self.query.trim().is_empty() {
             self.items.clear();
             self.selected = 0;
+            // tell the worker to stop repeating the previous query
+            let _ = self.req_tx.send((self.generation, String::new()));
             return;
         }
         let _ = self.req_tx.send((self.generation, self.query.clone()));
@@ -222,6 +236,10 @@ impl LauncherApp {
             return;
         };
         if !item.valid {
+            return;
+        }
+        // Rows the launcher interprets itself (Open With..., Quick Look, Install Workflow...)
+        if self.handle_ui_row(ctx, index) {
             return;
         }
         // The engine alone decides what needs confirming (system commands,
@@ -309,6 +327,7 @@ impl eframe::App for LauncherApp {
         self.poll_background(ctx);
         self.poll_menu(ctx);
         self.poll_automation(ctx);
+        self.poll_theme_epoch();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -340,6 +359,7 @@ impl eframe::App for LauncherApp {
         if !self.visible {
             return;
         }
+        self.poll_dropped_files(&ctx);
 
         if self.large_type.is_some() {
             self.draw_large_type(ui, &ctx);
@@ -350,14 +370,23 @@ impl eframe::App for LauncherApp {
         }
 
         let t = self.theme.clone();
-        let rows = self.items.len().min(VISIBLE_ROWS);
-        let hint = self.startup_hint();
-        let body_h = if hint.is_some() {
-            ROW_HEIGHT
+        let prompt_h = self.import_prompt_height();
+        let rows = if prompt_h.is_some() {
+            0
         } else {
-            rows as f32 * ROW_HEIGHT
+            self.items.len().min(VISIBLE_ROWS)
         };
-        let status_h = if self.status.is_some() { 26.0 } else { 0.0 };
+        let hint = if prompt_h.is_some() { None } else { self.startup_hint() };
+        let body_h = match (prompt_h, &hint) {
+            (Some(h), _) => h,
+            (None, Some(_)) => ROW_HEIGHT,
+            (None, None) => rows as f32 * ROW_HEIGHT,
+        };
+        let footer = self.footer_text();
+        if self.visible && self.engine.reload_pending() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        let status_h = if footer.is_some() { 26.0 } else { 0.0 };
         let sep = if body_h > 0.0 { 9.0 } else { 0.0 };
         let total_h = header_height(&t) + sep + body_h + status_h;
         self.sync_height(&ctx, total_h);
@@ -368,6 +397,7 @@ impl eframe::App for LauncherApp {
             .corner_radius(t.window_roundness)
             .inner_margin(egui::Margin::same(t.window_padding as i8));
 
+        let search_hint = self.search_hint();
         frame.show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             // Search field
@@ -379,7 +409,8 @@ impl eframe::App for LauncherApp {
                     let edit = egui::TextEdit::singleline(&mut self.query)
                         .font(FontId::proportional(t.search_size))
                         .text_color(c(t.search_text))
-                        .hint_text(egui::RichText::new("Ashdash").color(c(t.search_text).gamma_multiply(0.35)))
+                        .hint_text(egui::RichText::new(search_hint.clone()).color(c(t.search_text).gamma_multiply(0.35)))
+                        .interactive(prompt_h.is_none())
                         .frame(egui::Frame::NONE)
                         .id(query_id())
                         .desired_width(f32::INFINITY);
@@ -397,7 +428,10 @@ impl eframe::App for LauncherApp {
                     }
                 });
 
-            if let Some(text) = hint {
+            if prompt_h.is_some() {
+                ui.add_space(9.0);
+                self.draw_import_prompt(ui, &t);
+            } else if let Some(text) = hint {
                 ui.add_space(9.0);
                 self.draw_hint_row(ui, &t, &text);
             } else if rows > 0 {
@@ -405,7 +439,7 @@ impl eframe::App for LauncherApp {
                 self.draw_results(ui, &ctx, &t);
             }
 
-            if let Some(msg) = &self.status {
+            if let Some(msg) = &footer {
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(msg)
