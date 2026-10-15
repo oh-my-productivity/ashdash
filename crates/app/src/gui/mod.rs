@@ -86,9 +86,11 @@ struct LauncherApp {
     icon_rx: Receiver<(PathBuf, Option<PathBuf>)>,
 
     _hotkey_manager: Option<GlobalHotKeyManager>,
+    /// CLI socket, URL scheme and workflow-hotkey events (see `crate::events`).
+    automation: crate::events::Automation,
 }
 
-pub fn run(engine: Arc<Engine>) -> Result<()> {
+pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result<()> {
     let theme = match &engine.config.theme {
         Some(p) => Theme::load(p).unwrap_or_else(|e| {
             eprintln!("ashdash: could not load theme {}: {e:#}", p.display());
@@ -121,7 +123,12 @@ pub fn run(engine: Arc<Engine>) -> Result<()> {
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(LauncherApp::new(cc.egui_ctx.clone(), engine, theme)))
+            Ok(Box::new(LauncherApp::new(
+                cc.egui_ctx.clone(),
+                engine,
+                theme,
+                automation,
+            )))
         }),
     )
     .map_err(|e| anyhow!("{e}"))
@@ -136,7 +143,7 @@ fn header_height(t: &Theme) -> f32 {
 }
 
 impl LauncherApp {
-    fn new(ctx: egui::Context, engine: Arc<Engine>, theme: Theme) -> Self {
+    fn new(ctx: egui::Context, engine: Arc<Engine>, theme: Theme, mut automation: crate::events::Automation) -> Self {
         let (req_tx, req_rx) = channel::<(u64, String)>();
         let (res_tx, res_rx) = channel::<(u64, Vec<Item>)>();
         workers::spawn_query_worker(Arc::clone(&engine), ctx.clone(), req_rx, res_tx);
@@ -144,6 +151,7 @@ impl LauncherApp {
         // Global hotkey.
         let (manager, toggle_rx, hotkey_error) = window::install_hotkey(&engine, &ctx);
         let hotkey_ok = hotkey_error.is_none();
+        automation.attach(&ctx, manager.as_ref());
 
         let (menu_tx, menu_rx) = channel();
         let status_item = statusitem::install(menu_tx, ctx.clone());
@@ -189,6 +197,7 @@ impl LauncherApp {
             icon_tx,
             icon_rx,
             _hotkey_manager: manager,
+            automation,
         };
         if !hotkey_ok {
             // Without a hotkey the window would be unreachable; show it now.
@@ -236,10 +245,42 @@ impl LauncherApp {
     }
 }
 
+impl LauncherApp {
+    /// Apply events from the CLI socket, URL scheme and workflow hotkeys.
+    fn poll_automation(&mut self, ctx: &egui::Context) {
+        use crate::events::AppEvent;
+        while let Some(ev) = self.automation.try_recv() {
+            match ev {
+                AppEvent::Show if !self.visible => self.show(ctx),
+                AppEvent::Show => {}
+                AppEvent::Search(text) => {
+                    self.show(ctx);
+                    self.query = text;
+                    self.request_query();
+                }
+                AppEvent::Reload => {
+                    let engine = Arc::clone(&self.engine);
+                    std::thread::spawn(move || engine.reload());
+                    self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
+                }
+                AppEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                AppEvent::Theme(file) => match Theme::load(&file) {
+                    Ok(t) => self.theme = t,
+                    Err(e) => eprintln!("ashdash: theme {}: {e:#}", file.display()),
+                },
+                AppEvent::Outcome(o) => {
+                    let _ = self.outcome_tx.send(o);
+                }
+            }
+        }
+    }
+}
+
 impl eframe::App for LauncherApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background(ctx);
         self.poll_menu(ctx);
+        self.poll_automation(ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
