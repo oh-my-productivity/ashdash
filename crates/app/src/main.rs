@@ -1,8 +1,15 @@
+mod automation;
 mod clipboard_watch;
+mod events;
 mod gui;
+mod hotkeys;
+mod ipc;
+mod scripting;
+mod urlscheme;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Mods, Outcome, Paths};
@@ -18,8 +25,14 @@ USAGE:
   ashdash import <file>           install an .alfredworkflow package
   ashdash workflows               list installed workflows
   ashdash trigger <bundle-id> <trigger-id> [argument]
-                                      fire a workflow's External Trigger
-  ashdash theme <file>            parse an .alfredappearance file and print it
+                                      fire a workflow's External Trigger (through the
+                                      running launcher when there is one)
+  ashdash theme <file>            validate an .alfredappearance file; apply it to the
+                                      running launcher, or print it when none runs
+  ashdash show                    show the launcher (starts it if needed)
+  ashdash search <text>           show the launcher with <text> typed (starts it if needed)
+  ashdash reload                  re-scan apps, workflows, snippets and workflow hotkeys
+  ashdash quit                    quit the running launcher
   ashdash paths                   print data / config locations
   ashdash config path             print the settings file location
   ashdash config get [key]        print all settings, or one by dotted path (clipboard.max_entries)
@@ -34,10 +47,7 @@ fn main() -> Result<()> {
     let config = Config::load(&paths);
 
     match args.first().map(String::as_str) {
-        None => {
-            let engine = Arc::new(Engine::new(paths, config));
-            gui::run(engine)
-        }
+        None => run_launcher(paths, config),
         Some("-h" | "--help" | "help") => {
             print!("{HELP}");
             Ok(())
@@ -91,9 +101,12 @@ fn main() -> Result<()> {
             let Some(file) = args.get(1) else {
                 bail!("usage: ashdash import <file.alfredworkflow>")
             };
+            let sock = socket_path(&paths);
             let engine = Engine::new(paths, config);
             let dest = engine.import_workflow(&PathBuf::from(file))?;
             println!("installed to {}", dest.display());
+            // Best effort: let a running launcher pick up the new workflow and its hotkeys.
+            let _ = ipc::send(&sock, &ipc::Request::Reload, CONTROL_TIMEOUT);
             Ok(())
         }
         Some("workflows") => {
@@ -107,16 +120,53 @@ fn main() -> Result<()> {
             let (Some(bundle), Some(trigger)) = (args.get(1), args.get(2)) else {
                 bail!("usage: ashdash trigger <bundle-id> <trigger-id> [argument]")
             };
-            let engine = Engine::new(paths, config);
-            report(engine.run_trigger(bundle, trigger, args.get(3).map(String::as_str).unwrap_or("")))
+            let arg = args.get(3).cloned().unwrap_or_default();
+            let req = ipc::Request::Trigger {
+                bundle: bundle.clone(),
+                id: trigger.clone(),
+                arg: arg.clone(),
+            };
+            match ipc::send(&socket_path(&paths), &req, TRIGGER_TIMEOUT) {
+                Ok(resp) => report_response(resp),
+                // No launcher running: run it in this process, as before.
+                Err(ipc::ClientError::NotRunning) => {
+                    let engine = Engine::new(paths, config);
+                    report(engine.run_trigger(bundle, trigger, &arg))
+                }
+                Err(e) => Err(e.into()),
+            }
         }
         Some("theme") => {
             let Some(file) = args.get(1) else {
                 bail!("usage: ashdash theme <file>")
             };
-            println!("{:#?}", Theme::load(&PathBuf::from(file))?);
-            Ok(())
+            let file = std::fs::canonicalize(file).with_context(|| format!("cannot read {file}"))?;
+            let theme = Theme::load(&file)?;
+            match ipc::send(&socket_path(&paths), &ipc::Request::Theme { file }, CONTROL_TIMEOUT) {
+                Ok(resp) => report_response(resp),
+                Err(ipc::ClientError::NotRunning) => {
+                    eprintln!("ashdash is not running; the theme was only parsed:");
+                    println!("{theme:#?}");
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            }
         }
+        Some("show") => control(&paths, ipc::Request::Show, true),
+        Some("search") => {
+            if args.len() < 2 {
+                bail!("usage: ashdash search <text>")
+            }
+            control(
+                &paths,
+                ipc::Request::Search {
+                    text: args[1..].join(" "),
+                },
+                true,
+            )
+        }
+        Some("reload") => control(&paths, ipc::Request::Reload, false),
+        Some("quit") => control(&paths, ipc::Request::Quit, false),
         Some(other) => bail!("unknown command '{other}'\n\n{HELP}"),
     }
 }
@@ -160,6 +210,75 @@ fn config_command(paths: &Paths, args: &[String]) -> Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+}
+
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Workflows may run scripts for up to a minute.
+const TRIGGER_TIMEOUT: Duration = Duration::from_secs(130);
+
+fn socket_path(paths: &Paths) -> PathBuf {
+    ipc::socket_path(paths, ipc::current_uid())
+}
+
+/// Start the launcher: single instance, control socket, URL handler, hotkeys, window.
+fn run_launcher(paths: Paths, config: Config) -> Result<()> {
+    let uid = ipc::current_uid();
+    let sock = ipc::socket_path(&paths, uid);
+    let primary = match ipc::acquire(&sock, uid) {
+        Ok(ipc::Acquired::Primary(p)) => Some(p),
+        Ok(ipc::Acquired::AlreadyRunning) => {
+            // A second `ashdash` behaves like pressing the hotkey in the first.
+            let _ = ipc::send(&sock, &ipc::Request::Show, CONTROL_TIMEOUT);
+            eprintln!("ashdash: already running");
+            return Ok(());
+        }
+        Err(e) => {
+            // Not fatal: the launcher still works, just without `ashdash show` and friends.
+            eprintln!("ashdash: control socket unavailable: {e}");
+            None
+        }
+    };
+    let engine = Arc::new(Engine::new(paths, config));
+    let started = automation::start(&engine, primary);
+    gui::run(engine, started.automation)
+}
+
+/// Send `req` to the running launcher, starting one first when `start` is set
+/// and none runs. Without a launcher and without `start` the command is a no-op.
+fn control(paths: &Paths, req: ipc::Request, start: bool) -> Result<()> {
+    let sock = socket_path(paths);
+    match ipc::send(&sock, &req, CONTROL_TIMEOUT) {
+        Ok(resp) => return report_response(resp),
+        Err(ipc::ClientError::NotRunning) if !start => {
+            eprintln!("ashdash is not running");
+            return Ok(());
+        }
+        Err(ipc::ClientError::NotRunning) => {}
+        Err(e) => return Err(e.into()),
+    }
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    Command::new(std::env::current_exe()?)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .context("could not start the launcher")?;
+    if !ipc::wait_until_up(&sock, Duration::from_secs(15)) {
+        bail!("the launcher did not start within 15 s");
+    }
+    report_response(ipc::send(&sock, &req, CONTROL_TIMEOUT)?)
+}
+
+fn report_response(r: ipc::Response) -> Result<()> {
+    if !r.ok {
+        bail!("{}", r.error);
+    }
+    if r.large || !r.message.is_empty() {
+        println!("{}", r.message);
+    }
+    Ok(())
 }
 
 fn report(o: Outcome) -> Result<()> {

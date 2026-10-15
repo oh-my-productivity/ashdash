@@ -27,6 +27,8 @@ pub(super) fn install_hotkey(
         Ok((m, id)) => {
             let ctx = ctx.clone();
             GlobalHotKeyEvent::set_event_handler(Some(move |ev: GlobalHotKeyEvent| {
+                // Workflow hotkeys share this process-wide handler (crate::hotkeys).
+                crate::hotkeys::route(&ev);
                 if ev.id == id && ev.state == HotKeyState::Pressed {
                     let _ = toggle_tx.send(());
                     ctx.request_repaint();
@@ -114,6 +116,7 @@ impl LauncherApp {
                 MenuCmd::Reload => {
                     let engine = std::sync::Arc::clone(&self.engine);
                     std::thread::spawn(move || engine.reload());
+                    self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
                 }
                 MenuCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }

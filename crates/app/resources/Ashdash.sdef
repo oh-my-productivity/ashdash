@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<!--
+  Scripting dictionary of Ashdash (AppleScript / JXA).
+
+  Needs, in the app bundle's Info.plist:
+    NSAppleScriptEnabled   = YES
+    OSAScriptingDefinition = Ashdash.sdef        (this file in Contents/Resources)
+  All commands are implemented by the single Cocoa class AshdashScriptCommand
+  (crates/app/src/scripting.rs), which tells them apart by command name.
+
+  Trust model: Apple events from other apps are gated by macOS Automation
+  (TCC) consent, like `osascript` itself. Unlike ashdash:// URLs, `run trigger`
+  therefore does not ask per workflow; it still only starts External Trigger
+  objects of enabled workflows.
+-->
+<dictionary title="Ashdash Terminology" xmlns:xi="http://www.w3.org/2003/XInclude">
+  <xi:include href="file:///System/Library/ScriptingDefinitions/CocoaStandard.sdef" xpointer="xpointer(/dictionary/suite)"/>
+
+  <suite name="Ashdash Suite" code="Alfd" description="Control the Ashdash launcher.">
+
+    <command name="show" code="AlfdShow" description="Show the launcher window.">
+      <cocoa class="AshdashScriptCommand"/>
+    </command>
+
+    <command name="search" code="AlfdSrch" description="Show the launcher with text typed into the search field.">
+      <cocoa class="AshdashScriptCommand"/>
+      <direct-parameter description="The text to search for." type="text"/>
+    </command>
+
+    <command name="run trigger" code="AlfdTrig" description="Run a workflow's External Trigger.">
+      <cocoa class="AshdashScriptCommand"/>
+      <direct-parameter description="The trigger id of the External Trigger object." type="text"/>
+      <parameter name="in workflow" code="Bndl" type="text" description="The bundle id of the workflow.">
+        <cocoa key="bundle"/>
+      </parameter>
+      <parameter name="with argument" code="Arg_" type="text" optional="yes" description="The argument passed to the trigger.">
+        <cocoa key="argument"/>
+      </parameter>
+      <result type="text" description="Large Type text produced by the workflow, if any."/>
+    </command>
+
+    <command name="reload" code="AlfdRelo" description="Re-scan applications, workflows, snippets and workflow hotkeys.">
+      <cocoa class="AshdashScriptCommand"/>
+    </command>
+
+  </suite>
+</dictionary>
