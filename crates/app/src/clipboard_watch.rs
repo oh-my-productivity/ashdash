@@ -356,12 +356,21 @@ mod live {
         let trusted = paste::is_accessibility_trusted();
         println!("accessibility trusted: {trusted}");
         osa("tell application \"TextEdit\"\nactivate\nmake new document\nend tell");
-        std::thread::sleep(Duration::from_millis(1200));
+        // A cold TextEdit launch can take seconds; never post keys until it is
+        // frontmost with a document, or they land in another app.
+        let ready = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            osa("tell application \"System Events\" to return name of first process whose frontmost is true")
+                == "TextEdit"
+                && osa("tell application \"TextEdit\" to return count of documents") != "0"
+        });
+        assert!(ready, "TextEdit did not become frontmost with a document");
+        std::thread::sleep(Duration::from_millis(900));
         let result = paste::paste_text("ashdash-paste-test Dear , bye", Some(5), Duration::from_millis(300));
         std::thread::sleep(Duration::from_millis(500));
         // A second paste lands where the caret ended up, proving `{cursor}` placement.
         let second = if trusted {
-            paste::paste_text("X", None, Duration::from_millis(100))
+            paste::paste_text("X", None, Duration::from_millis(250))
                 .map(|_| std::thread::sleep(Duration::from_millis(400)))
         } else {
             Ok(())
