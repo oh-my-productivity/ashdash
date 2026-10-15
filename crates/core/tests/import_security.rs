@@ -509,3 +509,53 @@ fn zip_bomb_is_rejected() {
         "300 MB of zeros was extracted"
     );
 }
+
+/// The staging directory is named after the process id only, so two imports running at once in
+/// the same process (e.g. a CLI/GUI drop of several packages) extract into the same directory:
+/// one removes the other's files, or installs a mixture of both archives.
+#[test]
+#[ignore = "known: SEC-11 (staging dir is per-process, not per-import; concurrent imports corrupt each other)"]
+fn concurrent_imports_do_not_interfere() {
+    let root = TempDir::new("concurrent");
+    let dest_root = root.join("workflows");
+    std::fs::create_dir_all(&dest_root).unwrap();
+    let mut pkgs = Vec::new();
+    for i in 0..4 {
+        let p = root.join(format!("p{i}.alfredworkflow"));
+        let doc = keyword_workflow(&format!("W{i}"), &format!("qa.concurrent.{i}"), &format!("k{i}"));
+        write_zip(
+            &p,
+            &[
+                Entry::File("info.plist", plist_bytes(&doc)),
+                Entry::File(&format!("marker-{i}.txt"), vec![b'0' + i as u8; 64 * 1024]),
+            ],
+        );
+        pkgs.push(p);
+    }
+    for _round in 0..10 {
+        let results: Vec<_> = std::thread::scope(|s| {
+            let hs: Vec<_> = pkgs
+                .iter()
+                .map(|p| {
+                    let dest_root = dest_root.clone();
+                    s.spawn(move || import_package(p, &dest_root))
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (i, r) in results.iter().enumerate() {
+            let dest = r.as_ref().unwrap_or_else(|e| panic!("import {i} failed: {e:#}"));
+            let mut files: Vec<_> = std::fs::read_dir(dest)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            files.sort();
+            assert_eq!(
+                files,
+                ["info.plist".to_string(), format!("marker-{i}.txt")],
+                "import {i} installed foreign or missing files"
+            );
+        }
+    }
+}
