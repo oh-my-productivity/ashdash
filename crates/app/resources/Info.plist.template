@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Rendered by packaging/build-app.sh. Placeholders (@NAME@) come from
+  crates/core/src/brand.rs and crates/app/Cargo.toml; nothing else is substituted.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>@EXECUTABLE@</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIdentifier</key>
+  <string>@BUNDLE_ID@</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>@NAME@</string>
+  <key>CFBundleDisplayName</key>
+  <string>@NAME@</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@BUILD@</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.productivity</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>@MIN_OS@</string>
+  <!-- Menu-bar app: no Dock icon, no app menu bar. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © @YEAR@ @NAME@ contributors.</string>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+
+  <!-- ashdash:// (never reference://, so a real reference launcher install keeps its scheme). -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>@NAME@ URL</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>@URL_SCHEME@</string>
+      </array>
+    </dict>
+  </array>
+
+  <!--
+    Files we can import. LSHandlerRank "Alternate" keeps us out of the way of an
+    installed reference launcher: we appear in "Open With" but never become the default.
+    Extensions only (no UTIs): the reference launcher UTIs belong to the reference launcher.
+  -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Workflow</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>alfredworkflow</string>
+        <string>alfred3workflow</string>
+        <string>alfred4workflow</string>
+        <string>alfred5workflow</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Theme</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>alfredappearance</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Snippets</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>alfredsnippets</string>
+      </array>
+    </dict>
+  </array>
+
+  <!-- Shown by macOS the first time something needs the permission. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>@NAME@ and the workflows you install use AppleScript to control other apps, for example to open files, reveal them in Finder or run system commands.</string>
+  <key>NSContactsUsageDescription</key>
+  <string>Workflows you install may search your contacts when you ask them to.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Workflows you install may read your calendar when you ask them to.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>Workflows you install may read your reminders when you ask them to.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>@NAME@ searches your Desktop when you look for files.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>@NAME@ searches your Documents folder when you look for files.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>@NAME@ searches your Downloads folder when you look for files.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>@NAME@ can open and reveal files on external volumes.</string>
+</dict>
+</plist>
