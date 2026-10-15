@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Minimal stand-in for `tart` used by run-tests.sh (no VM, no network). State lives in $TART_HOME/vms/<name>/.
+set -u
+home=${TART_HOME:?}
+mkdir -p "$home/vms"
+cmd=${1:-}; shift || true
+case "$cmd" in
+  list)
+    fmt=text; quiet=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --format) fmt=$2; shift 2 ;;
+        --source) shift 2 ;;
+        -q|--quiet) quiet=1; shift ;;
+        *) shift ;;
+      esac
+    done
+    names=$(ls "$home/vms" 2>/dev/null)
+    if [ "$fmt" = json ]; then
+      printf '['
+      sep=""
+      for n in $names; do
+        st=$(cat "$home/vms/$n/state" 2>/dev/null || echo stopped)
+        run=false; [ "$st" = running ] && run=true
+        printf '%s{"Source":"local","Name":"%s","Running":%s,"State":"%s"}' "$sep" "$n" "$run" "$st"
+        sep=","
+      done
+      printf ']\n'
+    else
+      for n in $names; do echo "$n"; done
+    fi
+    ;;
+  clone)
+    [ -d "$home/vms/$1" ] || { echo "no such VM: $1" >&2; exit 1; }
+    [ -e "$home/vms/$2" ] && { echo "exists: $2" >&2; exit 1; }
+    [ -n "${FAKE_TART_CLONE_FAIL:-}" ] && { echo "clone failed (injected)" >&2; exit 1; }
+    mkdir "$home/vms/$2"; echo stopped >"$home/vms/$2/state"
+    ;;
+  run)
+    name=""
+    for a in "$@"; do case "$a" in -*) ;; *) name=$a ;; esac; done
+    [ -d "$home/vms/$name" ] || { echo "no such VM: $name" >&2; exit 1; }
+    echo running >"$home/vms/$name/state"
+    echo $$ >"$home/vms/$name/run.pid"
+    trap 'echo stopped >"$home/vms/$name/state"; exit 0' TERM INT
+    # run in a loop of short sleeps so the trap fires promptly
+    while :; do sleep 1; done
+    ;;
+  ip)
+    [ "$(cat "$home/vms/$1/state" 2>/dev/null)" = running ] || exit 1
+    echo 192.0.2.10
+    ;;
+  stop)
+    name=$1
+    [ -d "$home/vms/$name" ] || exit 1
+    if [ -f "$home/vms/$name/run.pid" ]; then kill "$(cat "$home/vms/$name/run.pid")" 2>/dev/null; fi
+    echo stopped >"$home/vms/$name/state"
+    ;;
+  delete)
+    [ -d "$home/vms/$1" ] || { echo "no such VM: $1" >&2; exit 1; }
+    if [ "$(cat "$home/vms/$1/state" 2>/dev/null)" = running ]; then echo "VM is running" >&2; exit 1; fi
+    rm -rf "${home:?}/vms/$1"
+    ;;
+  *) echo "fake-tart: unsupported: $cmd" >&2; exit 2 ;;
+esac

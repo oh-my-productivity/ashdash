@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fake ssh for run-tests.sh: ignores options and host, runs the command locally with HOME=$FAKE_GUEST_HOME.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -F|-i|-o|-l|-p) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+shift   # host
+[ $# -gt 0 ] || exit 0
+mkdir -p "$FAKE_GUEST_HOME"
+cd "$FAKE_GUEST_HOME" || exit 1
+HOME=$FAKE_GUEST_HOME exec /bin/sh -c "$*"

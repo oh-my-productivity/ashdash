@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# lab-down <vm>...   Stop and delete disposable run VMs and release their slot. Idempotent.
+set -euo pipefail
+# shellcheck source=tests/lab/lib.sh
+. "$(dirname "$0")/lib.sh"
+[ $# -gt 0 ] || lab_die "usage: lab-down <vm>..."
+lab_need_tart
+rc=0
+for vm in "$@"; do
+  lab_check_run_name "$vm"
+  if lab_vm_exists "$vm"; then
+    lab_log "stopping $vm"
+    "$TART_BIN" stop "$vm" --timeout 10 >/dev/null 2>&1 || true
+    pidfile="$LAB_RUN_DIR/pids/$vm.pid"
+    if [ -f "$pidfile" ]; then
+      pid=$(cat "$pidfile")
+      # Only kill if it is still our `tart run` for this VM (pid reuse).
+      if ps -o command= -p "$pid" 2>/dev/null | grep -Fq -- "$vm"; then kill "$pid" 2>/dev/null || true; fi
+    fi
+    for _ in 1 2 3 4 5; do
+      "$TART_BIN" delete "$vm" >/dev/null 2>&1 && break
+      sleep 2
+    done
+  fi
+  rm -f "$LAB_RUN_DIR/pids/$vm.pid"
+  lab_slot release --name "$vm" || true
+  if lab_vm_exists "$vm"; then
+    lab_log "ERROR: $vm still exists after delete"
+    rc=1
+  else
+    lab_log "$vm is gone"
+  fi
+done
+exit $rc

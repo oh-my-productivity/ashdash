@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# lab-up [--id ID] [--image NAME] [--queue-timeout SECS]
+#
+# Clone the golden image to a disposable VM `ashdash-run-<id>`, boot it headless and wait for ssh.
+# Waits in a queue (never fails) while both of the host's two macOS VM slots are taken.
+# stdout: one line `<vm-name> <ip>`; everything else goes to stderr. Idempotent: with the same
+# --id an existing, running VM is reused (its slot is kept).
+set -euo pipefail
+# shellcheck source=tests/lab/lib.sh
+. "$(dirname "$0")/lib.sh"
+
+id="" image=$LAB_GOLDEN qtimeout=$LAB_QUEUE_TIMEOUT
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --id) id=$2; shift 2 ;;
+    --image) image=$2; shift 2 ;;
+    --queue-timeout) qtimeout=$2; shift 2 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    *) lab_die "unknown argument: $1" ;;
+  esac
+done
+lab_need_tart
+[ -n "$id" ] || id="$(date +%H%M%S)-$$-$RANDOM"
+vm="${LAB_PREFIX}${id}"
+lab_check_run_name "$vm"
+lab_vm_exists "$image" || lab_die "image '$image' does not exist (run tests/lab/golden-setup.sh create)"
+[ -f "$LAB_KEY" ] || lab_die "no lab ssh key at $LAB_KEY (run tests/lab/golden-setup.sh create)"
+
+"$LAB_DIR/lab-gc" >&2 || true   # watchdog: reap run VMs older than LAB_MAX_VM_AGE
+
+# Any failure after this point tears the VM down and frees its slot before reporting.
+fail() {
+  lab_log "ERROR: $*"
+  lab_log "lab-up failed; tearing $vm down"
+  "$LAB_DIR/lab-down" "$vm" >&2 || true
+  exit 1
+}
+trap 'fail "interrupted"' INT TERM
+
+if lab_vm_exists "$vm" && lab_vm_running "$vm"; then
+  lab_log "$vm already running: reusing"
+else
+  # Take a slot first: the slot holder stays alive until lab-down (or the age limit) releases it.
+  # If this id already owns one (e.g. a retry after a half-finished lab-up), do not queue behind ourselves.
+  if lab_slot holds --name "$vm"; then
+    lab_log "slot already held for $vm"
+  else
+    lab_log "waiting for a VM slot ($(lab_slot status))"
+    lab_slot acquire --name "$vm" --vm-name "$vm" --timeout "$qtimeout" --max-age "$LAB_MAX_VM_AGE" --tart "$TART_BIN" >/dev/null \
+      || lab_die "no VM slot became free within ${qtimeout}s"
+  fi
+  if ! lab_vm_exists "$vm"; then
+    lab_log "cloning $image -> $vm"
+    "$TART_BIN" clone "$image" "$vm" >&2 || fail "clone failed"
+  fi
+  lab_log "booting $vm headless"
+  nohup "$TART_BIN" run --no-graphics --no-audio --no-clipboard "$vm" >"$LAB_RUN_DIR/logs/$vm.log" 2>&1 &
+  echo $! >"$LAB_RUN_DIR/pids/$vm.pid"
+  disown 2>/dev/null || true
+fi
+
+ip=$(lab_vm_ip "$vm" 180) || fail "$vm got no IP within 180s (see $LAB_RUN_DIR/logs/$vm.log)"
+lab_log "$vm has IP $ip; waiting for ssh"
+ok=""
+for _ in $(seq 1 90); do
+  if lab_ssh "$ip" true >/dev/null 2>&1; then ok=1; break; fi
+  sleep 2
+done
+[ -n "$ok" ] || fail "ssh to $vm ($ip) never became ready (is the lab key installed? see docs/LAB.md)"
+trap - INT TERM
+echo "$vm $ip"
