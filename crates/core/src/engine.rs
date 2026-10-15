@@ -413,7 +413,10 @@ impl Engine {
         // Universal Actions carry the text or path they act on in their id
         // (`act:copy:<text>`); recording that would write it, unbounded and in
         // plaintext, to usage.json. They are never ranked, so nothing is lost.
-        let learnable = !matches!(action, Action::Universal(_)) && !matches!(item.action, Action::Universal(_));
+        // Clipboard rows are ordered by recency, not usage, and the typed query (`clip hunter2`)
+        // may be a fragment of a secret: they are not learned either (SEC-19).
+        let sensitive = |a: &Action| matches!(a, Action::Universal(_) | Action::Clipboard(_));
+        let learnable = !sensitive(&action) && !sensitive(&item.action);
         if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_))) {
             self.usage.lock().unwrap().record(query, &item.id);
         }
@@ -1212,6 +1215,20 @@ mod tests {
         let (e, _fake, root) = engine_with_clip("clip-gone", true);
         let it = Item::new("clip:x", "x").action(Action::Clipboard(ClipCommand::Paste { id: "nope".into() }));
         assert!(matches!(e.execute(&it, "", Mods::NONE, true), Outcome::Error(_)));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clipboard_rows_and_their_queries_are_not_written_to_usage() {
+        // SEC-19: `clip <fragment of a secret>` must not land in usage.json.
+        let (e, _fake, root) = engine_with_clip("clip-usage", true);
+        e.clipboard().lock().unwrap().push("hunter2-correct-horse");
+        let q = "clip hunter2-corr";
+        let it = e.query(q).remove(0);
+        assert_eq!(e.execute(&it, q, Mods::NONE, false), Outcome::Done);
+        assert_eq!(e.usage.lock().unwrap().boost(q, &it.id), 0.0);
+        let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
+        assert!(!on_disk.contains("hunter2") && !on_disk.contains("clip:"), "{on_disk}");
         let _ = std::fs::remove_dir_all(root);
     }
 
