@@ -10,12 +10,9 @@ const MAX_THUMBNAIL_BYTES: u64 = 512 * 1024;
 
 pub struct ClipboardProvider;
 
-/// The one place that decides how a clipboard command is exposed as an
-/// [`Action`]. Until the engine has an `Action::Clipboard(ClipCommand)`
-/// variant (see the integration notes in `clipboard/mod.rs`) the plain
-/// `fallback` is used; afterwards this returns the command's action.
-pub(super) fn clip_action(_cmd: ClipCommand, fallback: Action) -> Action {
-    fallback
+/// The one place that decides how a clipboard command is exposed as an [`Action`].
+pub(super) fn clip_action(cmd: ClipCommand) -> Action {
+    Action::Clipboard(cmd)
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago".
@@ -62,7 +59,11 @@ fn item_for(history: &ClipboardHistory, e: &ClipEntry, rank: usize, now: u64) ->
         .score(10_000.0 - rank as f64);
     match e.kind {
         ClipKind::Text => {
-            it = it.action(Action::Copy(e.text.clone()));
+            // Return pastes into the frontmost app (copies only, with a hint, when Accessibility is missing);
+            // Cmd+Return just puts it back on the clipboard.
+            it = it.action(clip_action(ClipCommand::Paste { id: id.clone() }));
+            it.cmd_action = Some(clip_action(ClipCommand::Restore { id }));
+            it.copy_text = Some(e.text.clone());
             it.large_type = Some(e.text.clone());
         }
         ClipKind::Image => {
@@ -72,20 +73,48 @@ fn item_for(history: &ClipboardHistory, e: &ClipEntry, rank: usize, now: u64) ->
             {
                 it = it.icon(Icon::Image(p.clone()));
             }
-            let fallback = path.map(Action::Open).unwrap_or(Action::None);
-            it = it.action(clip_action(ClipCommand::Restore { id }, fallback));
+            it = it.action(clip_action(ClipCommand::Restore { id }));
         }
         ClipKind::Files => {
-            let fallback = e
-                .files()
-                .first()
-                .map(|f| Action::Reveal(f.into()))
-                .unwrap_or(Action::None);
-            it = it.action(clip_action(ClipCommand::Restore { id }, fallback));
+            it = it.action(clip_action(ClipCommand::Restore { id }));
             it.large_type = Some(e.text.clone());
         }
     }
     it
+}
+
+/// `clip clear` / `clip clear all`: the history-wiping rows (confirmed by the engine before running).
+fn clear_row(rest: &str) -> Option<Item> {
+    let (cmd, title, sub) = match rest.trim().to_ascii_lowercase().as_str() {
+        "clear" => (
+            ClipCommand::Clear,
+            "Clear clipboard history",
+            "Removes everything except pinned entries",
+        ),
+        "clear all" => (
+            ClipCommand::ClearAll,
+            "Clear clipboard history including pinned",
+            "Removes every entry",
+        ),
+        _ => return None,
+    };
+    Some(
+        Item::new(
+            format!(
+                "clip-{}",
+                if cmd == ClipCommand::Clear {
+                    "clear"
+                } else {
+                    "clear-all"
+                }
+            ),
+            title,
+        )
+        .subtitle(sub)
+        .icon(Icon::Glyph("⎘"))
+        .action(clip_action(cmd))
+        .score(20_000.0),
+    )
 }
 
 impl Provider for ClipboardProvider {
@@ -101,16 +130,13 @@ impl Provider for ClipboardProvider {
         let st = ctx.engine_state;
         let history = st.clipboard.lock().unwrap();
         let hits = history.search(rest, st.config.max_results);
-        if hits.is_empty() {
-            return ProviderOutput::exclusive(vec![Item::new("noclip", "Clipboard history is empty").valid(false)]);
-        }
         let now = crate::clipboard::now();
-        ProviderOutput::exclusive(
-            hits.iter()
-                .enumerate()
-                .map(|(i, e)| item_for(&history, e, i, now))
-                .collect(),
-        )
+        let mut items: Vec<Item> = clear_row(rest).into_iter().collect();
+        items.extend(hits.iter().enumerate().map(|(i, e)| item_for(&history, e, i, now)));
+        if items.is_empty() {
+            items.push(Item::new("noclip", "Clipboard history is empty").valid(false));
+        }
+        ProviderOutput::exclusive(items)
     }
 }
 
@@ -134,7 +160,10 @@ mod tests {
         let r = e.query("clipboard hello");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "hello world");
-        assert_eq!(r[0].action, Action::Copy("hello world".into()));
+        let id = e.clipboard().lock().unwrap().entries()[0].id();
+        assert_eq!(r[0].action, Action::Clipboard(ClipCommand::Paste { id: id.clone() }));
+        assert_eq!(r[0].cmd_action, Some(Action::Clipboard(ClipCommand::Restore { id })));
+        assert_eq!(r[0].copy_text.as_deref(), Some("hello world"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -166,13 +195,14 @@ mod tests {
         assert!(img.subtitle.contains("image 640×480"), "{}", img.subtitle);
         assert!(matches!(img.icon, Icon::Image(_)), "small image uses its own thumbnail");
         assert!(
-            matches!(img.action, Action::Open(_)),
-            "fallback until Action::Clipboard exists"
+            matches!(img.action, Action::Clipboard(ClipCommand::Restore { .. })),
+            "{:?}",
+            img.action
         );
 
         let files = r.iter().find(|i| i.title == "a.txt and 1 more").expect("files row");
         assert!(files.subtitle.starts_with("2 file(s)"), "{}", files.subtitle);
-        assert_eq!(files.action, Action::Reveal(PathBuf::from("/tmp/a.txt")));
+        assert!(matches!(files.action, Action::Clipboard(ClipCommand::Restore { .. })));
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -21,6 +21,11 @@ USAGE:
                                       fire a workflow's External Trigger
   ashdash theme <file>            parse an .alfredappearance file and print it
   ashdash paths                   print data / config locations
+  ashdash config path             print the settings file location
+  ashdash config get [key]        print all settings, or one by dotted path (clipboard.max_entries)
+  ashdash config set <key> <value>
+                                      change one setting (JSON values; lists may be comma-separated)
+  ashdash config keys             list every setting name
 ";
 
 fn main() -> Result<()> {
@@ -45,6 +50,7 @@ fn main() -> Result<()> {
             println!("cache:     {}", paths.cache.display());
             Ok(())
         }
+        Some("config") => config_command(&paths, &args[1..]),
         Some("query") => {
             let text = args[1..].join(" ");
             let engine = Engine::new(paths, config);
@@ -112,6 +118,47 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(other) => bail!("unknown command '{other}'\n\n{HELP}"),
+    }
+}
+
+/// `ashdash config path|get|set|keys`.
+fn config_command(paths: &Paths, args: &[String]) -> Result<()> {
+    use ashdash_core::settings_view;
+    const USAGE: &str = "usage: ashdash config path | get [key] | set <key> <value> | keys";
+    match args.first().map(String::as_str) {
+        Some("path") => {
+            println!("{}", paths.config_file().display());
+            Ok(())
+        }
+        Some("get") => {
+            let config = Config::load_strict(paths)?;
+            match settings_view::get(&config, args.get(1).map(String::as_str).unwrap_or(""))? {
+                serde_json::Value::String(s) => println!("{s}"),
+                v => println!("{}", serde_json::to_string_pretty(&v)?),
+            }
+            Ok(())
+        }
+        Some("keys") => {
+            for k in settings_view::keys(&Config::load_strict(paths)?) {
+                println!("{k}");
+            }
+            Ok(())
+        }
+        Some("set") => {
+            let (Some(key), Some(value)) = (args.get(1), args.get(2)) else {
+                bail!("{USAGE}")
+            };
+            if args.len() > 3 {
+                bail!("{USAGE}\n(quote values that contain spaces)");
+            }
+            // Strict load: never overwrite a settings file we could not read.
+            let mut config = Config::load_strict(paths)?;
+            settings_view::set(&mut config, key, value)?;
+            config.save(paths).context("saving the settings")?;
+            println!("{key} = {}", settings_view::get(&config, key)?);
+            Ok(())
+        }
+        _ => bail!("{USAGE}"),
     }
 }
 

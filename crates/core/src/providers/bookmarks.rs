@@ -35,13 +35,8 @@ pub struct BookmarksProvider {
 }
 
 impl BookmarksProvider {
-    /// Default settings and the browsers found under `home`; loading starts
-    /// now, in the background. `home` is injected (no ambient lookup), so a
-    /// test points it at a temp folder and never reads real browser data.
-    pub fn new(home: &Path) -> Self {
-        Self::with_settings(home, BookmarkSettings::default())
-    }
-
+    /// The browsers found under `home` (injected, never an ambient lookup, so a test
+    /// points it at a temp folder); loading starts now, in the background.
     pub fn with_settings(home: &Path, settings: BookmarkSettings) -> Self {
         let sources = build_sources(home, &settings.enabled_sources);
         let p = Self::with_cache(settings, BookmarkCache::new(sources));

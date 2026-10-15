@@ -136,32 +136,67 @@ pub fn ambient_home() -> PathBuf {
     }
 }
 
-/// All providers in precedence order, for the real machine.
+/// Ids of every built-in provider in precedence order (the values accepted by
+/// `Config::providers_disabled`).
+pub const PROVIDER_IDS: &[&str] = &[
+    "workflow",
+    "shell",
+    "files",
+    "actions",
+    "clipboard",
+    "snippets",
+    "bookmarks",
+    "web-keyword",
+    "path",
+    "calc",
+    "apps",
+    "system",
+    "web-fallback",
+];
+
+/// All providers in precedence order, for the real machine, with default settings.
 pub fn registry() -> Vec<Box<dyn Provider>> {
-    registry_with(&RegistryDeps::ambient())
+    registry_for(&Config::default(), &RegistryDeps::ambient())
 }
 
-/// All providers in precedence order, wired to `deps`.
+/// Default settings, wired to `deps` (tests inject a fake OS and a temp home).
 pub fn registry_with(deps: &RegistryDeps) -> Vec<Box<dyn Provider>> {
-    use crate::files::FileSearchScope;
-    vec![
-        Box::new(workflow::WorkflowProvider),
-        Box::new(shell::ShellProvider),
-        Box::new(files::FilesProvider::with_os(
-            FileSearchScope::home_default(&deps.home),
-            Arc::clone(&deps.os),
-        )),
-        Box::new(actions::ActionsProvider),
-        Box::new(clipboard::ClipboardProvider),
-        Box::new(snippets::SnippetsProvider),
-        Box::new(bookmarks::BookmarksProvider::new(&deps.home)),
-        Box::new(websearch::WebKeywordProvider),
-        Box::new(files::PathBrowseProvider),
-        Box::new(calc::CalcProvider),
-        Box::new(apps::AppsProvider),
-        Box::new(system::SystemProvider),
-        Box::new(websearch::FallbackProvider),
-    ]
+    registry_for(&Config::default(), deps)
+}
+
+/// The providers for `config`, wired to `deps`, in precedence order: providers
+/// named in `config.providers_disabled` are not created at all, and the file
+/// search and bookmark providers take their settings from the configuration.
+pub fn registry_for(config: &Config, deps: &RegistryDeps) -> Vec<Box<dyn Provider>> {
+    let mut v: Vec<Box<dyn Provider>> = Vec::new();
+    // One line per provider; the id literal must equal `Provider::id` (tested).
+    macro_rules! add {
+        ($id:literal, $p:expr) => {
+            if !config.providers_disabled.iter().any(|d| d == $id) {
+                v.push(Box::new($p));
+            }
+        };
+    }
+    add!("workflow", workflow::WorkflowProvider);
+    add!("shell", shell::ShellProvider);
+    add!(
+        "files",
+        files::FilesProvider::with_os(config.file_search.to_scope_in(&deps.home), Arc::clone(&deps.os))
+    );
+    add!("actions", actions::ActionsProvider);
+    add!("clipboard", clipboard::ClipboardProvider);
+    add!("snippets", snippets::SnippetsProvider);
+    add!(
+        "bookmarks",
+        bookmarks::BookmarksProvider::with_settings(&deps.home, config.bookmarks.clone())
+    );
+    add!("web-keyword", websearch::WebKeywordProvider);
+    add!("path", files::PathBrowseProvider);
+    add!("calc", calc::CalcProvider);
+    add!("apps", apps::AppsProvider);
+    add!("system", system::SystemProvider);
+    add!("web-fallback", websearch::FallbackProvider);
+    v
 }
 
 /// If `q` is `keyword` or `keyword <rest>`, return the (left-trimmed) rest.
@@ -224,6 +259,26 @@ pub(crate) mod testutil {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn provider_id_list_matches_the_registry() {
+        let ids: Vec<_> = registry().iter().map(|p| p.id()).collect();
+        assert_eq!(ids, PROVIDER_IDS);
+    }
+
+    #[test]
+    fn disabled_providers_are_not_created() {
+        let config = Config {
+            providers_disabled: vec!["calc".into(), "bookmarks".into(), "no-such-provider".into()],
+            ..Config::default()
+        };
+        let ids: Vec<_> = registry_for(&config, &RegistryDeps::ambient())
+            .iter()
+            .map(|p| p.id())
+            .collect();
+        assert!(!ids.contains(&"calc") && !ids.contains(&"bookmarks"));
+        assert_eq!(ids.len(), PROVIDER_IDS.len() - 2);
+    }
 
     #[test]
     fn registry_ids_are_unique() {

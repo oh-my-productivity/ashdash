@@ -33,14 +33,70 @@ pub struct Engine {
     pub config: Config,
     apps: Arc<RwLock<Vec<AppEntry>>>,
     /// Keeps the persistent app index refreshed and watched; dropping the engine stops it.
-    app_index: AppIndex,
-    workflows: RwLock<Vec<Workflow>>,
-    snippets: RwLock<Vec<Snippet>>,
+    app_index: Arc<AppIndex>,
+    workflows: Arc<RwLock<Vec<Workflow>>>,
+    snippets: Arc<RwLock<Vec<Snippet>>>,
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
     providers: Vec<Box<dyn Provider>>,
     /// Everything that reaches the machine from `perform` (Universal Actions).
     os: Arc<dyn Os>,
+    /// Background reload bookkeeping (see [`Engine::reload`]).
+    reload_gate: Arc<Mutex<ReloadGate>>,
+    /// Serialises writes of per-workflow settings files.
+    settings_lock: Mutex<()>,
+    /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
+    clip_env: Box<dyn clipboard::command::ClipEnv + Send + Sync>,
+}
+
+#[derive(Default)]
+struct ReloadGate {
+    running: bool,
+    /// Another reload was requested while one was running.
+    again: bool,
+}
+
+/// Everything a reload needs, owned so it can run on a background thread.
+struct ReloadJob {
+    app_index: Arc<AppIndex>,
+    workflows: Arc<RwLock<Vec<Workflow>>>,
+    snippets: Arc<RwLock<Vec<Snippet>>>,
+    workflow_roots: Vec<PathBuf>,
+    snippets_file: PathBuf,
+}
+
+impl ReloadJob {
+    /// Re-scan applications, workflows and snippets. Slow work happens before
+    /// the locks are taken, so queries keep being answered from the old data.
+    fn run(&self) {
+        self.app_index.rescan();
+        self.run_content();
+    }
+
+    fn run_content(&self) {
+        let fresh = workflow::load_all(&self.workflow_roots);
+        let snippets = clipboard::load_snippets(&self.snippets_file);
+        let old = std::mem::replace(&mut *self.workflows.write().unwrap(), fresh);
+        // A delayed continuation may still hold a clone of an old workflow: start it clean.
+        for w in &old {
+            w.reset_session();
+        }
+        *self.snippets.write().unwrap() = snippets;
+    }
+}
+
+/// One entry of a workflow's configuration sheet with its current value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowSetting {
+    pub variable: String,
+    pub label: String,
+    pub description: String,
+    /// Control type from the sheet (`textfield`, `checkbox`, `popupbutton`, ...).
+    pub kind: String,
+    pub default: String,
+    /// What scripts see: the user's value, or the default.
+    pub value: String,
+    pub is_default: bool,
 }
 
 impl Engine {
@@ -80,39 +136,101 @@ impl Engine {
 
     fn with_deps(paths: Paths, config: Config, deps: RegistryDeps) -> Engine {
         let usage = Usage::load(paths.usage_file());
-        let clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard_history_size);
+        let mut clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard.max_entries);
+        config.clipboard.apply(&mut clipboard);
         // Served from the cache at once (or scanned synchronously on the very first run);
         // refreshed and watched in the background afterwards.
         let apps = Arc::new(RwLock::new(Vec::new()));
-        let app_index = AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps));
+        let app_index = Arc::new(AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps)));
+        let providers = providers::registry_for(&config, &deps);
         let e = Engine {
             paths,
             config,
             apps,
             app_index,
-            workflows: RwLock::new(Vec::new()),
-            snippets: RwLock::new(Vec::new()),
+            workflows: Arc::new(RwLock::new(Vec::new())),
+            snippets: Arc::new(RwLock::new(Vec::new())),
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
-            providers: providers::registry_with(&deps),
+            providers,
             os: deps.os,
+            reload_gate: Arc::default(),
+            settings_lock: Mutex::new(()),
+            clip_env: Box::new(clipboard::command::SystemEnv::default()),
         };
         e.reload_content();
         e
     }
 
-    /// Re-scan applications, workflows and snippets.
-    pub fn reload(&self) {
-        self.app_index.rescan();
-        self.reload_content();
+    /// Replace the pasteboard / key-press backend used by clipboard actions
+    /// (integration tests use a fake; the default talks to macOS).
+    pub fn with_clip_env(mut self, env: Box<dyn clipboard::command::ClipEnv + Send + Sync>) -> Engine {
+        self.clip_env = env;
+        self
     }
 
-    /// Workflows and snippets (applications are handled by the app index).
+    /// Re-scan applications, workflows and snippets in the background and
+    /// return at once; queries keep using the old data until the new data is
+    /// swapped in. Calls made while a reload is running are merged into one
+    /// extra pass. Use [`Engine::reload_blocking`] to wait for the result.
+    pub fn reload(&self) {
+        {
+            let mut gate = self.reload_gate.lock().unwrap();
+            if gate.running {
+                gate.again = true;
+                return;
+            }
+            gate.running = true;
+        }
+        let job = self.reload_job();
+        let gate = Arc::clone(&self.reload_gate);
+        let spawned = std::thread::Builder::new()
+            .name("ashdash-reload".into())
+            .spawn(move || {
+                loop {
+                    job.run();
+                    let mut g = gate.lock().unwrap();
+                    if g.again {
+                        g.again = false;
+                        continue;
+                    }
+                    g.running = false;
+                    break;
+                }
+            });
+        if spawned.is_err() {
+            // No thread available: do the work here rather than never.
+            self.reload_gate.lock().unwrap().running = false;
+            self.reload_blocking();
+        }
+    }
+
+    /// Whether a background [`Engine::reload`] is still working.
+    pub fn reload_pending(&self) -> bool {
+        self.reload_gate.lock().unwrap().running
+    }
+
+    /// Re-scan applications, workflows and snippets and return when done
+    /// (tests and the command line).
+    pub fn reload_blocking(&self) {
+        self.reload_job().run();
+    }
+
+    /// Workflows and snippets only (applications are handled by the app index).
     fn reload_content(&self) {
+        self.reload_job().run_content();
+    }
+
+    fn reload_job(&self) -> ReloadJob {
         let mut roots = vec![self.paths.workflows_dir()];
         roots.extend(self.config.workflow_dirs.iter().cloned());
-        *self.workflows.write().unwrap() = workflow::load_all(&roots);
-        *self.snippets.write().unwrap() = clipboard::load_snippets(&self.paths.snippets_file());
+        ReloadJob {
+            app_index: Arc::clone(&self.app_index),
+            workflows: Arc::clone(&self.workflows),
+            snippets: Arc::clone(&self.snippets),
+            workflow_roots: roots,
+            snippets_file: self.paths.snippets_file(),
+        }
     }
 
     pub fn clipboard(&self) -> Arc<Mutex<ClipboardHistory>> {
@@ -134,8 +252,72 @@ impl Engine {
 
     pub fn import_workflow(&self, package: &Path) -> Result<PathBuf> {
         let dest = workflow::import_package(package, &self.paths.workflows_dir())?;
-        self.reload();
+        // The new workflow must be usable as soon as this returns.
+        self.reload_content();
         Ok(dest)
+    }
+
+    // ------------------------------------------------------------ workflow settings
+
+    /// The configuration sheet of the workflow with `bundle_id`, with each
+    /// entry's current value; `None` when no such workflow is installed.
+    pub fn workflow_settings(&self, bundle_id: &str) -> Option<Vec<WorkflowSetting>> {
+        let wfs = self.workflows.read().unwrap();
+        let wf = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id)?;
+        let vars = wf.base_vars(&self.paths);
+        Some(
+            wf.user_config
+                .iter()
+                .map(|c| {
+                    let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
+                    WorkflowSetting {
+                        variable: c.variable.clone(),
+                        label: c.label.clone(),
+                        description: c.description.clone(),
+                        kind: c.kind.clone(),
+                        is_default: value == c.default,
+                        default: c.default.clone(),
+                        value,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Save a value for one entry of a workflow's configuration sheet. It is
+    /// stored in `<data>/workflow-config/<bundle id>.json` (mode 0600) and is
+    /// visible to the workflow's next run as `$variable` / `{var:variable}`.
+    pub fn set_workflow_setting(&self, bundle_id: &str, variable: &str, value: &str) -> Result<()> {
+        self.update_workflow_values(bundle_id, variable, Some(value))
+    }
+
+    /// Forget the saved value of one entry; the sheet's default applies again.
+    pub fn reset_workflow_setting(&self, bundle_id: &str, variable: &str) -> Result<()> {
+        self.update_workflow_values(bundle_id, variable, None)
+    }
+
+    fn update_workflow_values(&self, bundle_id: &str, variable: &str, value: Option<&str>) -> Result<()> {
+        let _guard = self.settings_lock.lock().unwrap();
+        let wfs = self.workflows.read().unwrap();
+        let Some(wf) = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id) else {
+            bail!("no workflow with bundle id '{bundle_id}'");
+        };
+        if !wf.user_config.iter().any(|c| c.variable == variable) {
+            bail!("workflow '{}' has no setting '{variable}'", wf.name);
+        }
+        let file = wf.user_values_file(&self.paths);
+        let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        match value {
+            Some(v) => map.insert(variable.to_string(), v.into()),
+            None => map.remove(variable),
+        };
+        crate::config::write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+        // The values are cached per loaded workflow: drop the cache so the next run re-reads them.
+        wf.reset_session();
+        Ok(())
     }
 
     // ------------------------------------------------------------ query
@@ -248,6 +430,11 @@ impl Engine {
                 Action::System(c) => c.run()?,
                 Action::Shell(cmd) => run_in_terminal(cmd)?,
                 Action::Workflow(a) => return Ok(self.run_workflow(a, mods)),
+                Action::Clipboard(c) => match clipboard::command::run_with(&self.clipboard, c, &*self.clip_env) {
+                    Outcome::Error(m) => bail!("{m}"),
+                    Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
+                    Outcome::Done | Outcome::Confirm(_) => {}
+                },
                 Action::Universal(u) => match actions::run(self.os.as_ref(), u) {
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
                     Outcome::Error(e) => bail!("{e}"),
@@ -461,6 +648,7 @@ pub fn run_in_terminal(cmd: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     fn engine(tag: &str) -> (Engine, PathBuf) {
         let root = std::env::temp_dir().join(format!("oa-eng-{tag}-{}", std::process::id()));
@@ -558,7 +746,7 @@ mod tests {
             .map(|j| json_to_plist(&j))
             .unwrap();
         v.to_file_xml(dir.join("info.plist")).unwrap();
-        e.reload();
+        e.reload_blocking();
         let r = e.query("shout hello");
         assert_eq!(r[0].title, "Shout");
         assert_eq!(r[0].subtitle, "say hello");
@@ -586,7 +774,7 @@ mod tests {
                 "connections": {}
             });
             json_to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
-            e.reload();
+            e.reload_blocking();
             let r = e.query(&format!("{builtin} x"));
             assert_eq!(r.len(), 1, "{builtin}: {r:?}");
             assert_eq!(r[0].title, "Mine", "{builtin}");
@@ -609,6 +797,21 @@ mod tests {
         *e.snippets.write().unwrap() = snippets;
         assert_eq!(e.query("snip s").len(), 2);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn json_to_plist(j: &serde_json::Value) -> plist::Value {
+        use serde_json::Value as J;
+        match j {
+            J::Null => plist::Value::String(String::new()),
+            J::Bool(b) => plist::Value::Boolean(*b),
+            J::Number(n) => n
+                .as_i64()
+                .map(plist::Value::from)
+                .unwrap_or_else(|| plist::Value::Real(n.as_f64().unwrap())),
+            J::String(s) => plist::Value::String(s.clone()),
+            J::Array(a) => plist::Value::Array(a.iter().map(json_to_plist).collect()),
+            J::Object(o) => plist::Value::Dictionary(o.iter().map(|(k, v)| (k.clone(), json_to_plist(v))).collect()),
+        }
     }
 
     // ---- Os / home injection, confirmation, usage (FIX-A)
@@ -634,6 +837,7 @@ mod tests {
     trait CanonOrCreate {
         fn canonicalize_or_create(self) -> PathBuf;
     }
+
     impl CanonOrCreate for PathBuf {
         fn canonicalize_or_create(self) -> PathBuf {
             let _ = std::fs::remove_dir_all(&self);
@@ -648,10 +852,8 @@ mod tests {
         let f = root.join("files/report.pdf");
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, b"x").unwrap();
-
         let rows = e.query(&format!("actions {}", f.display()));
         let trash = rows.iter().find(|i| i.title == "Move to Trash").expect("trash row");
-
         // the question, with the full path
         let ask = e.confirmation_for(trash, Mods::NONE).expect("destructive: must ask");
         assert!(
@@ -661,7 +863,6 @@ mod tests {
         // execute is the authority: unconfirmed gives the same question and runs nothing
         assert_eq!(e.execute(trash, "actions x", Mods::NONE, false), Outcome::Confirm(ask));
         assert!(fake.calls().is_empty(), "{:?}", fake.calls());
-
         // confirmed: exactly one Finder script, on the file, through the fake
         assert_eq!(e.execute(trash, "actions x", Mods::NONE, true), Outcome::Done);
         let calls = fake.calls();
@@ -736,7 +937,6 @@ mod tests {
         assert_eq!(e.usage.lock().unwrap().boost("actions x", &copy.id), 0.0);
         let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
         assert!(!on_disk.contains("horse") && !on_disk.contains("act:"), "{on_disk}");
-
         // ...while an ordinary result is still learned
         let open = Item::new("file:/tmp/x", "x").action(Action::Open(PathBuf::from("/tmp/x")));
         let _ = e.execute(&open, "x", Mods::NONE, true);
@@ -774,7 +974,6 @@ mod tests {
             ..Config::default()
         };
         let e = Engine::with_env(Paths::under(&root), config, Box::new(Arc::clone(&fake)), home.clone());
-
         // bookmarks come from the injected home (loaded in the background)
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let found = loop {
@@ -785,7 +984,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         assert!(found.iter().any(|i| i.title == "Synthetic Fixture Site"), "{found:?}");
-
         // file search is scoped to that home and goes through the fake Os, not the real mdfind
         let _ = e.query("find anything");
         let calls = fake.calls();
@@ -824,18 +1022,395 @@ mod tests {
         }
     }
 
-    fn json_to_plist(j: &serde_json::Value) -> plist::Value {
-        use serde_json::Value as J;
-        match j {
-            J::Null => plist::Value::String(String::new()),
-            J::Bool(b) => plist::Value::Boolean(*b),
-            J::Number(n) => n
-                .as_i64()
-                .map(plist::Value::from)
-                .unwrap_or_else(|| plist::Value::Real(n.as_f64().unwrap())),
-            J::String(s) => plist::Value::String(s.clone()),
-            J::Array(a) => plist::Value::Array(a.iter().map(json_to_plist).collect()),
-            J::Object(o) => plist::Value::Dictionary(o.iter().map(|(k, v)| (k.clone(), json_to_plist(v))).collect()),
+    // ------------------------------------------------------------ wiring (FIX-C)
+
+    use crate::clipboard::ClipCommand;
+    use crate::clipboard::command::ClipEnv;
+    use crate::clipboard::paste::KeySender;
+
+    /// Records what the clipboard actions would do to the real pasteboard / keyboard.
+    #[derive(Default)]
+    struct FakeClip {
+        trusted: bool,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl KeySender for FakeClip {
+        fn trusted(&self) -> bool {
+            self.trusted
         }
+        fn tap(&self, keycode: u16, command: bool) -> Result<(), String> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("key{keycode}{}", if command { "+cmd" } else { "" }));
+            Ok(())
+        }
+        fn pause(&self, _: Duration) {}
+    }
+
+    impl ClipEnv for FakeClip {
+        fn restore(&self, _: &ClipboardHistory, e: &crate::clipboard::ClipEntry) -> Result<()> {
+            self.log.lock().unwrap().push(format!("restore:{:?}", e.kind));
+            Ok(())
+        }
+        fn copy_text(&self, t: &str) -> Result<()> {
+            self.log.lock().unwrap().push(format!("copy:{t}"));
+            Ok(())
+        }
+        fn keys(&self) -> &dyn KeySender {
+            self
+        }
+        fn settle(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    struct Shared(Arc<FakeClip>);
+    impl KeySender for Shared {
+        fn trusted(&self) -> bool {
+            self.0.trusted()
+        }
+        fn tap(&self, k: u16, c: bool) -> Result<(), String> {
+            self.0.tap(k, c)
+        }
+        fn pause(&self, d: Duration) {
+            self.0.pause(d)
+        }
+    }
+
+    impl ClipEnv for Shared {
+        fn restore(&self, h: &ClipboardHistory, e: &crate::clipboard::ClipEntry) -> Result<()> {
+            self.0.restore(h, e)
+        }
+        fn copy_text(&self, t: &str) -> Result<()> {
+            self.0.copy_text(t)
+        }
+        fn keys(&self) -> &dyn KeySender {
+            self
+        }
+        fn settle(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    fn engine_with_clip(tag: &str, trusted: bool) -> (Engine, Arc<FakeClip>, PathBuf) {
+        let (e, root) = engine(tag);
+        let fake = Arc::new(FakeClip {
+            trusted,
+            ..Default::default()
+        });
+        (e.with_clip_env(Box::new(Shared(Arc::clone(&fake)))), fake, root)
+    }
+
+    #[test]
+    fn return_on_a_clip_entry_pastes_it() {
+        let (e, fake, root) = engine_with_clip("clip-paste", true);
+        e.clipboard().lock().unwrap().push("pasted text");
+        let it = e.query("clip pasted").remove(0);
+        assert_eq!(e.execute(&it, "clip pasted", Mods::NONE, false), Outcome::Done);
+        assert_eq!(*fake.log.lock().unwrap(), vec!["restore:Text", "key9+cmd"]);
+        // Cmd+Return copies without pasting
+        fake.log.lock().unwrap().clear();
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
+        assert_eq!(e.execute(&it, "clip pasted", cmd, false), Outcome::Done);
+        assert_eq!(*fake.log.lock().unwrap(), vec!["restore:Text"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn paste_without_accessibility_still_copies_and_explains() {
+        let (e, fake, root) = engine_with_clip("clip-noax", false);
+        e.clipboard().lock().unwrap().push("secret-free text");
+        let it = e.query("clip secret").remove(0);
+        let Outcome::Error(msg) = e.execute(&it, "clip secret", Mods::NONE, false) else {
+            panic!("expected the Accessibility hint")
+        };
+        assert!(msg.starts_with("Copied."), "{msg}");
+        assert!(msg.contains("Accessibility"), "{msg}");
+        assert_eq!(
+            *fake.log.lock().unwrap(),
+            vec!["restore:Text"],
+            "copied, no key presses"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snippets_paste_with_cursor_placement() {
+        let (e, fake, root) = engine_with_clip("snip-paste", true);
+        std::fs::create_dir_all(&e.paths.data).unwrap();
+        std::fs::write(
+            e.paths.snippets_file(),
+            r#"[{"name":"Greeting","keyword":"hi","text":"Dear {cursor},"}]"#,
+        )
+        .unwrap();
+        e.reload_blocking();
+        let it = e.query("snip hi").remove(0);
+        assert_eq!(e.execute(&it, "snip hi", Mods::NONE, false), Outcome::Done);
+        // "Dear ," with the caret one character from the end: copy, Cmd+V, Left
+        assert_eq!(*fake.log.lock().unwrap(), vec!["copy:Dear ,", "key9+cmd", "key123"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clearing_the_history_needs_confirmation_and_keeps_pins() {
+        let (e, _fake, root) = engine_with_clip("clip-clear", true);
+        {
+            let c = e.clipboard();
+            let mut h = c.lock().unwrap();
+            h.push("keep me");
+            h.push("drop me");
+            let id = h.entries().iter().find(|x| x.text == "keep me").unwrap().id();
+            h.set_pinned(&id, true);
+        }
+        let row = e.query("clip clear").remove(0);
+        assert_eq!(row.action, Action::Clipboard(ClipCommand::Clear));
+        assert!(matches!(
+            e.execute(&row, "clip clear", Mods::NONE, false),
+            Outcome::Confirm(_)
+        ));
+        assert_eq!(e.clipboard().lock().unwrap().len(), 2, "nothing happened yet");
+        assert_eq!(e.execute(&row, "clip clear", Mods::NONE, true), Outcome::Done);
+        let c = e.clipboard();
+        let h = c.lock().unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.entries()[0].text, "keep me");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_vanished_clip_entry_is_reported() {
+        let (e, _fake, root) = engine_with_clip("clip-gone", true);
+        let it = Item::new("clip:x", "x").action(Action::Clipboard(ClipCommand::Paste { id: "nope".into() }));
+        assert!(matches!(e.execute(&it, "", Mods::NONE, true), Outcome::Error(_)));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabled_providers_do_not_answer() {
+        let root = std::env::temp_dir().join(format!("oa-eng-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let apps = root.join("apps");
+        std::fs::create_dir_all(apps.join("Safari.app")).unwrap();
+        let mk = |disabled: &[&str]| {
+            Engine::new(
+                Paths::under(&root),
+                Config {
+                    app_dirs: vec![apps.clone()],
+                    providers_disabled: disabled.iter().map(|s| s.to_string()).collect(),
+                    ..Config::default()
+                },
+            )
+        };
+        let on = mk(&[]);
+        assert_eq!(on.query("2+3*4")[0].title, "14");
+        assert_eq!(on.query("saf")[0].title, "Safari");
+        let off = mk(&["calc", "apps"]);
+        assert!(off.query("2+3*4").iter().all(|i| i.title != "14"));
+        assert!(off.query("saf").iter().all(|i| i.title != "Safari"));
+        // the web fallbacks are a different provider and still close the list
+        assert!(off.query("saf").last().unwrap().title.starts_with("Search "));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clipboard_settings_from_the_config_are_applied() {
+        let root = std::env::temp_dir().join(format!("oa-eng-clipcfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut config = Config {
+            app_dirs: vec![root.join("apps")],
+            ..Config::default()
+        };
+        config.clipboard.max_entries = 3;
+        config.clipboard.max_age_days = Some(7);
+        config.clipboard.ignored_apps = vec!["com.example.vault".into()];
+        config.clipboard.max_image_bytes = 1234;
+        let e = Engine::new(Paths::under(&root), config);
+        let c = e.clipboard();
+        let mut h = c.lock().unwrap();
+        assert_eq!(h.ignored_apps(), vec!["com.example.vault"]);
+        assert_eq!(h.max_image_bytes(), 1234);
+        for i in 0..6 {
+            h.push(&format!("entry {i}"));
+        }
+        assert_eq!(h.len(), 3, "max_entries applies");
+        drop(h);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_search_and_bookmark_settings_reach_the_providers() {
+        // Not observable without touching Spotlight: the conversion is covered in config tests; here only
+        // check an engine builds with a custom scope and still answers ordinary queries.
+        let root = std::env::temp_dir().join(format!("oa-eng-fscfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let apps = root.join("apps");
+        std::fs::create_dir_all(apps.join("Safari.app")).unwrap();
+        let mut config = Config {
+            app_dirs: vec![apps],
+            ..Config::default()
+        };
+        config.file_search.roots = vec![root.join("docs").display().to_string()];
+        config.bookmarks.enabled_sources = vec!["safari".into()];
+        config.bookmarks.include_in_general_search = false;
+        let e = Engine::new(Paths::under(&root), config);
+        assert_eq!(e.query("saf")[0].title, "Safari");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // ---- workflow settings and reload
+
+    fn write_config_workflow(e: &Engine) {
+        let dir = e.paths.workflows_dir().join("user.workflow.cfg");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = json!({
+            "name": "Cfg", "bundleid": "cfg.test",
+            "variables": {"fixed": "f"},
+            "userconfigurationconfig": [
+                {"variable": "name", "label": "Name", "type": "textfield", "config": {"default": "Ann"}},
+                {"variable": "loud", "type": "checkbox", "config": {"default": false}}
+            ],
+            "objects": [
+                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                    "keyword": "who", "withspace": false, "argumenttype": 2, "text": "Hello {var:name}", "subtext": "loud={var:loud}"}}
+            ],
+            "connections": {}
+        });
+        json_to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
+        e.reload_blocking();
+    }
+
+    #[test]
+    fn workflow_settings_default_set_reset_and_validation() {
+        let (e, root) = engine("wfcfg");
+        write_config_workflow(&e);
+        let s = e.workflow_settings("cfg.test").unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!(
+            (s[0].variable.as_str(), s[0].value.as_str(), s[0].is_default),
+            ("name", "Ann", true)
+        );
+        assert_eq!((s[1].value.as_str(), s[1].default.as_str()), ("0", "0"));
+        assert_eq!(e.query("who")[0].title, "Hello Ann");
+        e.set_workflow_setting("cfg.test", "name", "Bob").unwrap();
+        let s = e.workflow_settings("cfg.test").unwrap();
+        assert_eq!((s[0].value.as_str(), s[0].is_default), ("Bob", false));
+        assert_eq!(
+            e.query("who")[0].title,
+            "Hello Bob",
+            "the running workflow sees the new value at once"
+        );
+        let file = e.paths.workflow_config_dir().join("cfg.test.json");
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved, json!({"name": "Bob"}));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // it survives a reload and a brand-new engine on the same data dir
+        e.reload_blocking();
+        assert_eq!(e.query("who")[0].title, "Hello Bob");
+        e.set_workflow_setting("cfg.test", "loud", "1").unwrap();
+        e.reset_workflow_setting("cfg.test", "name").unwrap();
+        let s = e.workflow_settings("cfg.test").unwrap();
+        assert_eq!((s[0].value.as_str(), s[0].is_default), ("Ann", true));
+        assert_eq!(s[1].value, "1");
+        // bad requests
+        assert!(e.set_workflow_setting("cfg.test", "nope", "x").is_err());
+        assert!(e.set_workflow_setting("missing.bundle", "name", "x").is_err());
+        assert!(e.set_workflow_setting("", "name", "x").is_err());
+        assert!(e.workflow_settings("missing.bundle").is_none());
+        assert!(e.workflow_settings("").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_workflow_settings_file_is_replaced_not_fatal() {
+        let (e, root) = engine("wfcfg-bad");
+        write_config_workflow(&e);
+        std::fs::create_dir_all(e.paths.workflow_config_dir()).unwrap();
+        std::fs::write(e.paths.workflow_config_dir().join("cfg.test.json"), b"{ nope").unwrap();
+        e.reload_blocking();
+        assert_eq!(e.workflow_settings("cfg.test").unwrap()[0].value, "Ann");
+        e.set_workflow_setting("cfg.test", "name", "Cy").unwrap();
+        assert_eq!(e.workflow_settings("cfg.test").unwrap()[0].value, "Cy");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn wait_until(what: &str, f: impl Fn() -> bool) {
+        let t = std::time::Instant::now();
+        while !f() {
+            assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn reload_returns_immediately_and_refreshes_in_the_background() {
+        let (e, root) = engine("reload-bg");
+        write_config_workflow(&e);
+        assert_eq!(e.query("who")[0].title, "Hello Ann");
+        // change the workflow on disk, then reload without waiting
+        let plist = e.paths.workflows_dir().join("user.workflow.cfg").join("info.plist");
+        let text = std::fs::read_to_string(&plist)
+            .unwrap()
+            .replace("Hello {var:name}", "Howdy {var:name}");
+        std::fs::write(&plist, text).unwrap();
+        e.reload();
+        wait_until("the background reload", || e.query("who")[0].title == "Howdy Ann");
+        wait_until("the reload worker to finish", || !e.reload_pending());
+        // queries during a reload never see an empty workflow list: hammer it while reloading
+        let e = Arc::new(e);
+        let reloader = {
+            let e = Arc::clone(&e);
+            std::thread::spawn(move || {
+                for _ in 0..6 {
+                    e.reload();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            })
+        };
+        for _ in 0..100 {
+            assert_eq!(e.query("who")[0].title, "Howdy Ann");
+        }
+        reloader.join().unwrap();
+        wait_until("the reload worker to finish", || !e.reload_pending());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reload_blocking_has_finished_when_it_returns() {
+        let (e, root) = engine("reload-block");
+        assert!(e.workflow_summaries().is_empty());
+        write_config_workflow(&e);
+        assert_eq!(e.workflow_summaries().len(), 1);
+        assert!(!e.reload_pending());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reload_clears_workflow_session_state() {
+        let (e, root) = engine("reload-session");
+        write_config_workflow(&e);
+        // a value saved behind the engine's back is picked up by a reload (the cache is dropped)
+        assert_eq!(e.workflow_settings("cfg.test").unwrap()[0].value, "Ann");
+        std::fs::create_dir_all(e.paths.workflow_config_dir()).unwrap();
+        std::fs::write(
+            e.paths.workflow_config_dir().join("cfg.test.json"),
+            br#"{"name":"Dee"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            e.workflow_settings("cfg.test").unwrap()[0].value,
+            "Ann",
+            "cached until reloaded"
+        );
+        e.reload_blocking();
+        assert_eq!(e.workflow_settings("cfg.test").unwrap()[0].value, "Dee");
+        let _ = std::fs::remove_dir_all(root);
     }
 }

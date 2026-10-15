@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::actions::UniversalAction;
+use crate::clipboard::ClipCommand;
 use crate::system::SystemCommand;
 use crate::workflow::WorkflowAction;
 
@@ -97,6 +98,10 @@ pub enum Action {
     Workflow(Box<WorkflowAction>),
     /// A Universal Action (file/text operation), executed through the `Os` trait.
     Universal(UniversalAction),
+    /// Clipboard history and snippet commands: restore an entry, auto-paste it,
+    /// pin, delete, clear. Pasting needs the Accessibility permission; without
+    /// it the text is still copied and the outcome says so.
+    Clipboard(ClipCommand),
 }
 
 impl Action {
@@ -105,6 +110,12 @@ impl Action {
         match self {
             Action::System(c) if c.needs_confirmation() => Some(format!("{}? Press ↩ again to confirm.", c.title())),
             Action::Universal(u) => u.confirmation(),
+            Action::Clipboard(ClipCommand::Clear) => {
+                Some("Clear the clipboard history (pinned entries stay)? Press ↩ again to confirm.".into())
+            }
+            Action::Clipboard(ClipCommand::ClearAll) => {
+                Some("Clear the whole clipboard history including pinned entries? Press ↩ again to confirm.".into())
+            }
             _ => None,
         }
     }
