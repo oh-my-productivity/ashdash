@@ -535,3 +535,21 @@ fn notification_text_cannot_inject_applescript() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(!marker.exists(), "AppleScript from the notification text was executed");
 }
+
+/// Stdin mode writes the whole query to the child synchronously, *before* the timeout loop
+/// starts. A script that never reads stdin and a query larger than the pipe buffer therefore
+/// blocks the caller for as long as the script lives, defeating the timeout.
+#[test]
+#[ignore = "known: SEC-16 (stdin write precedes timeout supervision; unread stdin blocks past the timeout); takes ~14 s"]
+fn unread_stdin_cannot_defeat_the_timeout() {
+    let fx = Fx::new("stdin-block");
+    let mut doc = script_filter_workflow("sf", "sleep 14");
+    doc["objects"][0]["config"]["scriptargtype"] = json!(2);
+    let wf = fx.wf(&doc);
+    let big = "x".repeat(4 * 1024 * 1024);
+    let start = Instant::now();
+    let items = fx.items(&wf, &format!("sf {big}"));
+    let took = start.elapsed();
+    assert!(!items.is_empty());
+    assert!(took < Duration::from_secs(12), "returned after {took:?} (timeout is 10 s)");
+}
