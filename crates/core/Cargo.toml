@@ -18,6 +18,8 @@ zip = "9.0.3"
 
 [dev-dependencies]
 criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }
+# Property/fuzz tests (crates/core/tests/fuzz.rs). Minimal feature set: no fork/timeout helpers needed.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 
 [[bench]]
 name = "report"
