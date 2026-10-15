@@ -1,0 +1,167 @@
+//! Query providers: every searchable feature is a small, independent plug-in.
+//!
+//! The engine asks each provider in [`registry`] order. A provider that
+//! returns `exclusive: true` takes over the whole result list: later
+//! providers are not consulted and nothing is merged, ranked or truncated by
+//! the engine (the provider returns the final list). All other output is
+//! pooled, usage-boosted, sorted and truncated by the engine.
+//!
+//! # Adding a provider
+//! 1. Create `providers/<name>.rs` with a type implementing [`Provider`].
+//! 2. Add `mod <name>;` below and ONE line to [`registry`].
+//!
+//! # Placement
+//! [`Provider::placement`] defaults to [`Placement::Ranked`]. Fallback web
+//! searches use [`Placement::Trailing`]: their output is appended after the
+//! ranked list has been sorted and truncated, so it always closes the list.
+//! Trailing providers are skipped when an exclusive provider short-circuits.
+
+use std::sync::{Mutex, RwLock};
+
+use crate::apps::AppEntry;
+use crate::clipboard::{ClipboardHistory, Snippet};
+use crate::config::{Config, Paths};
+use crate::item::Item;
+use crate::workflow::Workflow;
+
+mod apps;
+mod calc;
+mod clipboard;
+mod files;
+mod shell;
+mod snippets;
+mod system;
+mod websearch;
+mod workflow;
+
+/// Read-only handles to the engine's shared state that providers may need.
+#[derive(Clone, Copy)]
+pub struct EngineState<'a> {
+    pub config: &'a Config,
+    pub paths: &'a Paths,
+    pub apps: &'a RwLock<Vec<AppEntry>>,
+    pub workflows: &'a RwLock<Vec<Workflow>>,
+    pub snippets: &'a RwLock<Vec<Snippet>>,
+    pub clipboard: &'a Mutex<ClipboardHistory>,
+}
+
+/// One query as seen by a provider.
+pub struct QueryCtx<'a> {
+    /// The input with leading whitespace removed (never blank).
+    pub query: &'a str,
+    /// The input exactly as typed.
+    pub raw: &'a str,
+    pub engine_state: &'a EngineState<'a>,
+}
+
+#[derive(Default)]
+pub struct ProviderOutput {
+    pub items: Vec<Item>,
+    /// When true, `items` is the complete, final answer to the query.
+    pub exclusive: bool,
+}
+
+impl ProviderOutput {
+    pub fn none() -> Self {
+        Self::default()
+    }
+    pub fn ranked(items: Vec<Item>) -> Self {
+        ProviderOutput {
+            items,
+            exclusive: false,
+        }
+    }
+    pub fn exclusive(items: Vec<Item>) -> Self {
+        ProviderOutput { items, exclusive: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Merged with other non-exclusive output, then boosted/sorted/truncated.
+    Ranked,
+    /// Appended after ranking; never sorted or truncated.
+    Trailing,
+}
+
+pub trait Provider: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn query(&self, ctx: &QueryCtx) -> ProviderOutput;
+    fn placement(&self) -> Placement {
+        Placement::Ranked
+    }
+}
+
+/// All providers in precedence order.
+pub fn registry() -> Vec<Box<dyn Provider>> {
+    vec![
+        Box::new(workflow::WorkflowProvider),
+        Box::new(shell::ShellProvider),
+        Box::new(files::FilesProvider),
+        Box::new(clipboard::ClipboardProvider),
+        Box::new(snippets::SnippetsProvider),
+        Box::new(websearch::WebKeywordProvider),
+        Box::new(files::PathBrowseProvider),
+        Box::new(calc::CalcProvider),
+        Box::new(apps::AppsProvider),
+        Box::new(system::SystemProvider),
+        Box::new(websearch::FallbackProvider),
+    ]
+}
+
+/// If `q` is `keyword` or `keyword <rest>`, return the (left-trimmed) rest.
+pub(crate) fn strip_keyword<'a>(q: &'a str, keyword: &str) -> Option<&'a str> {
+    let head = q.get(..keyword.len())?;
+    if !head.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    let rest = &q[keyword.len()..];
+    if rest.is_empty() {
+        Some("")
+    } else if rest.starts_with(' ') {
+        Some(rest.trim_start())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(n).collect();
+        format!("{t}…")
+    }
+}
+
+/// Order by score (high first), then title.
+pub(crate) fn sort_items(items: &mut [Item]) {
+    items.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
+}
+
+/// Shared fixture for provider tests: a throwaway engine rooted in a temp dir.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use std::path::PathBuf;
+
+    use crate::config::{Config, Paths};
+    use crate::engine::Engine;
+
+    pub fn engine(tag: &str) -> (Engine, PathBuf) {
+        let root = std::env::temp_dir().join(format!("oa-prov-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let apps = root.join("apps");
+        std::fs::create_dir_all(apps.join("Safari.app")).unwrap();
+        std::fs::create_dir_all(apps.join("Clipper.app")).unwrap();
+        let config = Config {
+            app_dirs: vec![apps],
+            ..Config::default()
+        };
+        (Engine::new(Paths::under(&root), config), root)
+    }
+}

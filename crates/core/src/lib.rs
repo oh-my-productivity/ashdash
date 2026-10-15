@@ -9,6 +9,7 @@ pub mod engine;
 pub mod files;
 pub mod fuzzy;
 pub mod item;
+pub mod providers;
 pub mod system;
 pub mod theme;
 pub mod usage;
