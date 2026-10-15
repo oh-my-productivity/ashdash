@@ -15,7 +15,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSApplication", "NSResponder", "NSWindow", "NSView", "NSVisualEffectView", "NSScreen",
   "NSRunningApplication", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl",
-  "NSMenu", "NSMenuItem", "NSEvent", "NSImage", "NSColor", "NSGraphics", "NSAppearance", "objc2-quartz-core",
+  "NSMenu", "NSMenuItem", "NSEvent", "NSImage", "NSColor", "NSGraphics", "NSAppearance", "objc2-quartz-core", "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSGeometry", "NSObject", "NSObjCRuntime", "NSBundle"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer", "objc2-core-foundation"] }

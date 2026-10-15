@@ -4,12 +4,19 @@ use ashdash_core::theme::Theme;
 use ashdash_core::{Icon, Mods, apps};
 use eframe::egui::{self, FontId, Pos2, Rect, Sense, Vec2};
 
-use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c};
+use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowhint};
 
 impl LauncherApp {
     pub(super) fn draw_results(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, t: &Theme) {
         let width = ui.available_width();
         let mut clicked: Option<usize> = None;
+        let held = ctx.input(|i| Mods {
+            cmd: i.modifiers.mac_cmd,
+            alt: i.modifiers.alt,
+            ctrl: i.modifiers.ctrl,
+            shift: i.modifiers.shift,
+            fn_key: false,
+        });
         egui::ScrollArea::vertical()
             .max_height(VISIBLE_ROWS as f32 * ROW_HEIGHT)
             .auto_shrink([false, true])
@@ -68,7 +75,7 @@ impl LauncherApp {
                         }
                     }
                     let text_x = icon_rect.right() + 10.0;
-                    let has_sub = !item.subtitle.is_empty();
+                    let has_sub = !item.subtitle.is_empty() || (sel && rowhint::mod_hint(&item, held).is_some());
                     let title_y = if has_sub {
                         rect.top() + 6.0
                     } else {
@@ -82,11 +89,16 @@ impl LauncherApp {
                         FontId::proportional(t.result_text_size),
                         c(if sel { t.result_text_selected } else { t.result_text }).gamma_multiply(dim),
                     );
-                    if has_sub {
+                    let subtitle = if sel && !held.is_none() {
+                        rowhint::mod_hint(&item, held).unwrap_or_else(|| item.subtitle.clone())
+                    } else {
+                        item.subtitle.clone()
+                    };
+                    if !subtitle.is_empty() {
                         painter.text(
                             Pos2::new(text_x, rect.top() + 6.0 + t.result_text_size + 3.0),
                             egui::Align2::LEFT_TOP,
-                            &item.subtitle,
+                            &subtitle,
                             FontId::proportional(t.result_subtext_size),
                             c(if sel {
                                 t.result_subtext_selected
@@ -122,6 +134,40 @@ impl LauncherApp {
             });
             self.activate(ctx, i, mods);
         }
+    }
+
+    /// A one-row notice shown instead of results while the query is empty
+    /// (currently: the global hotkey could not be registered).
+    pub(super) fn startup_hint(&self) -> Option<String> {
+        let err = self.hotkey_error.as_ref()?;
+        if !self.query.is_empty() {
+            return None;
+        }
+        let raw = &self.engine.config.hotkey;
+        let shown = keynames::display_hotkey(raw).unwrap_or_else(|| raw.clone());
+        Some(format!(
+            "Hotkey {shown} is unavailable ({err}). Change \"hotkey\" in config.json."
+        ))
+    }
+
+    pub(super) fn draw_hint_row(&self, ui: &mut egui::Ui, t: &Theme, text: &str) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::hover());
+        let painter = ui.painter_at(rect);
+        painter.text(
+            Pos2::new(rect.left() + 8.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            "⚠",
+            FontId::proportional(t.icon_size.min(ROW_HEIGHT - 6.0) * 0.55),
+            c(t.result_subtext),
+        );
+        let galley = painter.layout(
+            text.to_owned(),
+            FontId::proportional(t.result_subtext_size + 1.0),
+            c(t.result_text),
+            rect.width() - 48.0,
+        );
+        let pos = Pos2::new(rect.left() + 40.0, rect.center().y - galley.size().y / 2.0);
+        painter.galley(pos, galley, c(t.result_text));
     }
 
     pub(super) fn icon_uri(&mut self, ctx: &egui::Context, icon: &Icon) -> Option<String> {
