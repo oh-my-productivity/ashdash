@@ -437,7 +437,12 @@ fn run_with_timeout(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -
     let se = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
     let out = spawn_reader(so, MAX_STDOUT_BYTES, true);
     let err = spawn_reader(se, MAX_STDERR_BYTES, false);
-    let overflow_error = || anyhow!("script output exceeded {} MiB; the script was stopped", MAX_STDOUT_BYTES >> 20);
+    let overflow_error = || {
+        anyhow!(
+            "script output exceeded {} MiB; the script was stopped",
+            MAX_STDOUT_BYTES >> 20
+        )
+    };
     let start = Instant::now();
     let status = loop {
         if let Some(st) = child.try_wait()? {
@@ -542,7 +547,15 @@ mod tests {
         ] {
             assert!(is_protected_env_name(n), "{n}");
         }
-        for n in ["greeting", "query", "my_path", "LANGUAGE_X", "api_key", "ENVIRONMENT", "USERNAME"] {
+        for n in [
+            "greeting",
+            "query",
+            "my_path",
+            "LANGUAGE_X",
+            "api_key",
+            "ENVIRONMENT",
+            "USERNAME",
+        ] {
             assert!(!is_protected_env_name(n), "{n}");
         }
     }
@@ -621,7 +634,12 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5));
         let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_string();
         std::thread::sleep(Duration::from_millis(100));
-        let alive = Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status().unwrap().success();
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
         if alive {
             let _ = Command::new("kill").args(["-9", &pid]).status();
         }
@@ -690,7 +708,11 @@ mod tests {
             for q in ["-eabc", "-e return 1", "--", "-", "-l JavaScript"] {
                 let out = run_node_script(node, &wf, &paths, q, &BTreeMap::new(), Duration::from_secs(20)).unwrap();
                 assert!(out.success, "type {kind} q={q:?}: {}", out.stderr);
-                assert_eq!(out.stdout.trim_end_matches('\n'), format!("{expect_prefix}{q}"), "type {kind}");
+                assert_eq!(
+                    out.stdout.trim_end_matches('\n'),
+                    format!("{expect_prefix}{q}"),
+                    "type {kind}"
+                );
             }
         }
         let _ = std::fs::remove_dir_all(root);

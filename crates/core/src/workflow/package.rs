@@ -82,7 +82,11 @@ pub fn import_package(package: &Path, dest_root: &Path) -> Result<PathBuf> {
     extract_limited(&mut zip, &staging.path)?;
 
     let wf = Workflow::load(&staging.path).context("archive has no readable info.plist")?;
-    let base: &str = if wf.bundle_id.is_empty() { &wf.name } else { &wf.bundle_id };
+    let base: &str = if wf.bundle_id.is_empty() {
+        &wf.name
+    } else {
+        &wf.bundle_id
+    };
     if base.is_empty() {
         bail!("workflow has neither a bundle id nor a name");
     }

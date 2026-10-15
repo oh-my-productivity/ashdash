@@ -633,10 +633,7 @@ fn failed_reimport_keeps_the_installed_version() {
     // same bundle id, but the archive is hostile and gets rejected
     write_zip(
         &sb.pkg,
-        &[
-            Entry::File("info.plist", sb.plist()),
-            Entry::Symlink("evil", "/etc"),
-        ],
+        &[Entry::File("info.plist", sb.plist()), Entry::Symlink("evil", "/etc")],
     );
     assert!(import_package(&sb.pkg, &sb.dest_root).is_err());
     assert!(dest.join("v1.txt").exists(), "previous version lost");

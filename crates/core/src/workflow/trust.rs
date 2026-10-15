@@ -65,7 +65,8 @@ fn url_scheme(template: &str) -> String {
     match t.split_once(':') {
         Some((s, _))
             if s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')) =>
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')) =>
         {
             s.to_ascii_lowercase()
         }
@@ -182,7 +183,14 @@ mod tests {
     #[test]
     fn empty_and_passive_workflows_run_no_code() {
         let s = wf(json!([])).trust_summary();
-        assert_eq!(s, TrustSummary { name: "T".into(), bundle_id: "t.trust".into(), ..Default::default() });
+        assert_eq!(
+            s,
+            TrustSummary {
+                name: "T".into(),
+                bundle_id: "t.trust".into(),
+                ..Default::default()
+            }
+        );
         assert!(!s.runs_code());
         let s = wf(json!([
             {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "a", "text": "b"}},
@@ -208,7 +216,14 @@ mod tests {
         assert_eq!(s.query_in_source, 3); // B, C, E
         assert_eq!(
             s.interpreters,
-            ["bash", "osascript", "osascript (JavaScript)", "python3", "script file", "unknown script type 99"]
+            [
+                "bash",
+                "osascript",
+                "osascript (JavaScript)",
+                "python3",
+                "script file",
+                "unknown script type 99"
+            ]
         );
         assert!(s.runs_code());
         assert!(s.external_files.is_empty(), "run.sh lives inside the workflow");

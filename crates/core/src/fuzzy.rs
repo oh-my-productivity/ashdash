@@ -89,11 +89,7 @@ impl Query {
     pub fn new(query: &str) -> Query {
         let trimmed = query.trim();
         let too_long = trimmed.chars().nth(MAX_QUERY_CHARS).is_some();
-        let q = if too_long {
-            Vec::new()
-        } else {
-            normalize(trimmed)
-        };
+        let q = if too_long { Vec::new() } else { normalize(trimmed) };
         let mut qwords = Vec::new();
         let mut start = None;
         for (i, c) in q.iter().enumerate() {

@@ -93,7 +93,10 @@ impl Usage {
             let ids = self.by_query.entry(q).or_default();
             *ids.entry(id.to_string()).or_insert(0) += 1;
             if ids.len() > MAX_IDS_PER_QUERY
-                && let Some(least) = ids.iter().min_by_key(|(k, c)| (**c, (*k).clone())).map(|(k, _)| k.clone())
+                && let Some(least) = ids
+                    .iter()
+                    .min_by_key(|(k, c)| (**c, (*k).clone()))
+                    .map(|(k, _)| k.clone())
             {
                 ids.remove(&least);
             }
