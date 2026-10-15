@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod apps;
+pub mod bookmarks;
 pub mod brand;
 pub mod calc;
 pub mod clipboard;
