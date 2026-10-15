@@ -348,6 +348,240 @@ fn config_load_roundtrip_and_version_zero_migration() {
     assert_eq!(Config::load(&paths).max_results, 7);
 }
 
+// ---------------------------------------------------------------- config v2 fields and dotted paths
+
+/// Hostile-but-plausible JSON for one setting: right types at the extremes, wrong types, junk.
+fn arb_setting_value() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        Just(Value::Null),
+        Just(json!(0)),
+        Just(json!(-1)),
+        Just(json!(u64::MAX)),
+        Just(json!(i64::MIN)),
+        Just(json!(1.5)),
+        Just(json!(u32::MAX)),
+        Just(json!("")),
+        Just(json!("\u{0}")),
+        Just(json!("~/../../..")),
+        Just(json!("/")),
+        Just(json!(["a", 1, null, ["nested"]])),
+        Just(json!([])),
+        Just(json!({})),
+        any::<bool>().prop_map(Value::from),
+        any::<i64>().prop_map(Value::from),
+        any::<u64>().prop_map(Value::from),
+        "\\PC{0,24}".prop_map(Value::from),
+        prop::collection::vec("\\PC{0,12}", 0..5).prop_map(|v| json!(v)),
+        arb_json(),
+    ]
+}
+
+/// Every key Config v2 added (and the older ones), with per-field hostile values.
+const V2_KEYS: &[(&str, &[&str])] = &[
+    ("bookmarks", &["enabled_sources", "include_in_general_search"]),
+    (
+        "file_search",
+        &[
+            "roots",
+            "excluded_paths",
+            "excluded_names",
+            "excluded_substrings",
+            "include_hidden",
+            "include_icloud_drive",
+            "mdfind_timeout_ms",
+            "mdfind_max_bytes",
+            "walk_timeout_ms",
+            "walk_max_entries",
+        ],
+    ),
+    (
+        "clipboard",
+        &["max_entries", "max_age_days", "ignored_apps", "max_image_bytes"],
+    ),
+];
+
+fn arb_v2_config_json() -> impl Strategy<Value = Value> {
+    let sections = V2_KEYS
+        .iter()
+        .map(|(name, fields)| {
+            let fields: Vec<&'static str> = fields.to_vec();
+            prop::collection::vec((prop::sample::select(fields), arb_setting_value()), 0..6).prop_map(move |kv| {
+                (
+                    name.to_string(),
+                    Value::Object(kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    (
+        sections,
+        arb_setting_value(),
+        arb_setting_value(),
+        arb_setting_value(),
+        arb_setting_value(),
+        prop::sample::select(vec![0u64, 1, 2, 3, u64::MAX]),
+    )
+        .prop_map(|(secs, providers, results, web, hotkey, version)| {
+            let mut m: serde_json::Map<String, Value> = secs.into_iter().collect();
+            m.insert("providers_disabled".into(), providers);
+            m.insert("max_results".into(), results);
+            m.insert("web_searches".into(), web);
+            m.insert("hotkey".into(), hotkey);
+            m.insert("version".into(), json!(version));
+            Value::Object(m)
+        })
+}
+
+/// An OS that does nothing and finds nothing: the engine below must never reach the real machine.
+struct NullOs;
+impl ashdash_core::actions::Os for NullOs {
+    fn run(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn output(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    fn spawn(
+        &self,
+        _: &ashdash_core::actions::Cmd,
+    ) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
+        anyhow::bail!("no processes in this test")
+    }
+}
+
+proptest! {
+    #![proptest_config(cfg(300))]
+
+    /// Hostile values in every v2 section: loading never panics, the result can be saved and
+    /// loaded again unchanged, and numeric budgets always end up inside their documented ranges.
+    #[test]
+    fn config_v2_fields_survive_hostile_values(doc in arb_v2_config_json()) {
+        use ashdash_core::config::{
+            MDFIND_MAX_BYTES_RANGE, MDFIND_TIMEOUT_MS_RANGE, WALK_MAX_ENTRIES_RANGE, WALK_TIMEOUT_MS_RANGE,
+        };
+        let t = TempDir::new("cfg-v2");
+        let paths = Paths::under(&t.join("env"));
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), serde_json::to_vec(&doc).unwrap()).unwrap();
+        let c = Config::load(&paths);
+        let _ = Config::load_strict(&paths); // may be Err, must not panic
+        prop_assert!(MDFIND_TIMEOUT_MS_RANGE.contains(&c.file_search.mdfind_timeout_ms));
+        prop_assert!(MDFIND_MAX_BYTES_RANGE.contains(&c.file_search.mdfind_max_bytes));
+        prop_assert!(WALK_TIMEOUT_MS_RANGE.contains(&c.file_search.walk_timeout_ms));
+        prop_assert!(WALK_MAX_ENTRIES_RANGE.contains(&c.file_search.walk_max_entries));
+        let _ = c.file_search.to_scope_in(t.path()); // budget + tilde expansion on junk
+        let future = doc.get("version").and_then(Value::as_u64).is_some_and(|v| v > ashdash_core::config::CURRENT_VERSION as u64);
+        if !future {
+            c.save(&paths).unwrap();
+            let again = Config::load(&paths);
+            prop_assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&c).unwrap());
+        }
+    }
+}
+
+proptest! {
+    // Building an engine starts index threads: fewer cases.
+    #![proptest_config(cfg(24))]
+
+    /// Whatever the settings file says, an engine built from it answers queries without panicking
+    /// (no file queries: those would walk the real disk for hostile roots).
+    #[test]
+    fn engine_built_from_hostile_v2_settings_answers_queries(doc in arb_v2_config_json()) {
+        let t = TempDir::new("cfg-engine");
+        let paths = Paths::under(&t.join("env"));
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), serde_json::to_vec(&doc).unwrap()).unwrap();
+        let mut c = Config::load(&paths);
+        c.app_dirs = vec![t.join("apps")]; // never scan the real machine
+        c.workflow_dirs.clear();
+        let home = t.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let e = ashdash_core::Engine::with_env(paths, c, Box::new(NullOs), home);
+        for q in ["a", "clip x", "clipboard", "snip x", "bm x", "2+2", "g rust", ">ls", "sys sleep", "  "] {
+            let _ = e.query(q);
+        }
+    }
+}
+
+/// Dotted-path edits as `ashdash config set` performs them.
+fn arb_path() -> impl Strategy<Value = String> {
+    let real = Config::default();
+    let keys = ashdash_core::settings_view::keys(&real);
+    prop_oneof![
+        prop::sample::select(keys),
+        prop::sample::select(vec![
+            "", ".", "..", "a..b", "clipboard.", ".clipboard", "clipboard..max_entries", "web_searches.0",
+            "web_searches.0.url", "web_searches.99999999999999999999", "web_searches.-1", "web_searches.00",
+            "file_search.roots.0", "file_search.roots.99", "providers_disabled.0", "theme.x", "version",
+            "bookmarks", "clipboard", "file_search", "hotkey.x", "max_results.1",
+        ])
+        .prop_map(String::from),
+        "[a-z_.0-9]{0,24}",
+        "\\PC{0,24}",
+    ]
+}
+
+fn arb_raw_value() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just(String::new()),
+        Just("null".to_string()),
+        Just("[]".to_string()),
+        Just("{}".to_string()),
+        Just("-1".to_string()),
+        Just("18446744073709551616".to_string()),
+        Just("1e400".to_string()),
+        Just("\"\u{0}\"".to_string()),
+        Just("a,b,,c".to_string()),
+        "\\PC{0,32}",
+        arb_json().prop_map(|v| v.to_string()),
+        any::<i64>().prop_map(|n| n.to_string()),
+    ]
+}
+
+proptest! {
+    #![proptest_config(cfg(1000))]
+
+    /// `settings_view::set` never panics; a rejected edit changes nothing; an accepted one reads
+    /// back as stored, survives save + load and keeps the file loadable.
+    #[test]
+    fn config_set_with_dotted_paths_is_total_and_atomic(path in arb_path(), raw in arb_raw_value()) {
+        use ashdash_core::settings_view::{get, set};
+        let mut c = Config::default();
+        let before = serde_json::to_value(&c).unwrap();
+        match set(&mut c, &path, &raw) {
+            Err(_) => prop_assert_eq!(serde_json::to_value(&c).unwrap(), before, "failed set must not change anything"),
+            Ok(()) => {
+                prop_assert!(get(&c, &path).is_ok(), "an accepted key can be read back");
+                let t = TempDir::new("cfg-set");
+                let paths = Paths::under(&t.join("env"));
+                c.save(&paths).unwrap();
+                let back = Config::load_strict(&paths);
+                prop_assert!(back.is_ok(), "saved settings load strictly: {back:?}");
+                prop_assert_eq!(serde_json::to_value(back.unwrap()).unwrap(), serde_json::to_value(&c).unwrap());
+            }
+        }
+    }
+
+    /// Sequences of edits on real keys never leave a configuration that cannot be saved and loaded.
+    #[test]
+    fn config_set_sequences_keep_the_file_loadable(
+        edits in prop::collection::vec((prop::sample::select(ashdash_core::settings_view::keys(&Config::default())), arb_raw_value()), 1..8)
+    ) {
+        let mut c = Config::default();
+        for (k, v) in &edits {
+            let _ = ashdash_core::settings_view::set(&mut c, k, v);
+            // in-memory round trip after every edit (cheap) ...
+            let again: Result<Config, _> = serde_json::from_value(serde_json::to_value(&c).unwrap());
+            prop_assert!(again.is_ok(), "after {k}={v:?}: {again:?}");
+        }
+        // ... and one real save + strict load at the end
+        let t = TempDir::new("cfg-seq");
+        let paths = Paths::under(&t.join("env"));
+        c.save(&paths).unwrap();
+        prop_assert!(Config::load_strict(&paths).is_ok());
+    }
+}
+
 // ---------------------------------------------------------------- Script Filter output
 
 /// A Script Filter whose script is `cat <file>`: the file holds the fuzz bytes verbatim.
