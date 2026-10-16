@@ -17,6 +17,9 @@ pub struct Scheduler {
     query: String,
     /// When the current query is to be run again, if a filter asked for it.
     due: Option<Instant>,
+    /// When the first run of the current request finished: the reruns of one request stop
+    /// [`RERUN_CEILING`] after it.
+    first_run: Option<Instant>,
 }
 
 /// What the worker should do while idle.
@@ -33,6 +36,11 @@ pub enum Wait {
 pub const MIN_RERUN: Duration = Duration::from_millis(100);
 pub const MAX_RERUN: Duration = Duration::from_secs(5);
 
+/// Reruns of one request stop after this long: a window left open on a query (behind a Large
+/// Type, an import prompt, or just forgotten) would otherwise run the script every 0.1-5 s
+/// for ever. Typing a new query starts a fresh period.
+pub const RERUN_CEILING: Duration = Duration::from_secs(5 * 60);
+
 impl Scheduler {
     /// Record the newest request. Returns true when it should be run (a
     /// non-empty query); an empty query only cancels any pending rerun.
@@ -41,6 +49,7 @@ impl Scheduler {
     pub fn request(&mut self, generation: u64, query: &str) -> bool {
         self.generation = generation;
         self.due = None;
+        self.first_run = None;
         self.query = query.to_string();
         !query.trim().is_empty()
     }
@@ -52,7 +61,12 @@ impl Scheduler {
         if generation != self.generation || self.query.trim().is_empty() {
             return;
         }
-        self.due = rerun.map(|d| now + d.clamp(MIN_RERUN, MAX_RERUN));
+        let first = *self.first_run.get_or_insert(now);
+        self.due = if now.saturating_duration_since(first) >= RERUN_CEILING {
+            None
+        } else {
+            rerun.map(|d| now + d.clamp(MIN_RERUN, MAX_RERUN))
+        };
     }
 
     /// How long the worker may sleep before it has to look at the clock again.
@@ -186,6 +200,29 @@ mod tests {
         assert_eq!(s.wait(now), Wait::For(MIN_RERUN), "a zero interval cannot spin");
         s.finished(1, now, Some(Duration::from_secs(3600)));
         assert_eq!(s.wait(now), Wait::For(MAX_RERUN));
+    }
+
+    #[test]
+    fn reruns_stop_after_the_ceiling_and_typing_starts_a_new_period() {
+        let mut s = Scheduler::default();
+        s.request(1, "clock");
+        let start = t0();
+        s.finished(1, start, Some(ms(500)));
+        // a rerun just inside the ceiling is still scheduled ...
+        let late = start + RERUN_CEILING - ms(1);
+        s.finished(1, late, Some(ms(500)));
+        assert!(s.is_scheduled());
+        // ... one at the ceiling is the last
+        s.finished(1, start + RERUN_CEILING, Some(ms(500)));
+        assert!(!s.is_scheduled(), "still repeating after {RERUN_CEILING:?}");
+        assert_eq!(s.wait(start + RERUN_CEILING), Wait::Forever);
+        // the same query typed again (a new request) gets a fresh period
+        s.request(2, "clock");
+        let again = start + RERUN_CEILING + ms(10);
+        s.finished(2, again, Some(ms(500)));
+        assert!(s.is_scheduled());
+        s.finished(2, again + RERUN_CEILING / 2, Some(ms(500)));
+        assert!(s.is_scheduled());
     }
 
     #[test]

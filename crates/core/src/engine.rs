@@ -730,10 +730,15 @@ fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// A command for a macOS system tool, by absolute path (see `actions::system_program`).
+fn sys_command(name: &str) -> Command {
+    Command::new(actions::system_program(std::ffi::OsStr::new(name)))
+}
+
 pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
     let s = p.to_string_lossy();
     no_dash(&s, "path")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = with {
         no_dash(app, "application")?;
         c.arg("-a").arg(app);
@@ -743,12 +748,12 @@ pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
 
 pub fn reveal(p: &Path) -> Result<()> {
     no_dash(&p.to_string_lossy(), "path")?;
-    run_status(Command::new("open").arg("-R").arg(p), "reveal")
+    run_status(sys_command("open").arg("-R").arg(p), "reveal")
 }
 
 pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
     no_dash(url, "URL")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = browser {
         no_dash(app, "browser")?;
         c.arg("-a").arg(app);
@@ -757,7 +762,7 @@ pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    let mut child = sys_command("pbcopy").stdin(Stdio::piped()).spawn()?;
     child.stdin.take().expect("piped stdin").write_all(text.as_bytes())?;
     if !child.wait()?.success() {
         bail!("pbcopy failed");
@@ -768,7 +773,7 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
 /// `osascript -e <line>... -- <arg>...`. The `--` is what makes the arguments data: without it a
 /// first argument beginning with `-e` is parsed as one more script fragment (SEC-01).
 fn osascript_command(lines: &[&str], args: &[&str]) -> Command {
-    let mut c = Command::new("osascript");
+    let mut c = sys_command("osascript");
     for l in lines {
         c.arg("-e").arg(l);
     }

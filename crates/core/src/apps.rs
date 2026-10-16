@@ -85,7 +85,7 @@ pub fn app_icon_png(app: &Path, cache_dir: &Path) -> Option<PathBuf> {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let status = Command::new("sips")
+    let status = Command::new(crate::actions::system_program(std::ffi::OsStr::new("sips")))
         .args(["-s", "format", "png", "-Z", "96"])
         .arg(&icns)
         .arg("--out")
