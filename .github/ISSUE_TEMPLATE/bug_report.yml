@@ -21,7 +21,7 @@ body:
     id: version
     attributes:
       label: Ashdash version or commit
-      description: "Output of `git rev-parse --short HEAD` for a source build, or the DMG name. (`ashdash --version` does not exist yet.)"
+      description: "Output of `ashdash --version`, plus `git rev-parse --short HEAD` for a source build or the DMG name."
     validations:
       required: true
   - type: dropdown

@@ -171,8 +171,7 @@ Findings:
 * **Fixed:** `selftest.sh` reported `FAIL shellcheck` whenever `shellcheck` is installed (as on most CI images and developer machines), because the `# shellcheck source=lib.sh` hints were resolved relative to the working directory
   (SC1091); it now passes `-P SCRIPTDIR`. Before the fix the self-test passed only on machines without `shellcheck`, so this would have failed the release workflow's first step on a runner that has it.
 * **Fixed:** `dist/` (the build output) was not in `.gitignore`.
-* **Product bug, not fixed (product source is out of scope here):** `ashdash --version` (and `-V`) is not supported; it prints `Error: unknown command '--version'` plus the help and exits 1 (`crates/app/src/main.rs`, the `match args.first()` at about line 55-57 only knows `-h|--help|help`).
-  A release should answer `--version` (the bundle's version is in Info.plist, the crate version is `env!("CARGO_PKG_VERSION")`). Until then `--help` is the smoke test.
+* **Fixed in Wave 4 review (W4-R2):** `ashdash --version` / `-V` / `version` now prints `ashdash <crate version>` and exits 0 (it used to print "unknown command"). The release smoke test can use it.
 * `CFBundleVersion` defaults to the commit count (141 in this worktree); CI passes `github.run_number` instead, so build numbers differ between local and CI builds. Harmless, worth knowing.
 
 ## Not covered by automation
