@@ -110,6 +110,11 @@ impl Watcher {
             return record(history, ClipKind::Files, |h| h.push_files(&files));
         }
         if let Some(text) = src.read_text().filter(|t| !t.trim().is_empty()) {
+            // A snippet pasted by Ashdash goes through the pasteboard (`pbcopy` cannot add the
+            // marker types). It may hold a token or a password: not history material.
+            if history.lock().is_ok_and(|mut h| h.take_own_paste(&text)) {
+                return Step::Skipped(SkipReason::OwnPaste);
+            }
             return record(history, ClipKind::Text, |h| h.push(&text));
         }
         if let Some(png) = src.read_png() {
@@ -253,6 +258,50 @@ mod tests {
         // Normal copies afterwards still work.
         fake.copy(&[TEXT], None, Some("fine"));
         assert_eq!(w.step(&fake, &h), Step::Recorded(ClipKind::Text));
+    }
+
+    #[test]
+    fn a_snippet_pasted_by_ashdash_is_not_recorded_but_the_users_own_copies_are() {
+        let (fake, h, mut w) = (Fake::default(), hist(), Watcher::new());
+        w.step(&fake, &h);
+        // the command layer notes the text, then the pasteboard changes (frontmost app: the user's)
+        h.lock().unwrap().note_own_paste("api-token-1234");
+        fake.copy(&[TEXT], Some("com.apple.TextEdit"), Some("api-token-1234"));
+        assert_eq!(w.step(&fake, &h), Step::Skipped(SkipReason::OwnPaste));
+        assert!(texts(&h).is_empty());
+        assert_eq!(w.step(&fake, &h), Step::Unchanged, "the change is consumed");
+        // one note answers once: the user copying the same text later is recorded
+        fake.copy(&[TEXT], Some("com.apple.TextEdit"), Some("api-token-1234"));
+        assert_eq!(w.step(&fake, &h), Step::Recorded(ClipKind::Text));
+        // other text is never skipped because a paste is pending
+        h.lock().unwrap().note_own_paste("snippet");
+        fake.copy(&[TEXT], None, Some("something else"));
+        assert_eq!(w.step(&fake, &h), Step::Recorded(ClipKind::Text));
+        assert_eq!(texts(&h), vec!["something else", "api-token-1234"]);
+    }
+
+    #[test]
+    fn an_old_note_does_not_hide_a_later_copy() {
+        let (fake, h, mut w) = (Fake::default(), hist(), Watcher::new());
+        w.step(&fake, &h);
+        let long_ago = std::time::Instant::now() - super::super::history::OWN_PASTE_TTL * 2;
+        h.lock().unwrap().note_own_paste_at("expired", long_ago);
+        fake.copy(&[TEXT], None, Some("expired"));
+        assert_eq!(w.step(&fake, &h), Step::Recorded(ClipKind::Text));
+        // a failed write takes its note back
+        h.lock().unwrap().note_own_paste("never written");
+        h.lock().unwrap().forget_own_paste("never written");
+        fake.copy(&[TEXT], None, Some("never written"));
+        assert_eq!(w.step(&fake, &h), Step::Recorded(ClipKind::Text));
+    }
+
+    #[test]
+    fn markers_still_win_over_the_own_paste_note() {
+        let (fake, h, mut w) = (Fake::default(), hist(), Watcher::new());
+        w.step(&fake, &h);
+        h.lock().unwrap().note_own_paste("x");
+        fake.copy(&[TEXT, CONCEALED_TYPE], None, Some("x"));
+        assert!(matches!(w.step(&fake, &h), Step::Skipped(SkipReason::MarkerType(_))));
     }
 
     #[test]

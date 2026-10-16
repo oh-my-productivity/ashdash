@@ -6,7 +6,10 @@
 //! referenced by name from the JSON. Older files that only contain
 //! `{text, ts}` objects load unchanged.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +24,12 @@ pub const MAX_TEXT_BYTES: usize = 1 << 20;
 pub const DEFAULT_MAX_IMAGE_BYTES: usize = 8 << 20;
 /// Most paths kept for one file-list entry.
 pub const MAX_FILES_PER_ENTRY: usize = 500;
+
+/// How long a text Ashdash itself put on the pasteboard (snippet auto-paste) is expected to show
+/// up in the watcher. Generous: the poll interval is about half a second.
+pub const OWN_PASTE_TTL: Duration = Duration::from_secs(10);
+/// Most pastes remembered at once (a snippet fires, the watcher normally sees it within a poll).
+const MAX_OWN_PASTES: usize = 8;
 
 const IMAGES_DIR: &str = "clipboard-images";
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -163,6 +172,15 @@ pub struct ClipboardHistory {
     max_image_bytes: Option<usize>,
     ignored_apps: Option<Vec<String>>,
     path: Option<PathBuf>,
+    /// Hashes of texts Ashdash itself just copied for a paste, with the time they were noted
+    /// (never saved). The watcher skips the pasteboard change they cause.
+    own_pastes: Vec<(u64, Instant)>,
+}
+
+fn text_hash(text: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
 }
 
 impl ClipboardHistory {
@@ -223,6 +241,50 @@ impl ClipboardHistory {
         match &self.ignored_apps {
             Some(list) => list.clone(),
             None => DEFAULT_IGNORED_APPS.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Remember that Ashdash is about to put `text` on the pasteboard for an auto-paste (a snippet,
+    /// which may hold a token or a password): the watcher then does not record that change. Call
+    /// this **before** the pasteboard write, so the watcher cannot see the change first.
+    pub fn note_own_paste(&mut self, text: &str) {
+        self.note_own_paste_at(text, Instant::now());
+    }
+
+    pub fn note_own_paste_at(&mut self, text: &str, now: Instant) {
+        self.own_pastes
+            .retain(|(_, at)| now.saturating_duration_since(*at) < OWN_PASTE_TTL);
+        if self.own_pastes.len() >= MAX_OWN_PASTES {
+            self.own_pastes.remove(0);
+        }
+        self.own_pastes.push((text_hash(text), now));
+    }
+
+    /// Take back a note whose pasteboard write failed.
+    pub fn forget_own_paste(&mut self, text: &str) {
+        let h = text_hash(text);
+        if let Some(i) = self.own_pastes.iter().rposition(|(x, _)| *x == h) {
+            self.own_pastes.remove(i);
+        }
+    }
+
+    /// Is `text`, just read from the pasteboard, one of Ashdash's own pastes? Each note answers
+    /// once, and only within [`OWN_PASTE_TTL`]; a later copy of the same text by the user is
+    /// recorded as usual.
+    pub fn take_own_paste(&mut self, text: &str) -> bool {
+        self.take_own_paste_at(text, Instant::now())
+    }
+
+    pub fn take_own_paste_at(&mut self, text: &str, now: Instant) -> bool {
+        self.own_pastes
+            .retain(|(_, at)| now.saturating_duration_since(*at) < OWN_PASTE_TTL);
+        let h = text_hash(text);
+        match self.own_pastes.iter().position(|(x, _)| *x == h) {
+            Some(i) => {
+                self.own_pastes.remove(i);
+                true
+            }
+            None => false,
         }
     }
 
