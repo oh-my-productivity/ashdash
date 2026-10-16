@@ -519,46 +519,10 @@ pub fn validate_keyword(raw: &str) -> Result<String, String> {
     Ok(k.to_string())
 }
 
-/// `https://host/path?q={query}`: http(s) only, a literal host, `{query}` after it, no other
-/// placeholders, no credentials, no whitespace.
+/// `https://host/path?q={query}`: the rule lives in core (`websearch::validate_url_template`),
+/// which also enforces it when the providers are built, so both always agree.
 pub fn validate_url_template(raw: &str) -> Result<String, String> {
-    let t = raw.trim();
-    if t.is_empty() {
-        return Err("enter a URL".into());
-    }
-    if t.len() > 2000 {
-        return Err("the URL is too long".into());
-    }
-    if t.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("a URL cannot contain spaces".into());
-    }
-    let Some((scheme, rest)) = t.split_once("://") else {
-        return Err("start with https:// (or http://)".into());
-    };
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
-        return Err("only http:// and https:// addresses are allowed".into());
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.is_empty() {
-        return Err("the URL needs a host name".into());
-    }
-    if authority.contains('@') {
-        return Err("do not put a user name or password in the URL".into());
-    }
-    if authority.contains('{') {
-        return Err("{query} must come after the host name".into());
-    }
-    if !t.contains("{query}") {
-        return Err("the URL must contain {query} where the search text goes".into());
-    }
-    let mut rest = t;
-    while let Some(i) = rest.find('{') {
-        if !rest[i..].starts_with("{query}") {
-            return Err("only {query} is supported as a placeholder".into());
-        }
-        rest = &rest[i + "{query}".len()..];
-    }
-    Ok(t.to_string())
+    websearch::validate_url_template(raw)
 }
 
 /// A valid search from `draft`, checked against the other searches (`editing` = the one being

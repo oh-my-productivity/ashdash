@@ -197,6 +197,11 @@ impl HotReload {
         }
         let report = self.engine.apply_config(new.clone());
         self.restart_required = report.restart_required.iter().map(|s| s.to_string()).collect();
+        if report.warnings.is_empty() {
+            self.problems.remove("settings");
+        } else {
+            self.problem("settings", report.warnings.join(" "));
+        }
         if let Some(spec) = plan.rebind_hotkey {
             match host.rebind_hotkey(&self.registered_hotkey, &spec) {
                 Ok(()) => {
@@ -538,6 +543,32 @@ mod tests {
         c.save(&r.paths).unwrap();
         r.reload.apply_disk_config(&mut w);
         assert_eq!(w.themes.len(), 2);
+        r.reload.publish();
+        assert!(status::read(&r.paths).unwrap().problems.is_empty());
+    }
+
+    #[test]
+    fn a_web_search_with_a_non_web_url_is_reported_and_not_applied() {
+        let mut r = rig("bad-url", None);
+        let mut w = FakeWindow::default();
+        let mut c = Config::load(&r.paths);
+        c.web_searches.push(ashdash_core::websearch::WebSearch {
+            keyword: "zork".into(),
+            title: "Zork".into(),
+            url: "file:///etc/{query}".into(),
+            fallback: false,
+        });
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.publish();
+        assert!(!web_search_titles(&r.engine, "zork hi").iter().any(|t| t.contains("Zork")));
+        let st = status::read(&r.paths).unwrap();
+        assert!(st.problems.iter().any(|p| p.contains("zork") && p.contains("not allowed")), "{:?}", st.problems);
+        // fixing the entry clears the problem
+        let mut c = Config::load(&r.paths);
+        c.web_searches.retain(|s| s.keyword != "zork");
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
         r.reload.publish();
         assert!(status::read(&r.paths).unwrap().problems.is_empty());
     }

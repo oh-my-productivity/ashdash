@@ -70,6 +70,9 @@ struct Live {
 pub struct ApplyReport {
     /// Setting names that only take effect after a restart.
     pub restart_required: Vec<&'static str>,
+    /// Parts of the new settings that were left out because they are not allowed (a web
+    /// search with a non-web URL, say); everything else was applied.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Default)]
@@ -328,7 +331,8 @@ impl Engine {
         if new.app_dirs != old.app_dirs {
             report.restart_required.push("app_dirs");
         }
-        let providers = providers::registry_for(&new, &self.deps);
+        let (providers, warnings) = providers::registry_checked(&new, &self.deps);
+        report.warnings = warnings;
         new.clipboard.apply(&mut self.clipboard.lock().unwrap());
         self.usage.lock().unwrap().set_enabled(new.learn_usage);
         let workflows_moved = new.workflow_dirs != old.workflow_dirs;
