@@ -227,6 +227,13 @@ pub(crate) fn capability_lines(t: &TrustSummary) -> Vec<String> {
             listed(&t.opens_at_run_time, MAX_COMMAND)
         ));
     }
+    if t.results_steer_later_steps {
+        out.push(
+            "Its results can change what later steps do (a Script Filter item can set the \
+             argument and variables that the scripts, URLs, files or Terminal commands after it use)."
+                .into(),
+        );
+    }
     if t.external_triggers > 0 {
         out.push(format!(
             "Has {} that other workflows or ashdash:// links can start.",
@@ -656,6 +663,7 @@ mod tests {
             ),
             ("trigger", lead(|t| t.external_triggers = 1)),
             ("clipboard", lead(|t| t.copies_to_clipboard = 1)),
+            ("steered", lead(|t| t.results_steer_later_steps = true)),
             (
                 "write",
                 lead(|t| t.file_writes = vec![write_file("n.txt", WriteKind::Overwrite, WritePlace::WorkflowData)]),
@@ -720,6 +728,16 @@ mod tests {
         let all = prompt_text(&p).plain();
         assert!(all.contains("Can modify its own files"), "{all}");
         assert!(!all.contains("data or cache folder"), "{all}");
+    }
+
+    #[test]
+    fn script_filter_steering_is_stated() {
+        let t = TrustSummary {
+            results_steer_later_steps: true,
+            ..TrustSummary::default()
+        };
+        let text = capability_lines(&t).join("\n");
+        assert!(text.contains("Its results can change what later steps do"), "{text}");
     }
 
     #[test]
