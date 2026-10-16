@@ -9,6 +9,7 @@ Everything that lets something other than the keyboard drive a running Ashdash. 
 | `ashdash://` URLs | `urlscheme.rs` | **untrusted**: allow-list, rate limit, per-workflow consent |
 | AppleScript / JXA | `scripting.rs`, `resources/Ashdash.sdef` | macOS Automation (TCC) consent |
 | Workflow hotkeys | `hotkeys.rs` | set by the workflow author; the reference launcher strips them on export |
+| Preferences window | `gui/prefs/` | a separate process that talks to the launcher only through files in the data folder (and `clear-usage` on the socket) |
 
 ## CLI and socket
 
@@ -18,15 +19,19 @@ Everything that lets something other than the keyboard drive a running Ashdash. 
 Protocol: one JSON line per request, one per answer.
 
 ```
-{"cmd":"ping"|"show"|"reload"|"quit"}
+{"cmd":"ping"|"show"|"reload"|"quit"|"prefs"|"clear-usage"}
 {"cmd":"search","text":"saf"}
 {"cmd":"trigger","bundle":"com.x","id":"go","arg":"..."}     -> large:true when the answer is Large Type text
 {"cmd":"theme","file":"/abs/path.alfredappearance"}
 ```
 
-CLI: `ashdash show | search <text> | trigger <bundle> <id> [arg] | reload | quit | theme <file>`. `show` and `search` start
+CLI: `ashdash show | search <text> | trigger <bundle> <id> [arg] | reload | quit | theme <file> | prefs`. `show` and `search` start
 the launcher when none runs; `trigger` runs in-process when none runs; `reload`/`quit` do nothing then; `theme` only
-parses. `ashdash import` also tells a running launcher to reload (new workflows, new hotkeys).
+parses. `prefs` starts the preferences window (`ashdash prefs-window`, an internal command) as its own process whether or not the
+launcher runs; the menu-bar item and `ashdash://prefs` do the same through the launcher (`{"cmd":"prefs"}`). `clear-usage` is sent by the
+preferences window's "Forget what I picked..." so the running launcher wipes its in-memory table and `usage.json`.
+`ashdash import [--yes] <file>` shows the trust summary and asks (details in [WORKFLOWS.md](WORKFLOWS.md)), installs, and then tells
+a running launcher to reload (new workflows, new hotkeys). The socket itself has **no import verb**.
 
 ## URL scheme `ashdash://` (never `reference://`)
 
@@ -35,6 +40,7 @@ ashdash://show
 ashdash://search?query=<text>                       (<= 1024 bytes)
 ashdash://trigger?bundle=<id>&name=<trigger id>&arg=<text>   (arg <= 4096 bytes)
 ashdash://reload
+ashdash://prefs                                     (no parameters; opens the preferences window)
 ashdash://theme?name=<file name>      -> <data>/themes/<name>.alfredappearance, plain names only
 ```
 
@@ -69,8 +75,16 @@ of `hotkeys.rs` for the table and which parts are inference): `hotkey` = `kVK_*`
 `focusedappvariable` exports the frontmost bundle id (`focusedapp` when the name is empty).
 Hotkeys share the launcher hotkey's `GlobalHotKeyManager` and are routed by `hotkeys::route` from the single process-wide handler.
 Conflicts (with the launcher or an earlier workflow) and unusable keys are warnings on stderr; first claim wins.
-Firing runs on a worker thread and starts the graph at the hotkey node (`Engine::execute` with `Action::Workflow{from_uid}`);
-re-registered on menu-bar Reload, `ashdash reload`, and after `ashdash import`.
+Firing runs on a worker thread and starts the graph at the hotkey node with `Engine::run_node(workflow_id, node_uid, arg, vars)`.
+The workflow is found by its **workflow id** (its folder name under `workflows/` or a `workflow_dirs` root), not by bundle id, so
+workflows without a bundle id work and duplicate bundle ids cannot make one hotkey run the other copy; `run_node` records no usage
+and is called only with node uids taken from an installed workflow's own hotkey objects (it is not reachable from the socket, the URL scheme or
+AppleScript, which use `run_trigger`). Disabled workflows get no hotkeys.
+Hotkeys are re-registered on menu-bar Reload, `ashdash reload`, after `ashdash import`, and by **live reload**: when a workflow
+folder, a `workflow_dirs` entry or the launcher hotkey changes in `config.json`, the registry follows the folders and launcher hotkey
+now in force. The `ashdash://trigger` consent check also reads the current `workflow_dirs`. Because that setting is watched, editing
+`workflow_dirs` activates the hotkeys and External Triggers of the new folder **without the import prompt**
+(see [SECURITY.md](SECURITY.md) section 3).
 
 Known gaps: `modsmode != 0` hotkeys are skipped; "selection in macOS" uses Cmd+C via System Events and briefly replaces the
 clipboard (the history watcher can see the probe and the selection); `leftcursor` is ignored.
