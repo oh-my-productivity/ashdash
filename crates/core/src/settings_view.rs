@@ -128,6 +128,13 @@ pub fn set(config: &mut Config, path: &str, raw: &str) -> Result<()> {
     if lookup(&view(&updated), path) != Some(&new) {
         bail!("invalid value for '{path}': {raw}");
     }
+    // A web search the engine would skip is refused here, not dropped later: only entries that
+    // are newly bad count, so an old bad entry never blocks unrelated edits or its own repair.
+    let was_bad = crate::websearch::checked(&config.web_searches).1.len();
+    let (_, now_bad) = crate::websearch::checked(&updated.web_searches);
+    if now_bad.len() > was_bad {
+        bail!("{}", now_bad.join("; "));
+    }
     *config = updated;
     Ok(())
 }
@@ -883,6 +890,31 @@ mod tests {
         assert_eq!(get(&c, "web_searches.0.keyword").unwrap(), json!("google"));
         assert!(get(&c, "clipboard.nope").is_err());
         assert!(get(&c, "web_searches.9999").is_err());
+    }
+
+    #[test]
+    fn set_refuses_a_web_search_url_the_engine_would_skip() {
+        // Re-review N6: `config set` used to accept it and the launcher dropped it silently.
+        let mut c = Config::default();
+        let before = serde_json::to_value(&c).unwrap();
+        for bad in [
+            "file:///etc/{query}",
+            "javascript:alert({query})",
+            "https://user:pw@x.test/?q={query}",
+            "https://x.test/",
+        ] {
+            let err = set(&mut c, "web_searches.0.url", bad).unwrap_err();
+            assert!(format!("{err:#}").contains("not allowed"), "{bad}: {err:#}");
+            assert_eq!(serde_json::to_value(&c).unwrap(), before, "{bad}: nothing is written");
+        }
+        set(&mut c, "web_searches.0.url", "https://example.test/?q={query}").unwrap();
+        assert_eq!(c.web_searches[0].url, "https://example.test/?q={query}");
+        // an entry that is already bad does not stop other, unrelated edits
+        c.web_searches[1].url = "file:///x/{query}".into();
+        set(&mut c, "max_results", "12").unwrap();
+        assert_eq!(c.max_results, 12);
+        // and the bad entry can be fixed
+        set(&mut c, "web_searches.1.url", "https://y.test/?q={query}").unwrap();
     }
 
     #[test]

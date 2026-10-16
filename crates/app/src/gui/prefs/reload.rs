@@ -165,6 +165,12 @@ impl HotReload {
                 format!("config.json could not be read ({e:#}); Ashdash is using the default settings."),
             );
         }
+        // Settings the engine had to leave out at start-up (a web search with a non-web URL):
+        // the same channel as a live reload, so the user is told even when nobody sees stderr.
+        if !me.engine.startup_warnings().is_empty() {
+            let text = me.engine.startup_warnings().join(" ");
+            me.problems.insert("settings", text);
+        }
         me.publish();
         me
     }
@@ -401,6 +407,10 @@ mod tests {
     }
 
     fn rig(tag: &str, config_file: Option<&[u8]>) -> Rig {
+        rig_with(tag, config_file, |_| {})
+    }
+
+    fn rig_with(tag: &str, config_file: Option<&[u8]>, tweak: impl FnOnce(&mut Config)) -> Rig {
         let root = std::env::temp_dir().join(format!("oa-reload-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
@@ -409,10 +419,11 @@ mod tests {
             std::fs::create_dir_all(&paths.data).unwrap();
             std::fs::write(paths.config_file(), bytes).unwrap();
         }
-        let config = Config {
+        let mut config = Config {
             app_dirs: vec![],
             ..Config::default()
         };
+        tweak(&mut config);
         let engine = Arc::new(Engine::with_env(
             paths.clone(),
             config,
@@ -508,6 +519,32 @@ mod tests {
         assert_eq!(r.notes.lock().unwrap().len(), 1);
         assert_eq!(st.pid, std::process::id());
         assert_eq!(st.hotkey_active, r.engine.config.hotkey);
+    }
+
+    #[test]
+    fn a_web_search_skipped_at_start_up_is_reported_like_a_live_reload_problem() {
+        // Re-review N6: at start-up the rejection was only an eprintln that a launcher started
+        // from Finder never shows.
+        let r = rig_with("startup-ws", None, |c| {
+            c.web_searches.push(ashdash_core::websearch::WebSearch {
+                keyword: "zork".into(),
+                title: "Zork".into(),
+                url: "file:///etc/{query}".into(),
+                fallback: false,
+            });
+        });
+        let st = status::read(&r.paths).unwrap();
+        assert!(
+            st.problems
+                .iter()
+                .any(|p| p.contains("zork") && p.contains("not allowed")),
+            "{:?}",
+            st.problems
+        );
+        assert_eq!(r.notes.lock().unwrap().len(), 1, "announced once");
+        // a clean start reports nothing
+        let r = rig("startup-clean", None);
+        assert!(status::read(&r.paths).unwrap().problems.is_empty());
     }
 
     #[test]

@@ -78,11 +78,27 @@ pub fn is_format_char(c: char) -> bool {
         | 0xE0020..=0xE007F)
 }
 
-/// Remove control and format characters, collapse whitespace runs and cap the length.
+/// Characters that draw nothing yet are neither whitespace nor format characters: Hangul and
+/// Braille fillers, Khmer inherent vowels, the combining grapheme joiner. Shown as a space.
+pub fn is_blank_looking(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x034F | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x2065 | 0x2800 | 0x3164 | 0xFFA0
+    )
+}
+
+/// Remove control and format characters, collapse whitespace runs (and blank-looking
+/// characters, shown as spaces) and cap the length.
 pub fn clean(s: &str, max: usize) -> String {
     let flat: String = s
         .chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .map(|c| {
+            if c.is_whitespace() || is_blank_looking(c) {
+                ' '
+            } else {
+                c
+            }
+        })
         .filter(|c| !c.is_control() && !is_format_char(*c))
         .collect();
     let mut out = String::new();
@@ -783,6 +799,40 @@ mod tests {
         assert!(t.title.chars().count() < 120, "{}", t.title.chars().count());
         assert!(t.lines[0].chars().count() <= "Name: ".len() + MAX_NAME);
         assert!(t.plain().chars().count() < 3000);
+    }
+
+    #[test]
+    fn blank_looking_characters_are_collapsed_like_spaces() {
+        // Re-review N7: not format characters (so not hidden by the list above) but they draw
+        // nothing, so a field made of them looks empty and one containing them looks padded.
+        for c in [
+            '\u{3164}', '\u{115f}', '\u{1160}', '\u{ffa0}', '\u{2800}', '\u{17b4}', '\u{17b5}', '\u{034f}', '\u{2065}',
+        ] {
+            assert!(is_blank_looking(c), "{c:?}");
+            assert_eq!(clean(&format!("a{c}{c}b"), 80), "a b", "{c:?}");
+            assert_eq!(clean(&format!("{c}{c}"), 80), "", "{c:?}");
+        }
+        // plain Unicode whitespace of every width already collapses ...
+        for c in [
+            '\u{2000}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{205f}', '\u{3000}', '\u{a0}',
+        ] {
+            assert_eq!(clean(&format!("a{c}{c} b"), 80), "a b", "{c:?}");
+        }
+        // ... real characters and combining marks stay
+        for c in ['a', 'é', '世', '😀', '\u{301}', '\u{fe0f}'] {
+            assert!(!is_blank_looking(c), "{c:?}");
+        }
+        // an author field that only looks empty is reported as not stated
+        let mut p = preview();
+        p.author = "\u{3164}\u{2800}".into();
+        p.name = "\u{3164}".into();
+        let t = prompt_text(&p);
+        assert!(
+            t.lines.iter().any(|l| l.starts_with("Author: not stated")),
+            "{:?}",
+            t.lines
+        );
+        assert!(t.lines[0] == "Name: (unnamed)", "{:?}", t.lines[0]);
     }
 
     #[test]

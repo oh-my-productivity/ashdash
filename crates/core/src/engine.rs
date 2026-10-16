@@ -57,6 +57,8 @@ pub struct Engine {
     settings_lock: Mutex<()>,
     /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
     clip_env: Box<dyn clipboard::command::ClipEnv + Send + Sync>,
+    /// What was wrong with the configuration at start-up (web searches that were skipped).
+    startup_warnings: Vec<String>,
 }
 
 /// Configuration and the providers built from it, swapped as one unit.
@@ -217,7 +219,10 @@ impl Engine {
         // refreshed and watched in the background afterwards.
         let apps = Arc::new(RwLock::new(Vec::new()));
         let app_index = Arc::new(AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps)));
-        let providers = providers::registry_for(&config, &deps);
+        let (providers, startup_warnings) = providers::registry_checked(&config, &deps);
+        for w in &startup_warnings {
+            eprintln!("ashdash: {w}");
+        }
         let e = Engine {
             paths,
             config,
@@ -235,9 +240,17 @@ impl Engine {
             content_gate: Arc::default(),
             settings_lock: Mutex::new(()),
             clip_env: Box::new(clipboard::command::SystemEnv::default()),
+            startup_warnings,
         };
         e.reload_content();
         e
+    }
+
+    /// What was wrong with the configuration this engine started with (web searches that were
+    /// left out because their URL is not a plain http(s) URL, ...). The window reports these the
+    /// same way as problems found by a live reload.
+    pub fn startup_warnings(&self) -> &[String] {
+        &self.startup_warnings
     }
 
     /// Replace the pasteboard / key-press backend used by clipboard actions
@@ -1636,6 +1649,26 @@ mod tests {
         wait_until("the second refresh", || {
             !e.reload_pending() && !e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra")
         });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_up_remembers_what_was_wrong_with_the_configuration() {
+        let (e0, root) = engine("startup-ok");
+        assert!(e0.startup_warnings().is_empty());
+        let mut config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        config.web_searches.push(crate::websearch::WebSearch {
+            keyword: "zork".into(),
+            title: "Zork".into(),
+            url: "file:///etc/{query}".into(),
+            fallback: false,
+        });
+        let e = Engine::new(Paths::under(&root.join("other")), config);
+        assert_eq!(e.startup_warnings().len(), 1);
+        assert!(e.startup_warnings()[0].contains("zork"), "{:?}", e.startup_warnings());
         let _ = std::fs::remove_dir_all(root);
     }
 
