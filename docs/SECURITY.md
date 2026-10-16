@@ -61,10 +61,10 @@ Low = hardening, robustness, privacy details.
 | SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) | Open by design (documented) |
 | SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
 | SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
-| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `confine::tests` | Fixed (core-followups) |
+| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (wave 3 review, 9c) |
 | SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups); a `config` field that calls `Usage::set_enabled` and a "clear learning data" command are still to do (WP8 General page) |
 | SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
-| SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b |
+| SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b; now keyed by workflow id (9c) |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -436,4 +436,44 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 
 SEC-01, 02, 04-12, 15, 16, 17, 18 (except opt-out wiring), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
 `Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. Nothing is without a status.
+
+## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
+
+Items refer to `docs/reviews/wave3.md`.
+
+- **Hotkeys (item 2, SEC-20)** `Engine::run_node(workflow_id, node_uid, arg, vars)` now finds the workflow by its directory
+  identity (`Workflow::id`), not by bundle id: workflows without a bundle id work, and a copy of a bundle id in a second
+  `workflow_dirs` root can no longer be run by the other copy's hotkey. `hotkeys::collect` refuses (with a warning) a second
+  enabled workflow whose *folder name* is already taken, since those two cannot be told apart. `run_node` documents that
+  `node_uid` must come from an installed workflow's own hotkey objects; the grep check of SEC-20 still holds
+  (`ipc.rs`, `urlscheme.rs`, `automation.rs` call only `run_trigger`).
+- **Live reload (item 7)** `WorkflowHotkeys` follows `workflow_dirs` and the launcher hotkey now in force
+  (`set_extra_dirs`, `set_launcher_hotkey`, called from `prefs/reload.rs`); `EngineHost::external_trigger` (the
+  `ashdash://trigger` consent lookup) and the start-up hotkey hint read `Engine::config_now()`. Editing `config.json` is
+  therefore a live control plane: a new `workflow_dirs` entry registers that folder's hotkeys and external triggers without
+  the import prompt. This is not a privilege boundary (a same-user process can already run anything the user can), but the
+  import prompt is *not* the only way a workflow becomes active; `workflow_dirs` and `config.json` are another. (Item 15.)
+- **No scan on the window thread (item 9)** `Engine::apply_config` returns at once when `workflow_dirs` changed; the rescan
+  runs in `Engine::reload_content_background` (`reload_pending()` is true meanwhile, so the "Reloading..." state shows).
+  The hotkey registry still reads the folders itself on the window thread when it re-registers.
+- **Web-search URLs (item 8)** `websearch::validate_url_template` is the single rule (http/https only, a host, no userinfo,
+  only `{query}`); `providers::registry_checked` skips web searches that fail it, for hand edits, `ashdash config set` and the
+  preferences window alike, and `ApplyReport.warnings` / the launcher status list each skipped entry. `prefs_model` calls the
+  same function.
+- **SEC-17 (item 10)** `apps.rs::icns_path` passes the *bundle* as the confinement root and `Contents/Resources/<name>` as the
+  relative path, so a `Resources` that is a symlink to another folder no longer exposes that folder's images.
+  `confine::confined_file_strict` additionally refuses a root that is itself a symlink (not used for app bundles or workflow
+  folders: both may legitimately be links). Hard links to files outside the root are *not* detected; creating one needs prior
+  local access to the same volume.
+- **Config writers (item 11)** `Config::edit_locked(paths, |cfg| ...)` / `config::ConfigLock` take an exclusive `flock` on
+  `<data>/run/config.lock` (0600) around read-modify-write; `Store::edit` (prefs), `ashdash config set` and `install_theme`
+  use it. Reads are strict (an unreadable file is never replaced by defaults) and nothing is written when nothing changed.
+  Keys this build does not know are still dropped by a save (`Config` has no catch-all); a file from a newer config version is
+  refused. Writers that bypass the lock (an editor, `jq`) are not coordinated.
+- **PATH (item 13)** `actions::system_program` maps `open`, `osascript`, `osacompile`, `ditto`, `qlmanage`, `sips`, `mdfind`,
+  `unzip`, `tar`, `pbcopy`, `pbpaste`, `pmset` and `screencapture` to fixed `/usr/bin` (`/usr/sbin`) paths in `actions::build`, in
+  the `engine.rs` open/reveal/copy/osascript wrappers and in the icon conversion. Other spawn sites (`system.rs`,
+  `workflow/filefilter.rs`, `clipboard/restore.rs`) are owned by other packages and still use bare names.
+- **Script Filter reruns (item 12)** `schedule::RERUN_CEILING` (5 minutes): reruns of one request stop that long after its first
+  run; typing (a new request) starts a new period. Mouse or arrow-key activity does not extend it.
 
