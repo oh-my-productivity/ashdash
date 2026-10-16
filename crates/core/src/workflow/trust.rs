@@ -436,7 +436,8 @@ mod tests {
     #[test]
     fn write_file_targets_are_classified_like_the_executor_resolves_them() {
         let one = |cfg: serde_json::Value| {
-            let s = wf(json!([{"uid": "W", "type": "alfred.workflow.output.writefile", "config": cfg}])).trust_summary();
+            let s =
+                wf(json!([{"uid": "W", "type": "alfred.workflow.output.writefile", "config": cfg}])).trust_summary();
             s.file_writes.into_iter().next()
         };
         // relative paths land in the workflow's own folders
@@ -447,8 +448,12 @@ mod tests {
             one(json!({"filename": "a.txt", "relativepathmode": 1})).unwrap().place,
             WritePlace::WorkflowCache
         );
-        let f = one(json!({"filename": "run.sh", "relativepathmode": 2, "type": 2, "createintermediatefolders": true})).unwrap();
-        assert_eq!((f.place, f.kind, f.creates_folders), (WritePlace::WorkflowFolder, WriteKind::Prepend, true));
+        let f = one(json!({"filename": "run.sh", "relativepathmode": 2, "type": 2, "createintermediatefolders": true}))
+            .unwrap();
+        assert_eq!(
+            (f.place, f.kind, f.creates_folders),
+            (WritePlace::WorkflowFolder, WriteKind::Prepend, true)
+        );
         // ... unless they climb out, are absolute, or are decided at run time
         for (name, dynamic) in [
             ("../../.zshrc", false),
@@ -463,11 +468,19 @@ mod tests {
             assert_eq!(w.dynamic, dynamic, "{name}");
             assert!(w.is_outside());
         }
-        assert!(one(json!({"filename": "sub/{query}.txt"})).unwrap().describe().contains("decided at run time"));
+        assert!(
+            one(json!({"filename": "sub/{query}.txt"}))
+                .unwrap()
+                .describe()
+                .contains("decided at run time")
+        );
         // no file name: the executor stops, nothing is written
         assert!(one(json!({"filename": "  "})).is_none());
         // long templates are cut
-        assert_eq!(one(json!({"filename": "x".repeat(900)})).unwrap().path.chars().count(), 500);
+        assert_eq!(
+            one(json!({"filename": "x".repeat(900)})).unwrap().path.chars().count(),
+            500
+        );
     }
 
     #[test]

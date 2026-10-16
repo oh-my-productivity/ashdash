@@ -590,7 +590,10 @@ mod tests {
     fn a_workflow_that_only_writes_a_file_is_not_called_harmless() {
         let all = prompt_text(&only_write_file()).plain();
         assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
-        assert!(all.contains("Runs no scripts or Terminal commands, but it can"), "{all}");
+        assert!(
+            all.contains("Runs no scripts or Terminal commands, but it can"),
+            "{all}"
+        );
         assert!(all.contains("Writes files anywhere"), "{all}");
         assert!(all.contains("appends to ~/.zshrc"), "{all}");
     }
@@ -624,7 +627,11 @@ mod tests {
     fn writes_are_split_into_outside_and_in_its_own_folders() {
         let mut p = only_write_file();
         p.trust.file_writes = vec![
-            write_file("~/Library/LaunchAgents/x.plist", WriteKind::Overwrite, WritePlace::Anywhere),
+            write_file(
+                "~/Library/LaunchAgents/x.plist",
+                WriteKind::Overwrite,
+                WritePlace::Anywhere,
+            ),
             write_file("{query}", WriteKind::Prepend, WritePlace::Anywhere),
             write_file("notes.txt", WriteKind::Append, WritePlace::WorkflowData),
         ];
@@ -651,7 +658,11 @@ mod tests {
         });
         let t = prompt_text(&p);
         assert_eq!(t.title, "Replace workflow “Weather”?");
-        assert!(t.plain().contains("This replaces “Weather” 1.0 (installed)."), "{}", t.plain());
+        assert!(
+            t.plain().contains("This replaces “Weather” 1.0 (installed)."),
+            "{}",
+            t.plain()
+        );
         assert!(!t.plain().contains("Settings saved for this workflow"));
         p.saved_settings = true;
         let all = prompt_text(&p).plain();
@@ -677,7 +688,10 @@ mod tests {
         // right-to-left override, isolates, zero-width space/joiner, BOM, soft hyphen, tag chars
         let evil = "pa\u{202e}yp\u{2066}al\u{2069}\u{200b}\u{200d}\u{feff}\u{ad}\u{e0041}";
         assert_eq!(clean(evil, 80), "paypal");
-        for c in ['\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{200e}', '\u{200f}', '\u{061c}', '\u{2060}'] {
+        for c in [
+            '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{200e}', '\u{200f}', '\u{061c}', '\u{2060}',
+        ] {
             assert!(is_format_char(c), "{c:?}");
             assert_eq!(clean(&format!("a{c}b"), 80), "ab");
         }
@@ -708,10 +722,16 @@ mod tests {
         assert_eq!(prompt_key(false, enter, true, late), PromptKey::Install);
         // key-repeat events of a Return that is still down do not, however long the prompt is up
         assert_eq!(prompt_key(false, enter, false, late), PromptKey::Nothing);
-        assert_eq!(prompt_key(false, enter, false, Duration::from_secs(60)), PromptKey::Nothing);
+        assert_eq!(
+            prompt_key(false, enter, false, Duration::from_secs(60)),
+            PromptKey::Nothing
+        );
         // too early, or with a modifier, even a fresh press does not
         assert_eq!(prompt_key(false, enter, true, Duration::ZERO), PromptKey::Nothing);
-        let cmd = Mods { cmd: true, ..Mods::NONE };
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::NONE
+        };
         assert_eq!(prompt_key(false, Some(cmd), true, late), PromptKey::Nothing);
         // no Return at all
         assert_eq!(prompt_key(false, None, true, late), PromptKey::Nothing);
@@ -812,7 +832,12 @@ mod tests {
 
         // "n", an unanswerable question (no terminal), and --yes
         write("Other", "t.cli.other", "OTHER");
-        let no = cli_import(engine.stage_workflow(&pkg).unwrap(), false, |_| Ok(false), |_| panic!("no install"));
+        let no = cli_import(
+            engine.stage_workflow(&pkg).unwrap(),
+            false,
+            |_| Ok(false),
+            |_| panic!("no install"),
+        );
         assert_eq!(no.unwrap_err().to_string(), "not installed");
         let err = cli_import(
             engine.stage_workflow(&pkg).unwrap(),

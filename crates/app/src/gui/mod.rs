@@ -499,7 +499,10 @@ mod tests {
 
     #[test]
     fn a_destructive_item_asks_first_and_runs_on_the_second_return() {
-        assert_eq!(confirm_step(None, "k", Some(ASK.into()), true), ConfirmStep::Ask(ASK.into()));
+        assert_eq!(
+            confirm_step(None, "k", Some(ASK.into()), true),
+            ConfirmStep::Ask(ASK.into())
+        );
         assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into()), true), ConfirmStep::Run);
     }
 

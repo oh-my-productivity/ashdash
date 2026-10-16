@@ -65,6 +65,11 @@ Low = hardening, robustness, privacy details.
 | SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups); a `config` field that calls `Usage::set_enabled` and a "clear learning data" command are still to do (WP8 General page) |
 | SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
 | SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b |
+| SEC-30 | Medium | Import prompt said "Runs no scripts and no terminal commands" for a workflow whose only object is Write File (append to `~/.zshenv`, write a LaunchAgent plist = persistence) | `workflow/trust.rs`, `gui/importprompt.rs` | `write_file_is_reported_and_is_never_passive`, `write_file_targets_are_classified_like_the_executor_resolves_them` (trust.rs); `a_workflow_that_only_writes_a_file_is_not_called_harmless`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed (FIX-TRUST), see 9c |
+| SEC-31 | Medium | Every import path previewed the package and then re-opened the same path to install (TOCTOU: the file could change while the prompt was up) | `workflow/package.rs`, `engine.rs`, `gui/glue.rs`, `mac/opendocs.rs`, `main.rs`, `gui/prefs/workflows.rs` | `the_installed_bytes_are_the_previewed_bytes_even_if_the_file_is_swapped` (import_staging.rs); `the_launcher_prompt_installs_the_copy_it_showed`, `the_cli_installs_the_staged_copy_or_nothing`, `finder_import_installs_the_copy_the_dialog_described`, `installing_from_the_prefs_prompt_uses_the_staged_copy` | Fixed (FIX-TRUST), see 9c |
+| SEC-32 | Medium | A held Return (key repeat) satisfied "press again to confirm" for destructive actions and the import prompt's guard | `gui/keys.rs`, `gui/mod.rs`, `gui/importprompt.rs` | `a_held_return_never_answers_the_question` (mod.rs), `a_held_return_never_installs_by_repeating`, `a_first_press_is_fresh_and_its_repeats_are_not` (keys.rs) | Fixed (FIX-TRUST), see 9c |
+| SEC-33 | Low | Importing a package whose bundle id matches an installed workflow replaced it silently (outside the prefs window) and it inherited the saved settings (API tokens) | `workflow/package.rs`, `gui/importprompt.rs` | `the_preview_reports_what_would_be_replaced_and_inherited` (import_staging.rs), `a_replacement_is_announced_with_the_installed_name_and_version` | Fixed by disclosure; inheritance kept on purpose (reference-compatible), see 9c |
+| SEC-34 | Low | Prefs import prompt showed package text raw; Unicode format characters (bidi override, zero-width) survived the launcher's sanitising | `gui/importprompt.rs`, `gui/prefs/workflows.rs` | `format_characters_are_stripped_and_long_names_are_capped`, `the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless` | Fixed (FIX-TRUST), see 9c |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -432,8 +437,48 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   it now warms up and takes the best of five independent rounds (a real regression slows every round) against the
   unchanged 25 ms ceiling and prints all rounds.
 
+## 9c. Fix log (wave 3 review, FIX-TRUST, branch `fix/w3-trust`)
+
+- **SEC-30** `TrustSummary` (`workflow/trust.rs`) gained `file_writes` (one `FileWriteInfo` per Write File object: the file
+  name template as written, write kind overwrite/append/prepend, where it lands, whether it is decided at run time) and
+  `copies_to_clipboard`; `is_passive()` is true only when the workflow can do none of the things the summary reports.
+  Classification follows the executor (`exec.rs`): a relative path lands in the workflow's data, cache or own folder
+  (`relativepathmode`); an absolute or `~` path, a path with `..`, or **any path with a `{placeholder}`** (a query or variable
+  can bring in `/` or `..`) is "anywhere". The prompt (`importprompt::capability_lines`, now the only wording, also used by the
+  workflow list and the prefs window) says "Runs no scripts and no terminal commands." only for a passive workflow; otherwise
+  it leads with "Runs no scripts or Terminal commands, but it can do the following:" and lists the writes (outside / in its own
+  folders), clipboard replacement, URL schemes, external files and triggers. *Decision:* Copy to Clipboard is listed (it can
+  replace what the user later pastes into a terminal); Reveal in Finder (`action.revealfile`) is **not**: it only selects a file
+  in Finder and neither opens, runs nor changes anything. Notification, Large Type and the other output objects are likewise
+  harmless. Open File/Launch Files that run an app are still only visible as "files outside its folder" (unchanged).
+- **SEC-31** `workflow::stage_package(&Paths, file)` opens the package **once**: it extracts into a private (0700) directory
+  `<data>/import-staging/.import-*` (same volume as the workflows folder, so the install is a rename), parses and describes
+  it (`StagedPackage::preview()`); `StagedPackage::install()` moves exactly that tree into place and the file is never read
+  again. Dropping a `StagedPackage` (Esc, hide, a newer prompt, "no") deletes the copy; copies older than 24 h from a crashed
+  run are swept when the next one is staged; if the copy has vanished, install fails with "open the file again" instead of
+  installing something else. All four paths use it (`Engine::stage_workflow` / `install_staged`): launcher prompt, Finder
+  dialog, `ashdash import`, prefs window. `import_package(file, dir)` remains the unconfirmed one-shot for tests and trusted
+  scripts; `Engine::import_workflow` is stage + install. `settings_view::preview_package` was merged into this single
+  implementation. Residual: the staged tree lives in the user's own data folder, so a same-user process can still modify it
+  while the prompt is up (it could equally edit the installed workflow afterwards).
+- **SEC-32** `gui/keys.rs::fresh_press` looks at the raw egui events: a Return/Cmd+number counts as a deliberate answer only if
+  one of its key events has `repeat == false`. `confirm_step(..., fresh)` returns `Wait` for a repeat while the question is up,
+  `importprompt::prompt_key` ignores repeats for the import prompt (in addition to the 600 ms guard). Harmless actions repeat as
+  before; a repeat before anything was asked still only asks. Mouse clicks count as fresh. The original press that selected
+  "Install Workflow..." can therefore no longer confirm it by being held.
+- **SEC-33** The preview carries `replaces` (name and version of the installed workflow with the same destination folder) and
+  `saved_settings` (a `workflow-config/<id>.json` exists). Every prompt says "This replaces "X" 1.0 (installed)." (title
+  "Replace workflow ...") and, when values exist, that "Settings saved for this workflow identifier are kept and the new package
+  can read them (they may include tokens or passwords)". *Decision:* saved values stay keyed by bundle id and are inherited,
+  exactly like the reference launcher (an update must keep the user's configuration); the answer to "a hostile package claims a trusted bundle id" is
+  the disclosure, since the package's own scripts could read those files anyway.
+- **SEC-34** `importprompt::clean` strips Unicode format characters (category Cf: bidi embeddings/overrides/isolates,
+  zero-width space/joiners, BOM, soft hyphen, tag characters; explicit table `is_format_char`, no new dependency) besides control
+  characters, collapses whitespace and caps every field (name 80, other fields 160, lists with "+N more"). The prefs window
+  renders `prompt_text` (same cleaning, author shown) instead of its own raw labels.
+
 ### Status of every finding (checked in core-followups)
 
 SEC-01, 02, 04-12, 15, 16, 17, 18 (except opt-out wiring), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
-`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. Nothing is without a status.
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure. Nothing is without a status.
 

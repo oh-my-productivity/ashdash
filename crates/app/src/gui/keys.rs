@@ -303,14 +303,21 @@ mod tests {
     fn a_first_press_is_fresh_and_its_repeats_are_not() {
         assert!(fresh_press(&[key(Key::Enter, true, false)], Key::Enter));
         assert!(!fresh_press(&[key(Key::Enter, true, true)], Key::Enter));
-        assert!(!fresh_press(&[key(Key::Enter, true, true), key(Key::Enter, true, true)], Key::Enter));
+        assert!(!fresh_press(
+            &[key(Key::Enter, true, true), key(Key::Enter, true, true)],
+            Key::Enter
+        ));
         // a release, another key, or nothing at all is not a press of this key
         assert!(!fresh_press(&[key(Key::Enter, false, false)], Key::Enter));
         assert!(!fresh_press(&[key(Key::Num1, true, false)], Key::Enter));
         assert!(!fresh_press(&[], Key::Enter));
         // a release-and-press inside one frame still counts as a new press
         assert!(fresh_press(
-            &[key(Key::Enter, true, true), key(Key::Enter, false, false), key(Key::Enter, true, false)],
+            &[
+                key(Key::Enter, true, true),
+                key(Key::Enter, false, false),
+                key(Key::Enter, true, false)
+            ],
             Key::Enter
         ));
     }

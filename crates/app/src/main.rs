@@ -117,12 +117,9 @@ fn main() -> Result<()> {
             // package is opened once; what is shown is the staged copy that gets installed.
             let staged = ashdash_core::workflow::stage_package(&paths, &file)?;
             let sock = socket_path(&paths);
-            let dest = gui::importprompt::cli_import(
-                staged,
-                yes,
-                gui::importprompt::ask_yes_no,
-                |staged| Engine::new(paths, config).install_staged(staged),
-            )?;
+            let dest = gui::importprompt::cli_import(staged, yes, gui::importprompt::ask_yes_no, |staged| {
+                Engine::new(paths, config).install_staged(staged)
+            })?;
             println!("installed to {}", dest.display());
             // Best effort: let a running launcher pick up the new workflow and its hotkeys.
             let _ = ipc::send(&sock, &ipc::Request::Reload, CONTROL_TIMEOUT);

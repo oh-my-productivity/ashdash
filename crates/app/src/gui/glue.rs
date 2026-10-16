@@ -133,10 +133,7 @@ impl LauncherApp {
         self.status = Some("Reading the workflow…".into());
         let (engine, tx, ctx) = (std::sync::Arc::clone(&self.engine), self.glue.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = engine
-                .stage_workflow(&path)
-                .map(Box::new)
-                .map_err(|e| format!("{e:#}"));
+            let r = engine.stage_workflow(&path).map(Box::new).map_err(|e| format!("{e:#}"));
             let _ = tx.send(AsyncMsg::Preview(r));
             ctx.request_repaint();
         });

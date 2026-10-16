@@ -114,7 +114,11 @@ fn stale_staging_leftovers_are_swept_but_fresh_ones_are_not() {
     let engine = env.engine();
     let root = env.paths.data.join("import-staging");
     std::fs::create_dir_all(&root).unwrap();
-    let (old, fresh, other) = (root.join(".import-old"), root.join(".import-fresh"), root.join("keep-me"));
+    let (old, fresh, other) = (
+        root.join(".import-old"),
+        root.join(".import-fresh"),
+        root.join("keep-me"),
+    );
     for d in [&old, &fresh, &other] {
         std::fs::create_dir_all(d).unwrap();
     }

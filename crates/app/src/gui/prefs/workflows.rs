@@ -411,7 +411,11 @@ mod tests {
 </array></dict></plist>"#
         );
         let p = dir.join("h.alfredworkflow");
-        std::fs::write(&p, crate::gui::importprompt::test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();
+        std::fs::write(
+            &p,
+            crate::gui::importprompt::test_zip::stored(&[("info.plist", plist.as_bytes())]),
+        )
+        .unwrap();
         p
     }
 

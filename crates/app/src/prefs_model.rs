@@ -1230,7 +1230,10 @@ mod tests {
             ..TrustSummary::default()
         };
         let lines = trust_lines(&t);
-        assert!(!lines[0].contains("Runs no scripts and no terminal commands"), "{lines:?}");
+        assert!(
+            !lines[0].contains("Runs no scripts and no terminal commands"),
+            "{lines:?}"
+        );
         assert!(lines.iter().any(|l| l.contains("appends to ~/.zshenv")), "{lines:?}");
     }
 
