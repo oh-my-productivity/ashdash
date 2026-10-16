@@ -26,6 +26,23 @@ use super::script::safe_key;
 use super::{TrustSummary, Workflow};
 use crate::config::Paths;
 
+/// File extensions of the reference launcher workflow packages (the reference launcher all use the same zip format), lower
+/// case, without the dot. The launcher, Finder opens, the CLI and the preferences window share
+/// this list.
+pub const WORKFLOW_PACKAGE_EXTENSIONS: [&str; 4] = [
+    "alfredworkflow",
+    "alfred3workflow",
+    "alfred4workflow",
+    "alfred5workflow",
+];
+
+/// Whether `path` has one of the [`WORKFLOW_PACKAGE_EXTENSIONS`] (case-insensitive).
+pub fn is_workflow_package(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| WORKFLOW_PACKAGE_EXTENSIONS.iter().any(|w| e.eq_ignore_ascii_case(w)))
+}
+
 /// Most entries (files, directories, links) an archive may contain.
 pub const MAX_ENTRIES: usize = 2_000;
 /// Most uncompressed bytes an archive may expand to.
@@ -513,6 +530,20 @@ fn check_link(rel: &Path, target: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_reference_package_extension_is_recognised() {
+        use super::{WORKFLOW_PACKAGE_EXTENSIONS, is_workflow_package};
+        use std::path::Path;
+        assert_eq!(WORKFLOW_PACKAGE_EXTENSIONS.len(), 4);
+        for e in WORKFLOW_PACKAGE_EXTENSIONS {
+            assert!(is_workflow_package(Path::new(&format!("/x/a.{e}"))), "{e}");
+            assert!(is_workflow_package(Path::new(&format!("a.{}", e.to_uppercase()))), "{e} upper");
+        }
+        for no in ["a.alfred2workflow", "a.zip", "alfredworkflow", "a.alfredworkflow.txt", "", "a."] {
+            assert!(!is_workflow_package(Path::new(no)), "{no:?}");
+        }
+    }
+
     use super::*;
     use crate::config::Paths;
 

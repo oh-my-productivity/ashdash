@@ -94,7 +94,7 @@ impl PrefsApp {
                     self.choose_file(
                         Purpose::Workflow,
                         "Choose a workflow (.alfredworkflow)",
-                        "alfredworkflow",
+                        &ashdash_core::workflow::WORKFLOW_PACKAGE_EXTENSIONS,
                     );
                 }
                 let resp = ui.add(

@@ -4,22 +4,22 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 
-/// Ask for one file whose name ends in `extension`. `None` when cancelled or unavailable.
-pub fn choose_file(prompt: &str, extension: &str) -> Option<PathBuf> {
+/// Ask for one file whose name ends in one of `extensions`. `None` when cancelled or unavailable.
+pub fn choose_file(prompt: &str, extensions: &[&str]) -> Option<PathBuf> {
     let out = ashdash_core::actions::system_command("osascript")
         .args([
             "-e",
             "on run argv",
             "-e",
-            "set f to choose file with prompt (item 1 of argv) of type {item 2 of argv}",
+            "set f to choose file with prompt (item 1 of argv) of type (items 2 thru -1 of argv)",
             "-e",
             "return POSIX path of f",
             "-e",
             "end run",
             "--",
             prompt,
-            extension,
         ])
+        .args(extensions)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

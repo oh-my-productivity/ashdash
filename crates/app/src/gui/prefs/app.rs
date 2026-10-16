@@ -25,6 +25,19 @@ pub enum Purpose {
     Snippets,
 }
 
+/// What a file dropped on the window is for, by extension (case-insensitive). Workflow packages
+/// use the extension list shared with the launcher and Finder opens.
+pub fn drop_target(path: &std::path::Path) -> Option<Purpose> {
+    if ashdash_core::workflow::is_workflow_package(path) {
+        return Some(Purpose::Workflow);
+    }
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "alfredappearance" => Some(Purpose::Theme),
+        "alfredsnippets" => Some(Purpose::Snippets),
+        _ => None,
+    }
+}
+
 /// Results of work done off the UI thread.
 pub enum Task {
     Picked(Purpose, Option<PathBuf>),
@@ -158,37 +171,32 @@ impl PrefsApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         for f in dropped {
             let path = f.path().to_path_buf();
-            match path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("alfredworkflow") => {
+            match drop_target(&path) {
+                Some(Purpose::Workflow) => {
                     self.page = Page::Workflows;
                     self.enter_page();
                     self.start_preview(path);
                 }
-                Some("alfredappearance") => {
+                Some(Purpose::Theme) => {
                     self.page = Page::General;
                     self.enter_page();
                     self.import_theme(&path);
                 }
-                Some("alfredsnippets") => {
+                Some(Purpose::Snippets) => {
                     self.page = Page::Features;
                     self.enter_page();
                     self.import_snippets(&path);
                 }
-                _ => {}
+                None => {}
             }
         }
     }
 
     /// Ask for a file in a thread; the answer arrives as a [`Task`].
-    pub(super) fn choose_file(&self, purpose: Purpose, prompt: &'static str, extension: &'static str) {
+    pub(super) fn choose_file(&self, purpose: Purpose, prompt: &'static str, extensions: &'static [&'static str]) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let path = super::dialogs::choose_file(prompt, extension);
+            let path = super::dialogs::choose_file(prompt, extensions);
             let _ = tx.send(Task::Picked(purpose, path));
             ctx.request_repaint();
         });
@@ -359,5 +367,26 @@ mod tests {
         app.poll_disk();
         assert_eq!(app.cfg.max_results, 20);
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use std::path::Path;
+
+    use super::{Purpose, drop_target};
+
+    #[test]
+    fn the_drop_zone_accepts_every_workflow_extension_the_launcher_does() {
+        for ext in ashdash_core::workflow::WORKFLOW_PACKAGE_EXTENSIONS {
+            for name in [format!("a.{ext}"), format!("A.{}", ext.to_uppercase())] {
+                assert_eq!(drop_target(Path::new(&name)), Some(Purpose::Workflow), "{name}");
+            }
+        }
+        assert_eq!(drop_target(Path::new("x.alfredappearance")), Some(Purpose::Theme));
+        assert_eq!(drop_target(Path::new("x.ALFREDSNIPPETS")), Some(Purpose::Snippets));
+        for no in ["x.zip", "x", "x.alfred2workflow", "x.alfredworkflow.bak"] {
+            assert_eq!(drop_target(Path::new(no)), None, "{no}");
+        }
     }
 }

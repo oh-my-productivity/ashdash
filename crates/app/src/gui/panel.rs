@@ -26,18 +26,10 @@ pub const UI_INSTALL_PREFIX: &str = "ui:install:";
 /// Most applications offered under "Open With...".
 const OPEN_WITH_LIMIT: usize = 200;
 
-/// File extensions of the reference launcher workflow packages (all the same zip format).
-const WORKFLOW_EXTENSIONS: [&str; 4] = [
-    "alfredworkflow",
-    "alfred3workflow",
-    "alfred4workflow",
-    "alfred5workflow",
-];
-
+/// Whether `p` is a workflow package (one list for the whole app: core's
+/// `WORKFLOW_PACKAGE_EXTENSIONS`).
 pub fn is_workflow_package(p: &Path) -> bool {
-    p.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| WORKFLOW_EXTENSIONS.iter().any(|w| e.eq_ignore_ascii_case(w)))
+    ashdash_core::workflow::is_workflow_package(p)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
