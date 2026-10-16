@@ -209,7 +209,9 @@ What Ashdash does for you:
   * **files outside its folder** it refers to (absolute, `~` or `..` paths in Open File, Launch Files and script files);
   * its **External Triggers** (what another workflow or an `ashdash://` link can start);
   * a replacement notice and the saved-settings warning when the bundle id is already installed (see above).
-  "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`).
+  "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`); a workflow that
+  runs no code but does something else gets "Runs no scripts or Terminal commands, but it can do the following:" followed by the lines above
+  (checked with a package whose only object is a Write File that appends to `~/.zshenv`: the prompt says "Writes files anywhere your account can ... appends to ~/.zshenv").
   Reveal in Finder is deliberately not listed (it only selects a file). The text is built from the package's `info.plist`, with
   control characters and invisible Unicode formatting (right-to-left overrides, zero-width characters) removed and long
   values cut, so a package cannot disguise the prompt. Returning is guarded: the launcher prompt ignores Return for 600 ms
