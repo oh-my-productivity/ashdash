@@ -725,8 +725,10 @@ mod tests {
     #[test]
     fn files_opened_at_run_time_are_listed_and_not_called_harmless() {
         let sentence = "Runs no scripts and no terminal commands";
-        let mut t = TrustSummary::default();
-        t.opens_at_run_time = vec![INCOMING_ARGUMENT.into(), "{var:app}".into()];
+        let t = TrustSummary {
+            opens_at_run_time: vec![INCOMING_ARGUMENT.into(), "{var:app}".into()],
+            ..TrustSummary::default()
+        };
         let text = capability_lines(&t).join("\n");
         assert!(!text.contains(sentence), "{text}");
         assert!(
