@@ -335,6 +335,7 @@ impl eframe::App for LauncherApp {
         self.poll_automation(ctx);
         self.poll_theme_epoch();
         self.hot_reload.poll(&mut prefs::reload::Host {
+            paths: &self.engine.paths,
             manager: &mut self._hotkey_manager,
             hotkey_error: &mut self.hotkey_error,
             theme: &mut self.theme,

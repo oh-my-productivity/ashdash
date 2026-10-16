@@ -113,6 +113,17 @@ impl Automation {
         self.hotkeys.reload(manager);
     }
 
+    /// Follow a live settings change: the workflow folders the next
+    /// [`reload_hotkeys`](Self::reload_hotkeys) scans.
+    pub fn set_workflow_dirs(&mut self, paths: &ashdash_core::Paths, dirs: &[std::path::PathBuf]) {
+        self.hotkeys.set_extra_dirs(paths, dirs);
+    }
+
+    /// The launcher hotkey now in force (workflow hotkeys may not take it).
+    pub fn set_launcher_hotkey(&mut self, hotkey: Option<global_hotkey::hotkey::HotKey>) {
+        self.hotkeys.set_launcher_hotkey(hotkey);
+    }
+
     pub fn try_recv(&self) -> Option<AppEvent> {
         self.inbox.rx.try_recv().ok()
     }

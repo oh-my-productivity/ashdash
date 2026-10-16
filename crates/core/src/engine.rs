@@ -51,6 +51,8 @@ pub struct Engine {
     os: Arc<dyn Os>,
     /// Background reload bookkeeping (see [`Engine::reload`]).
     reload_gate: Arc<Mutex<ReloadGate>>,
+    /// Same bookkeeping for the workflow/snippet-only refresh started by [`Engine::apply_config`].
+    content_gate: Arc<Mutex<ContentGate>>,
     /// Serialises writes of per-workflow settings files.
     settings_lock: Mutex<()>,
     /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
@@ -75,6 +77,15 @@ struct ReloadGate {
     running: bool,
     /// Another reload was requested while one was running.
     again: bool,
+}
+
+/// Bookkeeping of the background workflow/snippet refresh: the roots of the *latest* request
+/// win, so a refresh queued behind a running one scans the newest folder list.
+#[derive(Default)]
+struct ContentGate {
+    running: bool,
+    again: bool,
+    roots: Vec<PathBuf>,
 }
 
 /// Everything a reload needs, owned so it can run on a background thread.
@@ -179,6 +190,7 @@ impl Engine {
             os: Arc::clone(&deps.os),
             deps,
             reload_gate: Arc::default(),
+            content_gate: Arc::default(),
             settings_lock: Mutex::new(()),
             clip_env: Box::new(clipboard::command::SystemEnv::default()),
         };
@@ -229,9 +241,47 @@ impl Engine {
         }
     }
 
-    /// Whether a background [`Engine::reload`] is still working.
+    /// Whether a background [`Engine::reload`] or content refresh is still working.
     pub fn reload_pending(&self) -> bool {
-        self.reload_gate.lock().unwrap().running
+        self.reload_gate.lock().unwrap().running || self.content_gate.lock().unwrap().running
+    }
+
+    /// Like [`Engine::reload_content`] but on a background thread: returns at once, requests
+    /// made while a refresh runs are merged into one extra pass over the newest folder list, and
+    /// [`Engine::reload_pending`] reports it. Queries keep using the old workflows meanwhile.
+    pub fn reload_content_background(&self) {
+        let job = self.reload_job();
+        {
+            let mut gate = self.content_gate.lock().unwrap();
+            gate.roots = job.workflow_roots.clone();
+            if gate.running {
+                gate.again = true;
+                return;
+            }
+            gate.running = true;
+        }
+        let gate = Arc::clone(&self.content_gate);
+        let worker_job = job;
+        let spawned = std::thread::Builder::new()
+            .name("ashdash-reload-content".into())
+            .spawn(move || {
+                let mut job = worker_job;
+                loop {
+                    job.run_content();
+                    let mut g = gate.lock().unwrap();
+                    if g.again {
+                        g.again = false;
+                        job.workflow_roots = g.roots.clone();
+                        continue;
+                    }
+                    g.running = false;
+                    break;
+                }
+            });
+        if spawned.is_err() {
+            self.content_gate.lock().unwrap().running = false;
+            self.reload_content();
+        }
     }
 
     /// Re-scan applications, workflows and snippets and return when done
@@ -284,7 +334,9 @@ impl Engine {
         let workflows_moved = new.workflow_dirs != old.workflow_dirs;
         *self.live.write().unwrap() = Some(Arc::new(Live { config: new, providers }));
         if workflows_moved {
-            self.reload_content();
+            // The folder scan can be slow and this runs on the window thread: refresh in the
+            // background (see `reload_pending`); queries use the old workflows until it lands.
+            self.reload_content_background();
         }
         report
     }
@@ -1471,6 +1523,40 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn apply_config_with_new_workflow_dirs_does_not_scan_on_the_calling_thread() {
+        let (e, root) = engine("apply-bg");
+        let extra = root.join("extra-workflows");
+        std::fs::create_dir_all(extra.join("copy")).unwrap();
+        let doc = json!({"name": "Extra", "bundleid": "extra.b", "objects": [], "connections": {}});
+        json_to_plist(&doc).to_file_xml(extra.join("copy").join("info.plist")).unwrap();
+        let e = Arc::new(e);
+        // Hold the workflow list so a synchronous scan could never finish its swap.
+        let guard = e.workflows.write().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&e);
+        std::thread::spawn(move || {
+            let mut c = worker.config_now();
+            c.workflow_dirs = vec![extra];
+            worker.apply_config(c);
+            let _ = tx.send(());
+        });
+        let returned = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(guard);
+        assert!(returned, "apply_config waited for the workflow rescan");
+        assert!(e.reload_pending() || e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        wait_until("the background refresh", || !e.reload_pending());
+        assert!(e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        // removing the folder drops its workflows again
+        let mut c = e.config_now();
+        c.workflow_dirs.clear();
+        e.apply_config(c);
+        wait_until("the second refresh", || {
+            !e.reload_pending() && !e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra")
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

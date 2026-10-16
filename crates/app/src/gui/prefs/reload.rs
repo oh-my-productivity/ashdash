@@ -57,12 +57,13 @@ pub trait Window {
     /// The hotkey registration is gone for good: show the startup hint again (`Some`) or not.
     fn set_hotkey_error(&mut self, error: Option<String>);
     fn set_theme(&mut self, theme: Theme);
-    /// Re-read workflow hotkeys (main thread).
-    fn reload_workflow_hotkeys(&mut self);
+    /// Re-read workflow hotkeys from `workflow_dirs` (the extra folders now in force; main thread).
+    fn reload_workflow_hotkeys(&mut self, workflow_dirs: &[std::path::PathBuf]);
 }
 
 /// The real launcher window.
 pub struct Host<'a> {
+    pub paths: &'a Paths,
     pub manager: &'a mut Option<GlobalHotKeyManager>,
     pub hotkey_error: &'a mut Option<String>,
     pub theme: &'a mut Theme,
@@ -71,7 +72,10 @@ pub struct Host<'a> {
 
 impl Window for Host<'_> {
     fn rebind_hotkey(&mut self, old: &str, new: &str) -> Result<(), String> {
-        hotkey::rebind(self.manager, old, new)
+        hotkey::rebind(self.manager, old, new)?;
+        // Workflow hotkeys must not take the key the launcher now owns.
+        self.automation.set_launcher_hotkey(new.parse().ok());
+        Ok(())
     }
 
     fn set_hotkey_error(&mut self, error: Option<String>) {
@@ -82,7 +86,8 @@ impl Window for Host<'_> {
         *self.theme = theme;
     }
 
-    fn reload_workflow_hotkeys(&mut self) {
+    fn reload_workflow_hotkeys(&mut self, workflow_dirs: &[std::path::PathBuf]) {
+        self.automation.set_workflow_dirs(self.paths, workflow_dirs);
         self.automation.reload_hotkeys(self.manager.as_ref());
     }
 }
@@ -168,7 +173,7 @@ impl HotReload {
             self.apply_disk_config(host);
         }
         if content {
-            host.reload_workflow_hotkeys();
+            host.reload_workflow_hotkeys(&self.engine.config_now().workflow_dirs);
         }
         self.publish();
     }
@@ -231,7 +236,7 @@ impl HotReload {
             if let Some(w) = &self.watcher {
                 w.set_extra_roots(&self.paths, &new.workflow_dirs);
             }
-            host.reload_workflow_hotkeys();
+            host.reload_workflow_hotkeys(&new.workflow_dirs);
         }
     }
 
@@ -305,6 +310,7 @@ mod tests {
         hotkey_error: Option<Option<String>>,
         themes: Vec<Theme>,
         workflow_hotkey_reloads: usize,
+        workflow_hotkey_dirs: Vec<Vec<std::path::PathBuf>>,
     }
 
     impl Window for FakeWindow {
@@ -318,8 +324,9 @@ mod tests {
         fn set_theme(&mut self, theme: Theme) {
             self.themes.push(theme);
         }
-        fn reload_workflow_hotkeys(&mut self) {
+        fn reload_workflow_hotkeys(&mut self, workflow_dirs: &[std::path::PathBuf]) {
             self.workflow_hotkey_reloads += 1;
+            self.workflow_hotkey_dirs.push(workflow_dirs.to_vec());
         }
     }
 
@@ -580,6 +587,23 @@ mod tests {
         }
         assert!(w.workflow_hotkey_reloads >= 1);
         assert!(r.engine.workflow_summaries().iter().any(|(n, _, _)| n == "Dropped"));
+    }
+
+    #[test]
+    fn workflow_hotkeys_are_reloaded_from_the_folders_now_in_force() {
+        let mut r = rig("hk-dirs", None);
+        let mut w = FakeWindow::default();
+        let mut c = Config::load(&r.paths);
+        c.workflow_dirs = vec![r.root.join("more")];
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.workflow_hotkey_dirs, vec![vec![r.root.join("more")]], "added folder");
+
+        let mut c = Config::load(&r.paths);
+        c.workflow_dirs.clear();
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        assert_eq!(w.workflow_hotkey_dirs.last(), Some(&Vec::new()), "removed folder");
     }
 
     fn cfg() -> Config {

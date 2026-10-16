@@ -471,6 +471,25 @@ impl WorkflowHotkeys {
         }
     }
 
+    /// Replace the folders searched for workflows (the managed folder is always kept first).
+    /// Takes effect at the next [`reload`](Self::reload).
+    pub fn set_extra_dirs(&mut self, paths: &Paths, extra_dirs: &[PathBuf]) {
+        let mut roots = vec![paths.workflows_dir()];
+        roots.extend(extra_dirs.iter().cloned());
+        self.roots = roots;
+    }
+
+    /// The launcher's own hotkey as registered right now; workflow hotkeys may not take it.
+    pub fn set_launcher_hotkey(&mut self, main_hotkey: Option<HotKey>) {
+        self.reserved = main_hotkey.into_iter().collect();
+    }
+
+    /// The folders searched and the reserved launcher hotkeys (for tests and diagnostics).
+    #[cfg(test)]
+    pub fn context(&self) -> (&[PathBuf], &[HotKey]) {
+        (&self.roots, &self.reserved)
+    }
+
     /// Re-read the workflows and replace all registrations.
     pub fn reload(&mut self, manager: Option<&GlobalHotKeyManager>) {
         if manager.is_none() && self.own_manager.is_none() {
@@ -783,6 +802,52 @@ mod tests {
         assert_eq!(specs[0].bundle_id, "x");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("dup"));
+    }
+
+    struct NoHost;
+    impl HotkeyHost for NoHost {
+        fn frontmost_bundle(&self) -> Option<String> {
+            None
+        }
+        fn read_argument(&self, _: ArgSource) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn run_node(&self, _: &HotkeySpec, _: &str, _: BTreeMap<String, String>) -> Outcome {
+            Outcome::Done
+        }
+        fn show_launcher(&self, _: Option<String>) {}
+        fn report(&self, _: Outcome) {}
+    }
+
+    #[test]
+    fn folders_and_launcher_hotkey_follow_live_changes() {
+        let paths = Paths::under(&std::env::temp_dir().join("oa-hk-ctx"));
+        let old = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::Space);
+        let mut w = WorkflowHotkeys::new(Arc::new(NoHost), &paths, &[PathBuf::from("/old")], Some(old));
+        assert_eq!(w.context().0, [paths.workflows_dir(), PathBuf::from("/old")]);
+
+        // folders added, removed
+        w.set_extra_dirs(&paths, &[PathBuf::from("/new1"), PathBuf::from("/new2")]);
+        assert_eq!(
+            w.context().0,
+            [paths.workflows_dir(), PathBuf::from("/new1"), PathBuf::from("/new2")]
+        );
+        w.set_extra_dirs(&paths, &[]);
+        assert_eq!(w.context().0, [paths.workflows_dir()]);
+
+        // the launcher moved to Cmd+J: that key is now off limits, the old one is free
+        let new = HotKey::new(Some(Modifiers::SUPER), Code::KeyJ);
+        w.set_launcher_hotkey(Some(new));
+        let (plan, warnings) = plan_registrations(
+            vec![
+                spec("takes-new", Code::KeyJ, Modifiers::SUPER),
+                spec("takes-old", Code::Space, Modifiers::ALT | Modifiers::SHIFT),
+            ],
+            w.context().1,
+        );
+        let names: Vec<_> = plan.iter().map(|(_, s)| s.workflow_name.as_str()).collect();
+        assert_eq!(names, ["takes-old"]);
+        assert!(warnings[0].contains("launcher hotkey"));
     }
 
     fn spec(name: &str, key: Code, mods: Modifiers) -> HotkeySpec {
