@@ -331,6 +331,7 @@ impl LauncherApp {
                     std::thread::spawn(move || engine.reload());
                     self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
                 }
+                HotkeysRefreshed => self.automation.apply_hotkeys(self._hotkey_manager.as_ref()),
                 Preferences => prefs::open_or_report(),
                 Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 Theme(file) => match ashdash_core::theme::Theme::load(&file) {
