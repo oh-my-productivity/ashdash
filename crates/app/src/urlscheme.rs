@@ -402,7 +402,7 @@ pub enum Answer {
     Allow,
     Deny,
     /// The dialog timed out, was dismissed or could not be shown. Not a decision: never stored.
-    NoAnswer,
+    Unanswered,
 }
 
 /// Asks the user whether a workflow may be started from URLs.
@@ -544,7 +544,7 @@ impl UrlDispatcher {
         let decision = match self.prompter.confirm(workflow, bundle) {
             Answer::Allow => Decision::Allow,
             Answer::Deny => Decision::Deny,
-            Answer::NoAnswer => {
+            Answer::Unanswered => {
                 return Err(format!(
                     "no answer about starting '{bundle}' from a link; nothing was saved"
                 ));
@@ -618,7 +618,7 @@ impl Prompter for DialogPrompter {
             .output();
         match out {
             Ok(o) => dialog_answer(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
-            Err(_) => Answer::NoAnswer,
+            Err(_) => Answer::Unanswered,
         }
     }
 }
@@ -628,12 +628,12 @@ impl Prompter for DialogPrompter {
 /// non-zero. Neither is the user saying "never".
 fn dialog_answer(success: bool, stdout: &str) -> Answer {
     if !success {
-        return Answer::NoAnswer;
+        return Answer::Unanswered;
     }
     match stdout.trim() {
         "Allow" => Answer::Allow,
         "Don't Allow" => Answer::Deny,
-        _ => Answer::NoAnswer,
+        _ => Answer::Unanswered,
     }
 }
 
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn a_timeout_or_dismissed_dialog_is_not_a_decision() {
-        let r = rig_with("noanswer", Answer::NoAnswer, Outcome::Done, None);
+        let r = rig_with("noanswer", Answer::Unanswered, Outcome::Done, None);
         let err = r.d.dispatch(TRIGGER).unwrap_err();
         assert!(err.contains("nothing was saved"), "{err}");
         assert!(r.host.runs.lock().unwrap().is_empty());
@@ -1081,12 +1081,12 @@ mod tests {
         assert_eq!(dialog_answer(true, "Allow\n"), Answer::Allow);
         assert_eq!(dialog_answer(true, "Don't Allow\n"), Answer::Deny);
         // "giving up after 60": the button is empty
-        assert_eq!(dialog_answer(true, "\n"), Answer::NoAnswer);
-        assert_eq!(dialog_answer(true, ""), Answer::NoAnswer);
+        assert_eq!(dialog_answer(true, "\n"), Answer::Unanswered);
+        assert_eq!(dialog_answer(true, ""), Answer::Unanswered);
         // dismissed (-128) or osascript failed
-        assert_eq!(dialog_answer(false, ""), Answer::NoAnswer);
-        assert_eq!(dialog_answer(false, "Allow"), Answer::NoAnswer);
-        assert_eq!(dialog_answer(true, "Maybe"), Answer::NoAnswer);
+        assert_eq!(dialog_answer(false, ""), Answer::Unanswered);
+        assert_eq!(dialog_answer(false, "Allow"), Answer::Unanswered);
+        assert_eq!(dialog_answer(true, "Maybe"), Answer::Unanswered);
     }
 
     #[test]
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn the_claim_is_released_when_the_question_fails() {
-        let r = rig_with("release", Answer::NoAnswer, Outcome::Done, None);
+        let r = rig_with("release", Answer::Unanswered, Outcome::Done, None);
         for _ in 0..3 {
             let err = r.d.dispatch(TRIGGER).unwrap_err();
             assert!(!err.contains("already open"), "{err}");
