@@ -107,7 +107,12 @@ In the VM, System Settings > Privacy & Security:
 
 ### Scripted route: what was tried
 
-SCRIPTED_TCC_RESULT
+**Not yet measured on a real guest.** The probe is `tests/lab/golden-setup.sh tcc-probe` (runs `guest/tcc-probe.sh` in a throw-away clone). It reports
+SIP state, whether the user and system `TCC.db` are readable, whether `sudo sqlite3` can insert an Accessibility row for `com.apple.Terminal`, MDM enrolment, and `tccutil` (which can only reset).
+Expectation from Apple's design (unverified here): on a stock Cirrus Labs image SIP is *enabled*, so the system `TCC.db` is not writable even as root and the user database is
+protected by TCC itself (Full Disk Access needed to write it); writing it would also need `tccd` to reload it. The supported scripted route is an MDM
+PPPC profile, which needs an MDM-enrolled guest (out of scope). Until the probe has been run, treat the manual steps above as the only working route.
+Disabling SIP in the golden image (Recovery boot, `csrutil disable`, then writing `TCC.db`) is possible in principle with `tart run --recovery`, but is not attempted.
 
 ## Building / rebuilding the golden image
 
@@ -151,4 +156,6 @@ shellcheck -x -P SCRIPTDIR tests/lab/lab-* tests/lab/*.sh tests/lab/guest/* test
 
 ## Measurements
 
-MEASUREMENTS
+Not yet measured against a real VM (the ~25 GB base image was still downloading when this was written); `tests/lab/accept.sh` produces the numbers
+(clone+boot+ssh+run+delete time for `uname -a`, queueing of a third job, leftover VMs, golden/clone disk use). Paste its report here after the first real run.
+Everything above about timing and disk is therefore a description of what the scripts do, not a measurement. Fake-tart tests (`test/run-tests.sh`, ~100 s) pass.
