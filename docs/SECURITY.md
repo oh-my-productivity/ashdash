@@ -662,7 +662,7 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   matches nothing fails (stale). Stated limits: a text scan, not a parse; no data flow through variables, macros, benches, `tests/` or `build.rs`; it cannot tell test code from production code.
   *Decision on `system_program`:* a known tool is always its absolute path; if the file is missing the spawn fails with an explicit "starting ..." error and there is **no `PATH` fallback**;
   only a name outside the table is passed on unchanged (documented on the function; the table is checked to exist on macOS by `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path`).
-## 9e. Fix log (wave 4 review, W4-R2, branch `fix/w4-r2`)
+## 9f. Fix log (wave 4 review, W4-R2, branch `fix/w4-r2`)
 
 - **SEC-50 plist depth** `theme::parse_plist` is the one way the launcher parses a property list from an untrusted file (themes: `Theme::load`/`from_bytes`;
   app `Info.plist`: `apps::icns_path`). It first runs the bytes through `plist`'s event-driven serde deserializer with a probe type that
