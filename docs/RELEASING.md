@@ -19,7 +19,7 @@ without a Gatekeeper warning.
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin   # once
 packaging/selftest.sh                # seconds
-packaging/build-app.sh               # ~3 min cold; writes dist/Ashdash.app, ad-hoc signed
+packaging/build-app.sh               # ~2.5 min cold on an M3 Pro (see "Dry run"); writes dist/Ashdash.app, ad-hoc signed
 packaging/make-dmg.sh                # dist/Ashdash-<version>.dmg
 ```
 
@@ -68,15 +68,27 @@ rejected.
 
 ## GitHub Actions release
 
-Pushing a tag `vX.Y.Z` runs `release.yml` on `macos-14`:
+Pushing a tag `vX.Y.Z` runs `release.yml` (all third-party actions are pinned by commit SHA; the workflow was checked with `actionlint` 1.7.12 and `shellcheck` 0.11.0):
 
-1. checks that the tag equals `crates/app/Cargo.toml`'s version,
-2. runs `packaging/selftest.sh`,
-3. imports the certificate into a throwaway keychain (only if the secrets exist),
-4. builds the universal app, notarizes it, builds the DMG, notarizes it,
-5. recomputes the sha256 (stapling changes the file), renders `ashdash.rb`,
-6. uploads the artifacts and creates the GitHub release (`--prerelease` and a warning in the notes when the
-   build is not signed and notarized).
+Job `build` (`macos-14`, read-only token):
+
+1. checks that the tag equals `crates/app/Cargo.toml`'s version (so `v0.1.0-rc1` style tags are rejected; the crate version has no suffix),
+2. for tags: checks that `docs/release-notes/<tag>.md` exists and `CHANGELOG.md` has a `## [X.Y.Z]` section,
+3. runs `packaging/selftest.sh`,
+4. imports the certificate into a throwaway keychain (only if the secrets exist),
+5. builds the universal app, notarizes it (a no-op without `NOTARY_PROFILE`), builds the DMG, notarizes it,
+6. recomputes the sha256 (stapling changes the file), renders `ashdash.rb`,
+7. uploads `dist/*.dmg`, `*.sha256` and `ashdash.rb` as a workflow artifact.
+
+Job `publish` (`ubuntu-latest`, tags only, the only job with `contents: write`, runs no repository scripts): downloads the artifact and creates a **draft** release
+with `--verify-tag`, the notes from `docs/release-notes/<tag>.md`, and `--prerelease` plus a Gatekeeper banner on top of the notes when the build is not signed and notarized.
+Nothing is public until a maintainer reads the draft and presses Publish.
+
+Scheduled job `advisories.yml` (weekly, Monday 06:17 UTC, and on demand) runs `cargo deny check advisories`; it opens no issues, a red run is the signal. The pull-request job `deny` in `ci.yml` checks
+`licenses bans sources` only, so a new RustSec entry does not block unrelated pull requests.
+
+Known limits of the workflow (not testable without a tag push and secrets): the signing, keychain and notarization steps have never run; a tag can be pushed from any branch (the workflow does not
+check that the tagged commit is on `main`); the Rust toolchain is `stable` at the time of the run, not a pinned version; `macos-14` is the runner image GitHub offers today and may be retired.
 
 Repository secrets (Settings > Secrets and variables > Actions). Without them the workflow still works and
 publishes an **ad-hoc, un-notarized pre-release**.
@@ -96,7 +108,7 @@ uploads workflow artifacts but never creates a release.
 To cut a release:
 
 ```sh
-# 1. bump version in crates/app/Cargo.toml (and Cargo.lock), update the changelog/notes
+# 1. bump version in crates/app/Cargo.toml (and Cargo.lock), add a CHANGELOG.md section and docs/release-notes/vX.Y.Z.md
 scripts/check.sh && packaging/selftest.sh
 git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin main v0.2.0
 ```
@@ -126,9 +138,47 @@ brew audit --cask --new ./ashdash.rb      # needs a real, reachable release URL
   `open -a Ashdash.app file.alfredworkflow`.
 * The URL scheme is `ashdash://` only. `reference://` belongs to the reference launcher and is deliberately not registered.
 
+## Dry run, 2026-10-16 (W4-REL)
+
+Machine: Apple M3 Pro, macOS 26.5.2, rustc 1.95.0, load average 5-16 (a busy desktop with another build running), `main` + Wave 4 branch, version 0.1.0, ad-hoc signing, no network use by the scripts.
+
+| Step | Result | Time |
+|---|---|---|
+| `packaging/selftest.sh` | all checks ok (with and without `shellcheck` on `PATH`, after the fix below) | 3 s |
+| `ARCHS=native packaging/build-app.sh` | thin arm64, cold target dir for that triple (dependencies compiled) | 1 min 18 s |
+| `packaging/make-dmg.sh` (native) | 8.8 MB DMG (8,835,559 bytes) | 11 s |
+| `packaging/build-app.sh` (universal; arm64 slice reused from the native build) | x86_64 compiled cold, `lipo` joined | 1 min 8 s |
+| `packaging/make-dmg.sh` (universal) | 17.7 MB DMG (17,700,269 bytes), `.sha256` written and re-checked with `shasum -c` | 8 s |
+
+A cold universal build from scratch is therefore about 2.5 minutes here (about 1.2 min per architecture, 5-6 cores busy).
+
+Sizes: main binary 16.3 MB (arm64, stripped, thin LTO), 34.1 MB universal; `Ashdash.app` 17 MB native, 34 MB universal; DMG 8.8 MB / 17.7 MB.
+
+Checked on both builds (native, then universal):
+
+* `codesign --verify --deep --strict` passes; `Signature=adhoc`, hardened runtime flag present (`flags=0x10002(adhoc,runtime)`), `TeamIdentifier=not set`;
+* `lipo -archs` prints `arm64` (native) and `x86_64 arm64` (universal); `Format=app bundle with Mach-O universal (x86_64 arm64)`;
+* `plutil -lint Contents/Info.plist` OK; `spctl --assess` rejects the bundle, as expected for ad-hoc and not notarized (the script treats it as a warning);
+* the DMG: `hdiutil verify` VALID, `hdiutil attach -readonly -nobrowse` mounts it with `Ashdash.app` and the `Applications` symlink, writing to the volume fails ("Read-only file system"), the app inside still passes
+  `codesign --verify --deep --strict`, and the volume was detached afterwards;
+* with a temporary `HOME`: `Ashdash.app/Contents/MacOS/ashdash --help`, `paths` and `query calc` run and print sensible output. The x86_64 slice also ran: `arch -x86_64 .../ashdash query calc` under Rosetta printed the same results.
+  So the "x86_64 slice untested" item is reduced to "not run on Intel hardware" (Rosetta is not a real Intel Mac).
+
+Not done (on purpose or not possible): launching the bundle with `open` (opens a GUI), Gatekeeper behaviour of a quarantined download, notarization and stapling (no Apple credentials), `brew install --cask`.
+
+Findings:
+
+* **Fixed:** `selftest.sh` reported `FAIL shellcheck` whenever `shellcheck` is installed (as on most CI images and developer machines), because the `# shellcheck source=lib.sh` hints were resolved relative to the working directory
+  (SC1091); it now passes `-P SCRIPTDIR`. Before the fix the self-test passed only on machines without `shellcheck`, so this would have failed the release workflow's first step on a runner that has it.
+* **Fixed:** `dist/` (the build output) was not in `.gitignore`.
+* **Product bug, not fixed (product source is out of scope here):** `ashdash --version` (and `-V`) is not supported; it prints `Error: unknown command '--version'` plus the help and exits 1 (`crates/app/src/main.rs`, the `match args.first()` at about line 55-57 only knows `-h|--help|help`).
+  A release should answer `--version` (the bundle's version is in Info.plist, the crate version is `env!("CARGO_PKG_VERSION")`). Until then `--help` is the smoke test.
+* `CFBundleVersion` defaults to the commit count (141 in this worktree); CI passes `github.run_number` instead, so build numbers differ between local and CI builds. Harmless, worth knowing.
+
 ## Not covered by automation
 
 * Notarization and stapling (needs Apple credentials): untested until a maintainer runs a real release.
 * Gatekeeper behaviour of a downloaded, quarantined build on a clean Mac.
-* Intel hardware: the x86_64 slice is cross-compiled and signed but only runs on an Intel Mac or under Rosetta.
+* Intel hardware: the x86_64 slice is cross-compiled and signed and was run under Rosetta (`arch -x86_64`), not on an Intel Mac.
 * Cask installation (`brew install --cask`) until a tap exists.
+* The release workflow itself (it needs a tag push; syntax and shell snippets are linted with `actionlint`/`shellcheck`, nothing more).
