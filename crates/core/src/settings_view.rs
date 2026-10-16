@@ -506,9 +506,14 @@ pub fn workflow_settings_of(wf: &Workflow, paths: &Paths) -> Vec<crate::engine::
 }
 
 /// Store (`Some`) or forget (`None`) the user's value for one entry of `wf`'s configuration
-/// sheet, in `<data>/workflow-config/<bundle id>.json` (0600). The caller has checked that
-/// `variable` is on the sheet and resets the loaded workflow's cached values afterwards.
+/// sheet, in `<data>/workflow-config/<bundle id>.json` (0600). A `variable` that is not on the
+/// sheet is refused here, whoever the caller is (the file would otherwise collect arbitrary keys
+/// that become environment variables of the workflow's scripts). The caller resets the loaded
+/// workflow's cached values afterwards.
 pub fn write_workflow_value(wf: &Workflow, paths: &Paths, variable: &str, value: Option<&str>) -> Result<()> {
+    if !wf.user_config.iter().any(|c| c.variable == variable) {
+        bail!("workflow '{}' has no setting '{variable}'", wf.name);
+    }
     let file = wf.user_values_file(paths);
     let mut map: serde_json::Map<String, Value> = std::fs::read(&file)
         .ok()
@@ -878,6 +883,36 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn write_workflow_value_only_accepts_variables_on_the_sheet() {
+        let root = std::env::temp_dir().join(format!("oa-wfvalue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        let doc = json!({
+            "name": "Cfg", "bundleid": "test.wfvalue", "objects": [], "connections": {},
+            "userconfigurationconfig": [
+                {"variable": "name", "type": "textfield", "config": {"default": "Ann"}}
+            ]
+        });
+        let wf = Workflow::from_json(&root.join("wf"), "wf", &doc).unwrap();
+        let file = wf.user_values_file(&paths);
+
+        for bad in ["PATH", "", "nam", "name ", "../x"] {
+            let e = write_workflow_value(&wf, &paths, bad, Some("evil")).unwrap_err();
+            assert!(format!("{e:#}").contains("has no setting"), "{bad:?}: {e:#}");
+            assert!(write_workflow_value(&wf, &paths, bad, None).is_err(), "{bad:?} reset");
+        }
+        assert!(!file.exists(), "a refused write must not create the file");
+
+        write_workflow_value(&wf, &paths, "name", Some("Bob")).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved, json!({"name": "Bob"}));
+        write_workflow_value(&wf, &paths, "name", None).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved, json!({}));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn get_reads_nested_values_and_whole_documents() {
