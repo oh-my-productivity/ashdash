@@ -108,8 +108,11 @@ it (usually "Script Editor") and Focus modes. **Unverified** on a clean account.
 * `ashdash prefs` (or the menu-bar item, or `open ashdash://prefs`) opens it as its own program with a Dock icon. If nothing appears,
   run `ashdash prefs-window` from a terminal and read stderr. `ashdash: the preferences window is already open` means one exists:
   it is brought forward (look for a second Space or a minimised window).
-* A red or yellow banner at the top names the last problem the launcher met while applying settings (it clears when the next
-  reload works). No banner and no effect: is the launcher itself running? Changes are applied by the launcher, not by the window.
+* Banners at the top: "Warning: ..." (red) shows `config.json` problems (an unreadable file: the window shows defaults and will
+  not change the file) and the last problem the launcher met while applying settings (it clears when the next reload works);
+  "Restart Ashdash for these to take effect: app_dirs" (yellow); "Ashdash's launcher is not running: changes apply the next
+  time it starts" or "The launcher has not reported yet" (yellow) mean nobody is applying changes. Changes are applied by the
+  launcher, not by the window, so start it (`ashdash show`).
 * "Forget what I picked..." asks the running launcher to clear `usage.json`; if none runs it clears the file directly.
 
 ## URL scheme, AppleScript, login item, file types
