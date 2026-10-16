@@ -45,8 +45,9 @@ ashdash trigger com.example.hello go "text"       # fire an External Trigger obj
   of the `info.plist`). A disabled workflow is listed (`ashdash workflows` shows `(disabled)`) but does not run, and its hotkeys are not registered.
   Workflows in `workflow_dirs` are read-only there: edit their plist.
 * **Workflow hotkeys** (`trigger.hotkey` objects) are registered for each enabled workflow and run by **workflow identity** (the
-  workflow's folder name), not by bundle id. A workflow without a bundle id, or two copies of the same bundle id in different
-  folders, therefore each fire their own hotkey. A key that is already taken (by the launcher or an earlier workflow) is a warning on
+  workflow's folder name), not by bundle id. A workflow without a bundle id works, and two copies of one bundle id in different
+  `workflow_dirs` roots each fire their own hotkey. (Two workflow *folders with the same name* in different roots cannot be told
+  apart: the second one's hotkeys are refused with a warning.) A key that is already taken (by the launcher or an earlier workflow) is a warning on
   stderr and the first claim wins. Hotkeys follow the live reload: add or remove a workflow or a `workflow_dirs` folder and the
   registrations are redone; changing the launcher hotkey makes the old key available to workflows and reserves the new one.
 * Per-workflow settings (the configuration sheet a workflow defines through `userconfigurationconfig`) become variables with

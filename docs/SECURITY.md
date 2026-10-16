@@ -62,7 +62,7 @@ Low = hardening, robustness, privacy details.
 | SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
 | SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
 | SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (wave 3 review, 9c) |
-| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups); a `config` field that calls `Usage::set_enabled` and a "clear learning data" command are still to do (WP8 General page) |
+| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups). Opt-out and clear now exist (wave 3): `learn_usage` in `config.json` (applied live through `Usage::set_enabled`), the Preferences > General switch, and "Forget what I picked..." (`Usage::clear`, via the `clear-usage` socket verb to the running launcher, or directly when none runs). **Turning learning off does not delete an existing `usage.json`**: it stays on disk (clear-text queries, mode 0600) until Forget is pressed or the file is deleted; the preferences hint says earlier picks "stop affecting the order", not that they are gone. Residual: no setting to stop clipboard recording (SEC-19 filters only) |
 | SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
 | SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b; now keyed by workflow id (9c) |
 | SEC-30 | Medium | Import prompt said "Runs no scripts and no terminal commands" for a workflow whose only object is Write File (append to `~/.zshenv`, write a LaunchAgent plist = persistence) | `workflow/trust.rs`, `gui/importprompt.rs` | `write_file_is_reported_and_is_never_passive`, `write_file_targets_are_classified_like_the_executor_resolves_them` (trust.rs); `a_workflow_that_only_writes_a_file_is_not_called_harmless`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed (FIX-TRUST), see 9c |
@@ -258,6 +258,20 @@ product must:
 6. Not run workflows found in `workflow_dirs` of a *different* user or world-writable directories; warn if the directory is.
 7. Make a kill switch visible (disable workflow, kill running scripts).
 
+**Status after wave 3.** Points 1 and 2 are implemented for every install path: the launcher window, Finder
+(`opendocs.rs`), `ashdash import [--yes]` and the preferences window all show `prompt_text` built from
+`Workflow::trust_summary()` (scripts and interpreters, `{query}`-in-source, Terminal commands, Write File targets, clipboard
+replacement, URL schemes, files outside the folder, external triggers, replacement and saved-settings notices; SEC-30..34)
+and install the staged copy that was shown (SEC-31). "Inspect first" does not exist as a separate button (the text is the
+inspection; read the files in the staging copy or the package yourself). Not implemented: point 3 (imports are enabled at once),
+point 5 (no diff for replaced scripts; the prompt only says "This replaces ..."), point 6 (no check of directory ownership or
+permissions of `workflow_dirs`) and highlighting of `curl`/`sudo`/`rm -rf` patterns. Point 7: Preferences > Workflows has the
+enable/disable checkbox and Remove. **Bypasses of the prompt, by design:** a workflow folder placed in `workflows/` by hand and
+every folder listed in `workflow_dirs` are loaded without any prompt, and since `config.json` is watched, adding a
+`workflow_dirs` entry (editing the file, `ashdash config set workflow_dirs`) activates that folder's keywords, hotkeys and
+External Triggers in the running launcher at once. There is no URL, socket or AppleScript verb that imports a workflow
+or edits `workflow_dirs`.
+
 Quarantine: files extracted from an archive that carries the `com.apple.quarantine` attribute should keep it
 (do not strip xattrs) so Gatekeeper still checks bundled binaries on first launch.
 
@@ -303,12 +317,12 @@ arbitrary bytes, wrong JSON types, truncated and mangled JSON never panics.
 - `ASHDASH_CONFIRM=1` in the CLI only affects the dev CLI.
 - CLI `import`/`trigger` take paths and ids from argv; they are as trusted as the shell user.
 
-## 6. Future `ashdash://` URL scheme (design requirements)
+## 6. `ashdash://` URL scheme (design requirements; implemented in `urlscheme.rs`)
 
 A registered URL scheme lets any web page trigger actions with one click, so it must be designed as a
 hostile-input boundary from day one:
 
-1. Allow-list of verbs: `search`, `show`, `trigger` (external trigger of an *enabled* workflow). No verbs for
+1. Allow-list of verbs: `search`, `show`, `trigger` (external trigger of an *enabled* workflow), plus the harmless `reload`, `theme` (by name from the themes folder) and `prefs` (opens the preferences window). No verbs for
    import-and-run, run-script, system commands, clipboard read, or file open.
 2. `trigger` must require that the workflow's External Trigger object opts in to URL invocation, and a
    per-workflow, user-visible allow setting (default: ask once, remember per bundle id).
@@ -386,8 +400,9 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   the data dir is created 0700). `usage.rs`: queries over 100 characters are not stored (the pick still counts
   globally), ids over 200 bytes are not recorded, at most 2,000 queries and 50 ids per query are kept, `Usage::set_enabled`
   is the opt-out switch (off: nothing is recorded, nothing is boosted), `Usage::clear` wipes memory and file.
-  *Still to do:* a `config` field that calls `set_enabled` at start-up, a "clear learning data" command, and the
-  clipboard concealed-type filter (WP2) are not part of FIX-B.
+  *Done afterwards (wave 3):* the `learn_usage` config field calls `set_enabled` at start-up and on every live reload,
+  and "Forget what I picked..." / the `clear-usage` verb wipe the data; the clipboard concealed-type filter is WP2's.
+  Disabling learning leaves the old `usage.json` on disk until it is cleared.
 - **SEC-03/13/14** are reference-compatible behaviours and unchanged. `Workflow::trust_summary()` (`workflow/trust.rs`)
   returns a `TrustSummary` (serialisable): script-running object count, interpreters used, scripts that paste `{query}`
   into source, Open URL schemes (`{dynamic}` when not literal, `(none)` when absent), Terminal Command templates, files
@@ -479,7 +494,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 
 ### Status of every finding (checked in core-followups)
 
-SEC-01, 02, 04-12, 15, 16, 17, 18 (except opt-out wiring), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
+SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired in wave 3; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
 `Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure. Nothing is without a status.
 
 ## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
