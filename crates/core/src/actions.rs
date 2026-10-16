@@ -177,7 +177,7 @@ const SYSTEM_PROGRAMS: &[(&str, &str)] = &[
 /// The absolute path of a known macOS system tool given by bare name; anything else (a path,
 /// or a program that is not one of ours) is returned unchanged.
 ///
-/// What happens when the file is not there (decided in the Wave 4 fixes, SECURITY.md SEC-44):
+/// What happens when the file is not there (decided in the Wave 4 fixes, SECURITY.md SEC-R4-14):
 /// * a **known** tool is always its fixed absolute path, whether or not the file exists. A
 ///   missing `/usr/bin/open` is not looked for on `PATH`: the spawn fails with an explicit
 ///   "starting \"/usr/bin/open\"" error from [`RealOs`] / the caller. There is no `PATH` fallback

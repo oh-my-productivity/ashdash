@@ -75,6 +75,12 @@ Low = hardening, robustness, privacy details.
 | SEC-37 | Low | The trust summary could not say that a Script Filter's items (`arg`, `variables`, `quicklookurl`) steer later Run Script / Open URL / Open File / Write File / Terminal steps, so such a workflow could look passive | `workflow/trust.rs`, `gui/importprompt.rs` | `script_filter_results_steering_later_steps_are_flagged`, `script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged` (trust.rs); `script_filter_steering_is_stated` (importprompt.rs) | Fixed by disclosure (W4-FIX), see 9d |
 | SEC-38 | Low | `ashdash import` ignored unknown `--` flags (`--yess` silently meant "ask") and the preferences drop zone accepted only `.alfredworkflow`, so the same package was handled differently per path | `main.rs`, `gui/prefs/app.rs`, `gui/prefs/workflows.rs`, `workflow/package.rs` | `import_rejects_unknown_flags_and_wrong_file_counts` (main.rs), `the_drop_zone_accepts_every_workflow_extension_the_launcher_does`, `every_reference_package_extension_is_recognised` | Fixed (W4-FIX), see 9d |
 | SEC-39 | Low | `write_workflow_value` trusted its caller to check the variable: the preferences window did not, so any key could be stored in `workflow-config/<bundle id>.json` and reach the workflow's scripts as an environment variable | `settings_view.rs` | `write_workflow_value_only_accepts_variables_on_the_sheet` | Fixed (W4-FIX), see 9d |
+| SEC-R4-01 | Medium | Open File `openwith` and Open URL `browser` (and "Search the web" `browser`) were not read by the trust summary, and a relative literal `sourcefile` went to `open` unresolved (the launcher's working directory): a workflow that launches an app shipped in its own package was called passive ("Runs no scripts...") | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `open_file_openwith_and_open_url_browser_are_launched_applications`, `a_relative_literal_file_is_a_file_shipped_with_the_workflow` (trust.rs); `relative_open_targets_and_apps_resolve_against_the_workflow_folder` (exec.rs); `a_launched_application_is_a_capability_line_and_a_shipped_one_is_called_out`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed (W4-R1), see 9e |
+| SEC-R4-02 | Medium | Write File could still rewrite the workflow's `info.plist` through a package symlink (`notes.txt -> info.plist`): the refusal compared path text and the parent folder only, and `perform` followed links | `workflow/exec.rs` | `write_file_does_not_follow_a_package_symlink_to_info_plist`, `write_file_still_writes_through_a_link_to_an_ordinary_file` (exec.rs) | Fixed (W4-R1), see 9e |
+| SEC-R4-04 | Medium | File Filter ran `mdfind` with no timeout and no output cap (a types-only predicate matched 430 572 files, 58.7 MB, 18 s) on the single query worker | `workflow/filefilter.rs`, `workflow/filter.rs`, `providers/workflow.rs` | `mdfind_goes_through_the_bounded_runner_with_the_search_budget`, `mdfind_output_is_capped_before_strings_are_built`, `an_empty_argument_with_a_types_only_predicate_stays_bounded` (filefilter.rs); `a_file_filter_runs_through_the_engines_os_with_the_configured_budget` (providers/workflow.rs) | Fixed (W4-R1), see 9e |
+| SEC-R4-09 | Low | A cross-volume install removed the old version before a long copy, and `load_all` read the hidden `.import-*` folders, so a reload or crash could show a phantom duplicate; leftovers were never swept | `workflow/package.rs`, `workflow/model.rs` | `load_all_skips_dot_directories_so_a_swap_in_progress_is_not_a_second_workflow`, `the_old_version_stays_visible_until_the_new_copy_is_complete`, `interrupted_installs_are_swept_and_a_lost_workflow_is_put_back`, `staging_a_package_sweeps_the_workflows_folder`, `a_failed_same_volume_install_gives_the_staged_tree_back` (package.rs) | Fixed (W4-R1), see 9e |
+| SEC-R4-10 | Low | `config set web_searches '<array>'` compared the number of bad entries, so a new list with a different bad entry passed when an old bad entry existed | `settings_view.rs` | `replacing_the_whole_web_search_list_checks_every_entry_not_the_count` | Fixed (W4-R1), see 9e |
+| SEC-R4-14 | Low | The spawn guard test matched only the one-line form `Command::new("name")`; `system_program`'s behaviour for a missing tool was undocumented | `tests/system_programs.rs`, `actions.rs` | `no_bare_system_tool_names_are_spawned`, `the_scan_sees_calls_the_old_line_match_missed`, `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path` | Tightened and documented (W4-R1), see 9e |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -500,7 +506,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 ### Status of every finding (checked in core-followups)
 
 SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired in wave 3; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
-`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2); SEC-37..39: fixed (W4-FIX). Nothing is without a status.
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2); SEC-37..39: fixed (W4-FIX); SEC-R4-01, 02, 04, 09, 10, 14: fixed or tightened (W4-R1; the `SEC-R4-nn` ids are the issue numbers of `docs/reviews/wave4.md`). Nothing is without a status.
 
 ## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
 
@@ -553,10 +559,11 @@ Items refer to `docs/reviews/wave3.md`.
   ("Can modify its own files (scripts, settings) after you install it") and is no longer listed under the data/cache line. *Decision
   on the executor:* the executor refuses to write the workflow's own `info.plist` (compared after resolving `.`/`..`, ignoring case,
   and by real location when both exist), whatever the path is spelled like, in every mode, with a warning; this closes "add
-  objects after the prompt". Other files in the folder stay writable (the reference launcher semantics; a workflow may keep a settings file there).
+  objects after the prompt". (The wave 4 review found that a package symlink got around the textual comparison; SEC-R4-02 below
+  resolves the file itself and checks the opened file's identity.) Other files in the folder stay writable (the reference launcher semantics; a workflow may keep a settings file there).
   Residual: a script file the workflow already runs can still be rewritten, and a Run Script can write anywhere anyway, so this is
   a disclosure plus one hard rule, not a sandbox.
-- **Cross-volume install (N3)** `package::install_with` falls back, on `EXDEV`, to copying the staged tree (modes, links)
+- **Cross-volume install (N3)** *(order changed by SEC-R4-09, see 9e)* `package::install_with` falls back, on `EXDEV`, to copying the staged tree (modes, links)
   into a hidden folder *beside the destination*, fsyncing files and directories, and renaming that into place; the copy is removed
   on any failure and the previous version is restored as before. Tested with an injected rename (`install_across_volumes_copies_next_to_the_destination`,
   `a_failed_cross_volume_install_keeps_the_old_version_and_leaves_nothing_behind`).
@@ -565,9 +572,9 @@ Items refer to `docs/reviews/wave3.md`.
   release themselves if the worker panics (`GateRelease`), so `reload_pending()` cannot stay true.
 - **Bare tool names (N5)** `actions::system_command(name)`; `system.rs` (Lock/Sleep/Log out/..), `filefilter.rs`, `clipboard/restore.rs`,
   `clipboard_watch.rs`, `mac/opendocs.rs` and `prefs/dialogs.rs` use it. `crates/core/tests/system_programs.rs` scans both crates and fails
-  on a new `Command::new("osascript")` (or any other name in the table) outside `actions.rs`. `zip` (tests only) is not in the table.
-- **Web search URLs (N6)** `settings_view::set` (and so `ashdash config set`) refuses a value that makes a web search newly invalid; an
-  entry that is already bad never blocks unrelated edits or its own repair. A search skipped at start-up is kept in
+  on a new `Command::new("osascript")` (or any other name in the table) outside `actions.rs`. `zip` (tests only) is not in the table. (Tightened by SEC-R4-14, see 9e.)
+- **Web search URLs (N6)** `settings_view::set` (and so `ashdash config set`) refuses a value that makes a web search invalid (changed by
+  SEC-R4-10: every entry of a new list is checked, not the count); an entry that is already bad never blocks unrelated edits or its own repair. A search skipped at start-up is kept in
   `Engine::startup_warnings()` and shown as a "settings" problem (status file + one notification), like a live reload.
 - **`clean` (N7)** blank-looking characters (U+3164, U+115F/1160, U+FFA0, U+2800, U+17B4/17B5, U+034F, U+2065) are shown as spaces and
   collapse; a field made only of them reads as empty ("not stated" / "(unnamed)"). Variation selectors are left alone (emoji).
@@ -600,3 +607,44 @@ Items refer to `docs/reviews/wave3.md`.
 - **SEC-38** `ashdash import` accepts `--yes` and `--`; any other option is an error with the usage line and exit code 2; exactly
   one file. `workflow::WORKFLOW_PACKAGE_EXTENSIONS` / `is_workflow_package` are the one list used by the launcher, Finder opens, the
   preferences drop zone and the preferences file chooser (the chooser filter now offers all four).
+
+
+## 9e. Fix log (wave 4 review fixes, W4-R1, branch `fix/w4-r1`): items 1, 2, 4, 9, 10, 14 of `docs/reviews/wave4.md`
+
+The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide with ids the parallel W4-R2 branch picks).
+
+- **SEC-R4-01 (review 1, MUST)** `TrustSummary.launched_apps` lists the application field of Open File (`openwith`), Open URL and "Search the web"
+  (`browser`) objects as `{app, shipped}`; `shipped` is true for a literal path that points into the workflow's own folder (a relative path, or an
+  absolute one under the workflow directory). `opens_shipped_files` lists Open File / Launch Files targets that are literal relative paths. Both make
+  `is_passive()` false; the prompt adds "Launches an application: payload.app (shipped with the workflow)" and "Opens files shipped with the workflow: ...".
+  A bare app name (`Safari`) is listed but not called shipped; an application field counts as a path when it has a `/` or ends in `.app`.
+  *Decision on the executor:* a relative literal is not left to `open` (which would use the launcher's working directory): the executor resolves a relative
+  `sourcefile`, Launch Files path, `openwith` path or `browser` path against the workflow's own folder (after `~` expansion; lexically normalised), so the
+  classifier and the executor agree on what a relative path means (the reference launcher runs workflows with the workflow folder as the working directory). An app *name*
+  is passed on as written. Residual: a name that happens to be an app shipped elsewhere on the machine, and what a Script Filter returns, stay invisible (SEC-37 discloses the latter).
+- **SEC-R4-02 (review 2)** `exec.rs::is_info_plist_of` also canonicalises the *final path* (so `notes.txt -> info.plist` is refused with the usual warning), and
+  `WriteFile` carries `protect: Option<PathBuf>` (the workflow's `info.plist`): `perform` opens the target without truncating, compares the opened file's
+  device and inode with the protected file and refuses in every mode (overwrite, append, prepend) before writing a byte. That also covers hard links to
+  `info.plist` and a link made between the executor's check and the write. *Decision:* `perform` still follows a final symlink in general (a dotfile that
+  is a link into a dotfiles repository keeps working; test `write_file_still_writes_through_a_link_to_an_ordinary_file`), because a no-follow open would break
+  that reference-compatible use; only the workflow's own `info.plist` is protected. SEC-36's "by real location" wording is now true; a script that is already part of the package can
+  still be rewritten (disclosed in the prompt as "Can modify its own files").
+- **SEC-R4-04 (review 4)** File Filter's `mdfind` goes through `Os::output_bounded` with the file-search budget from `config.file_search` (time limit
+  `mdfind_timeout_ms`, output limit `mdfind_max_bytes`), additionally capped at 200 hits x 1 KiB (about 200 KB), so a types-only predicate (an empty argument) is
+  killed after a few hundred kilobytes instead of printing for seconds. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
+  dropped. `WorkflowProvider` takes the engine's `Os` (`registry_for` wires it); `Workflow::keyword_results` (no `Os` argument) keeps the real OS and the default budget for callers outside the engine.
+  Residual: the search still runs on the single query worker, bounded by the budget (default 4 s) rather than gone.
+- **SEC-R4-09 (review 9)** `load_all` skips folders whose name starts with `.` (so `.import-*` staging, copy and previous-version folders are never loaded as a second
+  copy). Install order: the complete new tree is put beside the destination first (a rename on the same volume; on `EXDEV` the copy with modes and links, fsynced),
+  and only then is the old version moved aside and the tree renamed into place (two renames, microseconds), so the old version stays visible and runnable for the whole
+  copy. Leftover names carry the start time (`.import-copy-<secs>-...`, `.import-old-<secs>-<pid>-<n>-<attempt>-<installed folder name>`).
+  `sweep_interrupted_installs` runs when a package is staged and on every `load_all` of a folder: a leftover older than an hour is removed, except that a previous
+  version (`.import-old-*`) whose installed folder is *missing* (a crash between the two renames) is put back; staging folders older than a day are removed as before.
+  Residual: a previous version left behind after a *successful* swap (its removal failed) is restored if the user later deletes the installed folder and an hour has passed; younger leftovers (a swap in another process) are never touched.
+- **SEC-R4-10 (review 10)** `settings_view::set`: for `web_searches` (the whole list) every entry of the new value must pass the URL rule; for `web_searches.N.key` the entry N must. An old bad entry that the edit does not touch still blocks nothing.
+- **SEC-R4-14 (review 14)** `tests/system_programs.rs` now scans `crates/core/src` **and** `crates/app/src` (it already did; a minimum file count is asserted) for every
+  `Command::new(` whatever the line breaks, spacing or path prefix (`std::process::Command::new`), skipping whole-line comments and `actions.rs`. An absolute literal and `system_program(...)` pass;
+  a bare tool name from the table fails; every other bare literal or expression must be listed in the test's `KNOWN_SPAWNS` with a reason, and a listed entry that
+  matches nothing fails (stale). Stated limits: a text scan, not a parse; no data flow through variables, macros, benches, `tests/` or `build.rs`; it cannot tell test code from production code.
+  *Decision on `system_program`:* a known tool is always its absolute path; if the file is missing the spawn fails with an explicit "starting ..." error and there is **no `PATH` fallback**;
+  only a name outside the table is passed on unchanged (documented on the function; the table is checked to exist on macOS by `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path`).

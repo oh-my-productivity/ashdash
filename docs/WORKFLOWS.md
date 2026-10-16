@@ -125,7 +125,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `input.keyword` | works | `withspace`, argument required / optional / none, title and subtext. |
 | `input.scriptfilter` | works | JSON and the legacy XML output. Supported: `items` with `uid title subtitle arg valid autocomplete icon text (copy, largetype) match type:file mods variables`; script-level `variables`; `rerun` (0.1 to 5 s: the launcher repeats the query while the text is unchanged and stops repeating 5 minutes after the first run; typing starts afresh); `cache` with `seconds` (clamped 5 s to 24 h) and `loosereload`; `skipknowledge` (accepted: workflow results keep the script's order anyway); `runningsubtext` (shown as the first rows while a slow script runs); `alfredfiltersresults` (the launcher filters by title / `match`). The XML `quicklookurl` is parsed but Quick Look does not use it. Time limit 10 s. Variable precedence: workflow < script-level < item < modifier. Script languages: 0 bash, 5 zsh (confirmed); 1 php, 2 ruby, 3 python3, 4 perl, 6 AppleScript, 7 JavaScript (JXA) (inferred). The `scriptargtype` modes: 0 `{query}` pasted into the script, 1 argv, 2 stdin (inferred). External script files are supported. |
 | `input.listfilter` | works | Static list with fuzzy filtering. |
-| `input.filefilter` | partial | Runs a Spotlight query from `fields`, `types`, `scopes`; `anchorfields` and `daterange` are read but not applied. How the pieces combine is inferred. |
+| `input.filefilter` | partial | Runs a Spotlight query from `fields`, `types`, `scopes`; `anchorfields` and `daterange` are read but not applied. How the pieces combine is inferred. The search is stopped by the file-search budget (`file_search.mdfind_timeout_ms`, `file_search.mdfind_max_bytes`); at most 200 hits are read. |
 | `trigger.external` | works | Started by `ashdash trigger`, `ashdash://trigger` (after per-workflow consent) and AppleScript `run trigger`, and by Call External Trigger inside the same workflow. Carries an argument and variables. |
 | `trigger.hotkey` | works | Global hotkey per workflow, argument none / selection / clipboard, "show launcher" or pass through, related-apps filter, focused-app variable. Not supported: non-zero `modsmode`, `leftcursor`. The key encoding is inferred. "Selection in macOS" uses Cmd+C via System Events, briefly replaces your clipboard and needs the Accessibility permission. Details: [AUTOMATION.md](AUTOMATION.md). |
 | other triggers (snippet, universal action, fallback, contact, ...) | no | Not run. |
@@ -137,7 +137,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `action.script`, `output.script` | works | bash / zsh / php / ruby / python3 / perl / osascript / JXA or a script file. 60 s limit, output capped at 8 MiB, the whole process group is killed on timeout. `{query}` escaping mask: bits 2, 4, 32, 64 (backquote, double quote, dollar, backslash) inferred; 1, 8, 16 (brackets, semicolon, space) unverified. |
 | `action.applescript` | works | Runs through `osascript`. Needs Automation for the app it controls. |
 | `action.openurl` | works | `utf8` and `spaces` options, `{query}` and `{var:…}`; optional browser. Any URL scheme is opened: see security. |
-| `action.openfile`, `action.launchfiles`, `action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument. |
+| `action.openfile`, `action.launchfiles`, `action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument; a relative path (file, `openwith`, `browser`) is resolved against the workflow's own folder. |
 | `action.terminalcommand` | works | Runs in Terminal. |
 | `action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
 | `action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
@@ -203,11 +203,12 @@ What Ashdash does for you:
     typed text into the script source;
   * every **Terminal command**;
   * every **Write File** target (overwrite / append / prepend, the path or `{dynamic}`, and whether it is confined to the
-    workflow's own data/cache folder, its own installed folder (a separate line: "Can modify its own files"; the executor never lets Write File change the workflow's own `info.plist`), or can be anywhere your account can write: a shell start-up file or a LaunchAgent plist is a way to persist);
+    workflow's own data/cache folder, its own installed folder (a separate line: "Can modify its own files"; the executor never lets Write File change the workflow's own `info.plist`, not even through a symlink or hard link), or can be anywhere your account can write: a shell start-up file or a LaunchAgent plist is a way to persist);
   * whether it **replaces what is on your clipboard** (Copy to Clipboard objects);
   * the **URL schemes** of its Open URL objects (`{dynamic}` when the scheme is decided by data);
   * **files outside its folder** it refers to (literal absolute, `~` or `..` paths in Open File, Launch Files and script files);
   * **files opened at run time**: an Open File object with an empty file field (it opens the incoming argument) or a path with a `{placeholder}`, which can be an app or script shipped inside the package;
+  * **applications launched**: the application of an Open File (`openwith`) or Open URL / web search (`browser`) object, marked "shipped with the workflow" when it is a path inside the workflow's own folder, and **files shipped with the workflow** that Open File / Launch Files open (a relative path is resolved against the workflow's folder);
   * its **External Triggers** (what another workflow or an `ashdash://` link can start);
   * a replacement notice and the saved-settings warning when the bundle id is already installed (see above).
   "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`); a workflow that
