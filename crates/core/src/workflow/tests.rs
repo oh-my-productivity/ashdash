@@ -1023,5 +1023,10 @@ fn workflow_icon_png_symlink_falls_back_to_the_glyph() {
     std::fs::write(wf.dir.join("icon.png"), b"png").unwrap();
     let (items, _) = wf.keyword_items("ik x", &paths);
     assert!(items.iter().all(|i| i.icon == Icon::Image(wf.dir.join("icon.png"))));
+    // a hard link to a file outside the workflow folder is refused too
+    std::fs::remove_file(wf.dir.join("icon.png")).unwrap();
+    std::fs::hard_link(&outside, wf.dir.join("icon.png")).unwrap();
+    let (items, _) = wf.keyword_items("ik x", &paths);
+    assert!(items.iter().all(|i| i.icon == Icon::Glyph("◆")), "{items:?}");
     let _ = std::fs::remove_dir_all(root);
 }

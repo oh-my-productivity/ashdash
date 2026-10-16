@@ -17,16 +17,28 @@ use std::path::{Component, Path, PathBuf};
 ///
 /// Returns the joined path (not canonicalised) so callers keep a stable name for caching.
 pub fn confined_file(root: &Path, candidate: &Path) -> Option<PathBuf> {
-    confined(root, candidate, false)
+    confined(root, candidate, false, false)
+}
+
+/// [`confined_file`] for a root the user (or a downloaded package) can write to, such as a
+/// workflow folder: additionally refuses a file with more than one hard link. A hard link looks
+/// like a regular file inside the root but is the same inode as a file outside it, which the
+/// symlink and canonical-path checks cannot see. No benign workflow needs one (a zip cannot
+/// carry one into the folder), so the file is treated as missing.
+///
+/// System and app-bundle roots (`apps.rs`) use [`confined_file`]: they are not writable by the
+/// user, and installers may legitimately hard-link files there.
+pub fn confined_workflow_file(root: &Path, candidate: &Path) -> Option<PathBuf> {
+    confined(root, candidate, false, true)
 }
 
 /// Like [`confined_file`] but also refuses a `root` that is itself a symlink (use it when the
 /// root is a directory that untrusted data could have replaced by a link).
 pub fn confined_file_strict(root: &Path, candidate: &Path) -> Option<PathBuf> {
-    confined(root, candidate, true)
+    confined(root, candidate, true, false)
 }
 
-fn confined(root: &Path, candidate: &Path, strict_root: bool) -> Option<PathBuf> {
+fn confined(root: &Path, candidate: &Path, strict_root: bool, refuse_hard_links: bool) -> Option<PathBuf> {
     if strict_root && std::fs::symlink_metadata(root).ok()?.file_type().is_symlink() {
         return None;
     }
@@ -56,6 +68,9 @@ fn confined(root: &Path, candidate: &Path, strict_root: bool) -> Option<PathBuf>
     }
     let meta = std::fs::symlink_metadata(&cur).ok()?;
     if !meta.is_file() {
+        return None;
+    }
+    if refuse_hard_links && std::os::unix::fs::MetadataExt::nlink(&meta) > 1 {
         return None;
     }
     cur.canonicalize().ok()?.starts_with(&canon_root).then_some(cur)
@@ -120,6 +135,29 @@ mod tests {
         assert_eq!(confined_file(&d, Path::new("link.png")), None, "link out");
         assert_eq!(confined_file(&d, Path::new("inner-link.png")), None, "link in");
         assert_eq!(confined_file(&d, Path::new("dirlink/secret.png")), None, "dir link");
+        let _ = std::fs::remove_dir_all(d);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn workflow_roots_refuse_hard_links_but_app_roots_do_not() {
+        let d = tmp("hard");
+        let outside = tmp("hard-outside");
+        std::fs::write(outside.join("secret.png"), b"x").unwrap();
+        std::fs::write(d.join("own.png"), b"x").unwrap();
+        std::fs::hard_link(outside.join("secret.png"), d.join("linked.png")).unwrap();
+        // a plain file with one link is fine; the hard link to the outside file is refused
+        assert!(confined_workflow_file(&d, Path::new("own.png")).is_some());
+        assert_eq!(confined_workflow_file(&d, Path::new("linked.png")), None);
+        assert_eq!(confined_workflow_file(&d, &d.join("linked.png")), None);
+        // a second link made *inside* the root is refused too (same inode, link count 2)
+        std::fs::hard_link(d.join("own.png"), d.join("own2.png")).unwrap();
+        assert_eq!(confined_workflow_file(&d, Path::new("own2.png")), None);
+        // app-bundle roots keep the old rule
+        assert!(confined_file(&d, Path::new("linked.png")).is_some());
+        // dropping the outside link makes the file acceptable again
+        std::fs::remove_file(outside.join("secret.png")).unwrap();
+        assert!(confined_workflow_file(&d, Path::new("linked.png")).is_some());
         let _ = std::fs::remove_dir_all(d);
         let _ = std::fs::remove_dir_all(outside);
     }
