@@ -17,6 +17,19 @@ use std::path::{Component, Path, PathBuf};
 ///
 /// Returns the joined path (not canonicalised) so callers keep a stable name for caching.
 pub fn confined_file(root: &Path, candidate: &Path) -> Option<PathBuf> {
+    confined(root, candidate, false)
+}
+
+/// Like [`confined_file`] but also refuses a `root` that is itself a symlink (use it when the
+/// root is a directory that untrusted data could have replaced by a link).
+pub fn confined_file_strict(root: &Path, candidate: &Path) -> Option<PathBuf> {
+    confined(root, candidate, true)
+}
+
+fn confined(root: &Path, candidate: &Path, strict_root: bool) -> Option<PathBuf> {
+    if strict_root && std::fs::symlink_metadata(root).ok()?.file_type().is_symlink() {
+        return None;
+    }
     let canon_root = root.canonicalize().ok()?;
     let rel: PathBuf = if candidate.is_absolute() {
         candidate
@@ -109,6 +122,23 @@ mod tests {
         assert_eq!(confined_file(&d, Path::new("dirlink/secret.png")), None, "dir link");
         let _ = std::fs::remove_dir_all(d);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn strict_mode_refuses_a_symlinked_root() {
+        let real = tmp("strict-real");
+        std::fs::write(real.join("a.png"), b"x").unwrap();
+        let link = real
+            .parent()
+            .unwrap()
+            .join(format!("oa-confine-strictlink-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        symlink(&real, &link).unwrap();
+        assert!(confined_file(&link, Path::new("a.png")).is_some());
+        assert_eq!(confined_file_strict(&link, Path::new("a.png")), None);
+        assert!(confined_file_strict(&real, Path::new("a.png")).is_some());
+        let _ = std::fs::remove_file(link);
+        let _ = std::fs::remove_dir_all(real);
     }
 
     #[test]
