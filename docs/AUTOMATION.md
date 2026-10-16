@@ -28,7 +28,7 @@ Protocol: one JSON line per request, one per answer.
 CLI: `ashdash show | search <text> | trigger <bundle> <id> [arg] | reload | quit | theme <file> | prefs`. `show` and `search` start
 the launcher when none runs; `trigger` runs in-process when none runs; `reload`/`quit` do nothing then; `theme` only
 parses. `prefs` starts the preferences window (`ashdash prefs-window`, an internal command) as its own process whether or not the
-launcher runs; the menu-bar item and `ashdash://prefs` do the same through the launcher (`{"cmd":"prefs"}`). `clear-usage` is sent by the
+launcher runs; the menu-bar item, `ashdash://prefs` and the socket verb `prefs` ask the running launcher, which starts it the same way. `clear-usage` is sent by the
 preferences window's "Forget what I picked..." so the running launcher wipes its in-memory table and `usage.json`.
 `ashdash import [--yes] <file>` shows the trust summary and asks (details in [WORKFLOWS.md](WORKFLOWS.md)), installs, and then tells
 a running launcher to reload (new workflows, new hotkeys). The socket itself has **no import verb**.

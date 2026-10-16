@@ -13,6 +13,10 @@ see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live 
 | `cargo test -p ashdash-core --test engine_e2e` | public `Engine` API in a temp environment: ranking, exclusivity precedence, usage learning across engine instances, destructive-command confirmation (never run), triggers | <1 s |
 | `cargo test -p ashdash-core --test import_security` | `import_workflow` / `import_package` with hostile synthetic zips: `../`, absolute paths, symlinks and chains, bundle-id tricks, malformed archives | <1 s |
 | `cargo test -p ashdash-core --test scripts_security` | script argument passing, `{query}` escaping, env, graph limits, process lifecycle, `open` helper guards | <1 s |
+| `cargo test -p ashdash-core --test import_staging` | the staged import: the installed bytes equal the previewed bytes even if the package file is swapped meanwhile; replacement and saved-settings notices; Write File and clipboard in the trust summary | <1 s |
+| `cargo test -p ashdash-core --test clipboard_privacy` | concealed/transient/ignored-app copies never reach rows, usage or disk (SEC-19) | <1 s |
+| `cargo test -p ashdash-core --test prefs_core` | the core half of the preferences window: settings view, live `apply_config`, workflow enable/remove/settings, watcher classification | ~2 s |
+| `cargo test -p ashdash-core --test ui_glue_api` | engine APIs used by the actions panel and the import prompt (`actions_for`, buffer, staged install) | <1 s |
 | `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON | ~3 s |
 | `cargo test -p ashdash-core --test compat_packages -- --nocapture` | imports every `*.alfredworkflow` bundled in an installed `/Applications/Reference.app` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes) when the reference launcher is not installed | ~1 s |
 
@@ -61,6 +65,13 @@ deletes the throwaway HOME. Requirements and cautions:
   Look for: the launcher visible near the top centre, query text "saf", Safari first in the list, no error row.
 - The clipboard watcher runs against the real pasteboard; its history goes into the throwaway HOME and is deleted.
 
+`scripts/qa/ui-glue-smoke.sh [binary]` is the longer wave 3 version (actions panel and buffer, in-window import prompt with
+a synthetic workflow, Script Filter rerun and pending rows, Quick Look layering, held-modifier subtitle, scrolling Large Type).
+It shows windows and drives System Events on the **host desktop**, so it takes the lock `/tmp/ashdash-desktop.lock`
+(`mkdir`; always `rmdir` it afterwards), runs with a throw-away HOME and a non-default hotkey, and leaves whole-desktop
+screenshots in a temp folder that you look at and delete. Run it from a clean desktop session, not from CI. Once the VM lab
+(`docs/LAB.md` on branch `wp/wp14-lab`, not merged) is available, GUI checks belong in the lab instead.
+
 ## 3. Manual checklist
 
 Run on a debug build (`cargo run -p ashdash`) with a clean profile
@@ -73,7 +84,7 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] Shows on the screen containing the mouse (multi-monitor) and on the current Space; also over a full-screen app.
 - [ ] After hide, focus returns to the previously active app (type a character: it lands there).
 - [ ] Hotkey registration failure (start a second instance, or bind the same combo elsewhere): the user sees a clear message, not silence.
-- [ ] Changing `hotkey` in `config.json` (e.g. `cmd+shift+space`) takes effect after restart; an invalid value falls back or reports.
+- [ ] Changing `hotkey` in `config.json` or in Preferences > General (e.g. `cmd+shift+space`) takes effect within about a second without a restart; the old key stops working, the new one works, the start-up hint (if shown) names the new key. An invalid value keeps the old key and reports (notification, Preferences banner).
 - [ ] No Dock icon, no Cmd+Tab entry (unless intended).
 
 ### 3.2 Typing and results
@@ -94,7 +105,8 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] Tab autocompletes the selected item's title/autocomplete text into the field.
 - [ ] Esc hides the launcher (first Esc clears the text if that is the chosen design: note it).
 - [ ] Cmd+1…Cmd+9 run the visible result in that row; the number hints match the rows.
-- [ ] Cmd+L shows Large Type for the selection; Esc/click dismisses it.
+- [ ] Cmd+L shows Large Type for the selection; Esc/click dismisses it. With a very long text (several screens) the text scrolls with the wheel, arrows and Page keys.
+- [ ] Hold Return on Shut Down / Restart / Empty Trash (do not release): it asks once and **never** confirms by repeating; releasing and pressing Return again confirms (decline with Esc; do not run it for real).
 - [ ] Modifier overrides (Cmd/Alt/Ctrl/Shift+Return) on a workflow Script Filter item use the `mods` entry.
 - [ ] Cmd+Q quits; Cmd+W/Cmd+H do not leave the app in an odd state.
 
@@ -107,20 +119,25 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] `clip` lists recent copies (use harmless text). Newest first; duplicate copies move to top.
 - [ ] Return on an entry copies it; Cmd+V into a text editor pastes it.
 - [ ] Copy from a password manager (1Password/Bitwarden "copy password"; marked concealed): the entry must **not**
-  appear in `clip` nor in `clipboard.json` (SEC-18; expected to fail until WP2 lands).
-- [ ] Per-app ignore list (when WP2 lands): copies made in an ignored app are skipped.
+  appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist, **this check with a real password manager has never been done**).
+- [ ] Per-app ignore list: copies made in an app listed in `clipboard.ignored_apps` (or added in Preferences > Features > Clipboard history) are skipped, without a restart.
 - [ ] `ls -l@ ~/Library/Application\ Support/ashdash/*.json` shows `-rw-------` for `clipboard.json` and `usage.json`.
-- [ ] Image / file copies: a title is shown, copying back restores the original type (when WP2 lands).
+- [ ] Image / file copies: a title is shown, copying back restores the original type.
 - [ ] `snip` lists snippets from `snippets.json`; `{clipboard}`, `{date}`, `{time}`, `{datetime}` expand; `{cursor}` handling.
-- [ ] Auto-paste (when exposed): works with Accessibility granted; with it denied the error says so.
+- [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Real Cmd+V behaviour is still unverified.)
 
 ### 3.6 Workflows
-- [ ] `ashdash import x.alfredworkflow` for a trusted sample workflow installs it; its keyword works.
+- [ ] `ashdash import x.alfredworkflow` for a trusted sample workflow prints the trust summary, asks `Install this workflow? [y/N]`, and installs only on `y`; with stdin not a terminal and without `--yes` it refuses; `--yes` installs without asking. The keyword works afterwards (within a second, no reload needed).
 - [ ] A package with `../` or absolute entry names (build with `tests/common` helpers or `zip`) is rejected or neutralised;
   nothing appears outside `workflows/`.
 - [ ] A Script Filter that prints garbage shows an error row, not a crash; one that hangs gives up after 10 s.
 - [ ] Disabling a workflow removes its keywords; `ashdash trigger <bundle> <trigger> arg` runs the external trigger.
-- [ ] The import confirmation (when WP8/UI lands) lists what will run (see SECURITY.md section 3).
+- [ ] The import prompt (every path: `ashdash import`, double-click / Open With in Finder, drop on the launcher window, Right Arrow > "Install Workflow..." on a file result, Preferences > Workflows) lists scripts, Terminal commands, Write File targets, clipboard replacement, URL schemes, external files and external triggers. A package whose only object is Write File must **not** say "Runs no scripts and no terminal commands".
+- [ ] Launcher prompt: Return does nothing for the first 600 ms; a Return held from selecting "Install Workflow..." never installs; a fresh press installs; Esc cancels and leaves nothing in `<data>/import-staging/`.
+- [ ] Re-importing the same bundle id says "Replace workflow" and "This replaces ..."; with a `workflow-config/<bundle id>.json` present it also warns that saved settings are kept.
+- [ ] Replace the package file on disk while the prompt is up, then confirm: the workflow that was described is the one installed.
+- [ ] A name with a right-to-left override or 10,000 characters is shown cleaned and cut in all prompts.
+- [ ] Editing `workflow_dirs` in `config.json` registers the new folder's keywords and hotkeys within about a second (no prompt, by design) and removing the entry removes them.
 
 ### 3.7 Permissions (macOS prompts)
 Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for a signed build).
@@ -137,6 +154,20 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Kill -9 during a clipboard write, then relaunch: history loads or resets, no crash.
 - [ ] Corrupt `config.json` (`echo '{' > ...`): the app starts with defaults and says so on stderr.
 - [ ] Start with no network: nothing blocks (web searches only open URLs).
+
+### 3.9 Universal Actions panel and buffer
+- [ ] Right Arrow (cursor at the end) on a file, folder, URL, calculator result and a clipboard text row opens the panel with the title "Actions for ..."; typing filters it; Left (cursor at start) or Esc goes back to the previous list and selection.
+- [ ] Right on "Open With..." lists applications; Return opens the file with the chosen one.
+- [ ] Option+Up adds the selected file to the buffer (footer shows the count), Option+Down removes it; with a non-empty buffer Right opens the buffer actions; hiding and showing the launcher empties the buffer.
+- [ ] Move to Trash from the panel names the full path, needs a second *fresh* Return (test with a throw-away file in a temp folder), and works; the file is in the Trash.
+- [ ] Actions are not offered for system commands, workflow results and `> cmd` rows; nothing run from the panel changes the ranking of the original result.
+
+### 3.10 Preferences window and live reload
+- [ ] Menu-bar item > Preferences..., `ashdash prefs` and `open ashdash://prefs` open one window with General, Features, Workflows, About; a second request brings it forward instead of opening another. The launcher hotkey still behaves as before while the window is open.
+- [ ] General: record a new shortcut (a system one such as Cmd+Space is warned about), launch at login (bundle only), pick a theme, change results per search, switch learning off (and check that `usage.json` is still there), press Forget (the file is emptied).
+- [ ] Features: switch `calc` off and on; add a web search with a bad URL (`file:///x/{query}`) and see it refused; add a good one and use its keyword at once; change clipboard retention and an ignored app; add/edit/delete a snippet.
+- [ ] Workflows: enable/disable a workflow (its keyword appears/disappears within a second), "Configure..." saves a value, "What can it do?" shows the summary, Remove asks twice.
+- [ ] Break `config.json` by hand (`echo '{' > ...`): the launcher keeps working with the previous settings, one notification appears, the preferences window shows the problem, and fixing the file clears it. Change `app_dirs`: the window says a restart is needed.
 
 ## 4. Reporting
 
