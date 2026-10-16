@@ -534,11 +534,18 @@ impl Engine {
     /// Start an enabled workflow at one of its objects (a hotkey, say): `arg` and `vars` are
     /// what that object would have produced. Unlike [`Engine::execute`] this records nothing
     /// in the usage table.
-    pub fn run_node(&self, bundle_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
+    ///
+    /// `workflow_id` is the workflow's directory identity (`Workflow::id`), not its bundle
+    /// id: bundle ids may be empty or shared by copies in several roots.
+    ///
+    /// Callers must derive `node_uid` from an installed workflow's own objects (as the
+    /// hotkey registry does); any object kind is accepted, so this must never be reachable
+    /// with a uid taken from outside input (URL scheme, IPC, AppleScript).
+    pub fn run_node(&self, workflow_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
         let effects = {
             let wfs = self.workflows.read().unwrap();
-            let Some(wf) = wfs.iter().find(|w| w.bundle_id == bundle_id && !w.disabled) else {
-                return Outcome::Error(format!("no enabled workflow with bundle id '{bundle_id}'"));
+            let Some(wf) = wfs.iter().find(|w| w.id == workflow_id && !w.disabled) else {
+                return Outcome::Error(format!("no enabled workflow '{workflow_id}'"));
             };
             if !wf.has_node(node_uid) {
                 return Outcome::Error(format!("workflow '{}' has no object '{node_uid}'", wf.name));

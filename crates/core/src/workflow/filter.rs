@@ -547,12 +547,12 @@ impl Workflow {
         items
     }
 
-    /// Find an External Trigger object by its trigger id.
     /// Whether the graph has an object with this uid (any kind).
     pub fn has_node(&self, uid: &str) -> bool {
         self.node(uid).is_some()
     }
 
+    /// Find an External Trigger object by its trigger id.
     pub fn external_trigger(&self, trigger_id: &str) -> Option<&Node> {
         self.nodes
             .iter()

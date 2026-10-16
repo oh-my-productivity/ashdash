@@ -28,7 +28,7 @@
 //! take hundreds of milliseconds and the Carbon callback runs on the main
 //! thread.
 //!
-//! Firing goes through `Engine::run_node(bundle, node_uid, arg, vars)`, which starts the
+//! Firing goes through `Engine::run_node(workflow_id, node_uid, arg, vars)`, which starts the
 //! workflow at the hotkey node and records nothing in `usage.json`.
 
 use std::collections::{BTreeMap, HashMap};
@@ -307,7 +307,19 @@ pub fn spec_from_node(wf: &Workflow, uid: &str, config: &serde_json::Value) -> R
 /// has a key assigned but cannot be used.
 pub fn collect(workflows: &[Workflow]) -> (Vec<HotkeySpec>, Vec<String>) {
     let (mut specs, mut warnings) = (Vec::new(), Vec::new());
+    let mut seen_ids = std::collections::HashSet::new();
     for wf in workflows.iter().filter(|w| !w.disabled) {
+        // Hotkeys fire by workflow id (directory name); two enabled copies with the
+        // same directory name in different roots cannot be told apart.
+        if !seen_ids.insert(wf.id.as_str()) {
+            if wf.nodes.iter().any(|n| n.kind == KIND_HOTKEY) {
+                warnings.push(format!(
+                    "workflow '{}': another enabled workflow folder is also named '{}'; its hotkeys are ignored",
+                    wf.name, wf.id
+                ));
+            }
+            continue;
+        }
         for node in wf.nodes.iter().filter(|n| n.kind == KIND_HOTKEY) {
             match spec_from_node(wf, &node.uid, &node.config) {
                 Ok(Some(s)) => specs.push(s),
@@ -538,7 +550,7 @@ impl HotkeyHost for AppHost {
     }
 
     fn run_node(&self, spec: &HotkeySpec, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
-        self.engine.run_node(&spec.bundle_id, &spec.node_uid, arg, vars)
+        self.engine.run_node(&spec.workflow_id, &spec.node_uid, arg, vars)
     }
 
     fn show_launcher(&self, query: Option<String>) {
@@ -751,6 +763,26 @@ mod tests {
         assert_eq!(specs[0].node_uid, "H1");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bad") && warnings[0].contains("52"));
+    }
+
+    #[test]
+    fn collect_keys_specs_by_workflow_id_not_bundle_id() {
+        let mk = |dir: &str, bundle: &str| {
+            let doc = json!({"name": dir, "bundleid": bundle, "objects": [
+                hk("H1", json!({"hotkey": 1, "hotmod": NS_COMMAND}))]});
+            Workflow::from_json(std::path::Path::new("/nonexistent"), dir, &doc).unwrap()
+        };
+        // empty bundle id and a shared bundle id: both still carry their own directory id
+        let (specs, warnings) = collect(&[mk("a", ""), mk("b", "shared"), mk("c", "shared")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let ids: Vec<_> = specs.iter().map(|s| s.workflow_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // the same directory name in two roots is ambiguous: the second copy is refused loudly
+        let (specs, warnings) = collect(&[mk("dup", "x"), mk("dup", "y")]);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].bundle_id, "x");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dup"));
     }
 
     fn spec(name: &str, key: Code, mods: Modifiers) -> HotkeySpec {
