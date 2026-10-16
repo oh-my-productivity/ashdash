@@ -11,24 +11,48 @@ are *inferred* rather than confirmed). Compatibility is a goal, not a promise: a
 ## Install, list, run
 
 ```sh
-ashdash import ~/Downloads/some.alfredworkflow    # installs into <data>/workflows/user.workflow.<bundle id>
+ashdash import ~/Downloads/some.alfredworkflow    # shows what it can do, asks, then installs into <data>/workflows/user.workflow.<bundle id>
+ashdash import --yes some.alfredworkflow          # same, without the question (scripts, CI)
 ashdash workflows                                 # name  [bundle id]  (disabled)
 ashdash query "hello bob"                         # see the results without a window
 ashdash trigger com.example.hello go "text"       # fire an External Trigger object (see below)
 ```
 
-* Double-clicking a `.alfredworkflow` file (with the app bundle installed) asks "Import the workflow ...?" in a native dialog
-  whose default button is Cancel. `ashdash import` does **not** ask: it is the shell, you typed it.
-* Re-importing a workflow with the same bundle id replaces the installed copy (the old one is kept aside until the new one is
-  in place, and restored if the swap fails).
+* **Every import path asks first** (the import prompt, described under [Trust model](#trust-model)): `ashdash import`
+  asks `Install this workflow? [y/N]` on the terminal (`--yes` skips it; with no terminal and no `--yes` it refuses);
+  double-clicking or opening a `.alfredworkflow` with Ashdash shows a native dialog whose default button is Cancel; in the
+  launcher you drop the file on the window or press Right Arrow > "Install Workflow..." on it in a file search (Return
+  installs, Esc cancels); Preferences > Workflows has "Choose workflow file..." and drag and drop with Install / Cancel buttons.
+  The package is opened **once** into a private staging copy; what you were shown is what gets installed, even if the file
+  changes meanwhile. Saying no, or closing the prompt, deletes the copy. The extensions `.alfred3workflow`, `.alfred4workflow` and `.alfred5workflow` are
+  accepted like `.alfredworkflow` when opened in Finder or from the launcher; the preferences window's drop zone only takes `.alfredworkflow`.
+* **Re-importing a workflow with the same bundle id replaces the installed copy.** The prompt says so
+  (`Replace workflow "<name>"?` and `This replaces "<name>" <version> (installed).`). The old folder is kept aside until the new one is
+  in place and restored if the swap fails. Anything inside the old folder (files the workflow wrote there, your edits) is gone with
+  it; the workflow's data and cache folders and its **saved settings** (`workflow-config/<bundle id>.json`) are not: they are
+  keyed by bundle id, so the new package reads the old settings (API tokens, credentials) as its own. The prompt adds a
+  warning line when saved values exist. The reference launcher behaves the same way, so that an update keeps your configuration.
 * `workflow_dirs` in the config ([SETTINGS.md](SETTINGS.md)) can point at other folders of workflow folders, for example an
   existing reference launcher `workflows` directory. They run **in place**; Ashdash does not copy them. Use absolute paths.
-* After editing workflow files by hand, run `ashdash reload` (or the menu-bar item Reload).
-* A workflow whose `info.plist` has `disabled` set is listed but does not run. There is no switch in Ashdash yet; edit
-  the plist.
+  **These folders never go through the import prompt**: whatever workflow is found there is loaded, its keywords work, its workflow hotkeys are
+  registered and its External Triggers become reachable. Adding a folder is a settings change (Preferences cannot do it; it is done
+  in `config.json` or `ashdash config set workflow_dirs ...`), so see the warning under Trust model.
+* **Changes are picked up by themselves.** Ashdash watches its `workflows/` folder, the `workflow_dirs` folders, saved workflow settings and
+  snippets; edits to workflow files and new or removed workflow folders take effect within about a second (after a 300 ms quiet period),
+  including their keywords and hotkeys. A change to `workflow_dirs` re-scans the new folder list in the background (the footer shows
+  "Reloading..."). `ashdash reload` (or the menu-bar item Reload) forces a re-scan of applications, workflows and snippets.
+* Enable and disable: Preferences > Workflows has a checkbox per workflow in Ashdash's own folder (it writes the `disabled` flag
+  of the `info.plist`). A disabled workflow is listed (`ashdash workflows` shows `(disabled)`) but does not run, and its hotkeys are not registered.
+  Workflows in `workflow_dirs` are read-only there: edit their plist.
+* **Workflow hotkeys** (`trigger.hotkey` objects) are registered for each enabled workflow and run by **workflow identity** (the
+  workflow's folder name), not by bundle id. A workflow without a bundle id, or two copies of the same bundle id in different
+  folders, therefore each fire their own hotkey. A key that is already taken (by the launcher or an earlier workflow) is a warning on
+  stderr and the first claim wins. Hotkeys follow the live reload: add or remove a workflow or a `workflow_dirs` folder and the
+  registrations are redone; changing the launcher hotkey makes the old key available to workflows and reserves the new one.
 * Per-workflow settings (the configuration sheet a workflow defines through `userconfigurationconfig`) become variables with
-  their defaults; values are read from `<data>/workflow-config/<bundle id>.json` (`{"variable": "value"}`, mode 0600). There is no
-  editor in the UI yet; edit that file.
+  their defaults. Edit them in Preferences > Workflows > "Configure..." (a value per entry and "Use default"); they are stored in
+  `<data>/workflow-config/<bundle id>.json` (`{"variable": "value"}`, mode 0600), which you can also edit by hand.
+* Remove: Preferences > Workflows > "Remove..." deletes a workflow from Ashdash's own folder (it asks again). Its saved settings stay on disk.
 
 ## A minimal workflow (verified with this build)
 
@@ -98,7 +122,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | Object (`alfred.workflow.…`) | State | Notes |
 |---|---|---|
 | `input.keyword` | works | `withspace`, argument required / optional / none, title and subtext. |
-| `input.scriptfilter` | works | JSON and the legacy XML output. Supported: `items` with `uid title subtitle arg valid autocomplete icon text (copy, largetype) match type:file mods variables`; script-level `variables`; `rerun` (reported to the caller; the window does not re-run it yet); `cache` with `seconds` (clamped 5 s to 24 h) and `loosereload`; `skipknowledge` (accepted: workflow results keep the script's order anyway); `runningsubtext` (reported to the caller; the window does not show it yet); `alfredfiltersresults` (the launcher filters by title / `match`). The XML `quicklookurl` is parsed but Quick Look does not use it. Time limit 10 s. Variable precedence: workflow < script-level < item < modifier. Script languages: 0 bash, 5 zsh (confirmed); 1 php, 2 ruby, 3 python3, 4 perl, 6 AppleScript, 7 JavaScript (JXA) (inferred). The `scriptargtype` modes: 0 `{query}` pasted into the script, 1 argv, 2 stdin (inferred). External script files are supported. |
+| `input.scriptfilter` | works | JSON and the legacy XML output. Supported: `items` with `uid title subtitle arg valid autocomplete icon text (copy, largetype) match type:file mods variables`; script-level `variables`; `rerun` (0.1 to 5 s: the launcher repeats the query while the text is unchanged and stops repeating 5 minutes after the first run; typing starts afresh); `cache` with `seconds` (clamped 5 s to 24 h) and `loosereload`; `skipknowledge` (accepted: workflow results keep the script's order anyway); `runningsubtext` (shown as the first rows while a slow script runs); `alfredfiltersresults` (the launcher filters by title / `match`). The XML `quicklookurl` is parsed but Quick Look does not use it. Time limit 10 s. Variable precedence: workflow < script-level < item < modifier. Script languages: 0 bash, 5 zsh (confirmed); 1 php, 2 ruby, 3 python3, 4 perl, 6 AppleScript, 7 JavaScript (JXA) (inferred). The `scriptargtype` modes: 0 `{query}` pasted into the script, 1 argv, 2 stdin (inferred). External script files are supported. |
 | `input.listfilter` | works | Static list with fuzzy filtering. |
 | `input.filefilter` | partial | Runs a Spotlight query from `fields`, `types`, `scopes`; `anchorfields` and `daterange` are read but not applied. How the pieces combine is inferred. |
 | `trigger.external` | works | Started by `ashdash trigger`, `ashdash://trigger` (after per-workflow consent) and AppleScript `run trigger`, and by Call External Trigger inside the same workflow. Carries an argument and variables. |
@@ -117,7 +141,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
 | `action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
 | `action.systemwebsearch` | partial | Only the default engine (Google); others warn. |
-| `alfred.workflow.action.browseinalfred`, `alfred.workflow.action.actioninalfred` | partial | The workflow produces a "show the launcher with this text" request, but the window does not act on it yet: the run ends with an error message ("not wired up yet"). |
+| `alfred.workflow.action.browseinalfred`, `alfred.workflow.action.actioninalfred` | partial | Both only show the launcher with the object's path or the incoming argument typed in ("show the launcher with this text"); the reference launcher's file browser and action list are not separate modes here. |
 
 ### Outputs
 
@@ -126,7 +150,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `output.notification` | works | Posted through `osascript`. |
 | `output.clipboard` | works | Copies the text. |
 | `output.largetype` | works | Full-screen overlay. |
-| `output.writefile` | works | Overwrite / append / prepend, `adduuid`, intermediate folders; relative paths resolve into the workflow's data / cache folder or the workflow folder. Passes the resolved path on. |
+| `output.writefile` | works | Overwrite / append / prepend, `adduuid`, intermediate folders; relative paths resolve into the workflow's data / cache folder or the workflow folder. Absolute and `~` paths can name any file you can write, so the import prompt lists every Write File target. Passes the resolved path on. |
 | `output.callexternaltrigger` | partial | Same workflow only. Calling a trigger of another workflow warns and stops. |
 
 ### Utilities
@@ -142,7 +166,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `utility.delay` | works | Continues later; the other streams run first. |
 
 Anything not in the tables (for example a type introduced by a later reference launcher version) is not run. `Workflow::unsupported_kinds()`
-reports them; the window does not show that report yet.
+reports them; no window shows that report yet.
 
 Stream order matches the reference launcher's documented behaviour (outgoing wires run top to bottom by position, a Delay yields). A run
 stops after 256 object executions, which protects against wire cycles.
@@ -171,10 +195,26 @@ What Ashdash does for you:
   hooks (`DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `NODE_OPTIONS`, ...) for later scripts, and cannot define `alfred_*`
   (SEC-02). Variables the author sets statically in the plist still work. This is a deliberate difference from the reference launcher.
 * `{query}` in `osascript` / Terminal command arguments is passed as data, never parsed as options (SEC-01).
-* The core can describe what a workflow will do before you import it: `Workflow::trust_summary()` lists the number of
-  scripts and their interpreters, how many paste `{query}` into the script source, the URL schemes of Open URL objects,
-  Terminal commands, files outside the workflow folder, and the External Triggers. **No window shows this yet**; the
-  double-click dialog is a generic warning. Until then, open the `info.plist` and the scripts yourself before importing.
+* **The import prompt.** Before anything is installed, the package is opened once and described by `Workflow::trust_summary()`;
+  the prompt shows the name, the author as the package states it (never verified), the bundle id, the version and description,
+  and then, one line each:
+  * the number of scripts and their interpreters (Run Script, Script Filter, Run NSAppleScript, script output) and how many paste the
+    typed text into the script source;
+  * every **Terminal command**;
+  * every **Write File** target (overwrite / append / prepend, the path or `{dynamic}`, and whether it is confined to the
+    workflow's own folders or can be anywhere your account can write: a shell start-up file or a LaunchAgent plist is a way to persist);
+  * whether it **replaces what is on your clipboard** (Copy to Clipboard objects);
+  * the **URL schemes** of its Open URL objects (`{dynamic}` when the scheme is decided by data);
+  * **files outside its folder** it refers to (absolute, `~` or `..` paths in Open File, Launch Files and script files);
+  * its **External Triggers** (what another workflow or an `ashdash://` link can start);
+  * a replacement notice and the saved-settings warning when the bundle id is already installed (see above).
+  "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`).
+  Reveal in Finder is deliberately not listed (it only selects a file). The text is built from the package's `info.plist`, with
+  control characters and invisible Unicode formatting (right-to-left overrides, zero-width characters) removed and long
+  values cut, so a package cannot disguise the prompt. Returning is guarded: the launcher prompt ignores Return for 600 ms
+  and a held-down Return never confirms by repeating.
+  What it cannot know: what a script actually does, the URLs or files a Script Filter returns at run time, and what a bundled
+  binary does. **The prompt is a description, not a sandbox or a scan.**
 * `ashdash://trigger` can only fire an **External Trigger** of an **enabled** workflow, and only after you agreed once per
   workflow in a dialog (default: Don't Allow). There is no URL verb that imports, runs arbitrary scripts or touches files.
 
@@ -186,15 +226,19 @@ What it cannot do:
 * Open URL objects open any scheme (`file:`, `ssh:`, custom handlers) with text that can come from a Script Filter (SEC-13).
 * Workflow hotkeys are chosen by the workflow author. A hotkey workflow can run something every time you press that key.
 * Workflows in `workflow_dirs` can be changed by whoever can write to that folder, at any time.
+* **The import prompt is not the only way in.** It guards the install paths above. Putting a folder into `workflows/` by hand, or adding
+  a path to `workflow_dirs` by editing `config.json` (or `ashdash config set workflow_dirs`), activates that folder's workflows, hotkeys
+  and External Triggers with **no prompt**, and the running launcher applies the change live. A process that can write your
+  `config.json` can already run code as you, so this is documentation, not a new privilege; but only point `workflow_dirs` at
+  folders only you can write, and review a `workflow_dirs` entry you did not add. The `ashdash://` URL scheme, the control socket and AppleScript have no import verb and cannot add a folder.
 
 Rules of thumb: import only from people you trust; read the scripts; keep Ashdash's data folder and your workflow folders writable only by you;
 do not point `workflow_dirs` at a shared or downloaded folder. Current status of every finding: [SECURITY.md](SECURITY.md).
 
 ## Differences from the reference launcher worth knowing
 
-* No workflow editor, no workflow-level enable/disable or configuration window yet.
-* The Script Filter `rerun` re-query and `runningsubtext` display, and the Browse / Action-in-the reference launcher outputs, need launcher
-  window work that is not done.
+* No workflow editor. Enable/disable, settings and removal exist in Preferences (for workflows in Ashdash's own folder).
+* Browse in the reference launcher / Action in the reference launcher only show the launcher with a text typed.
 * Environment, theme and preference variables of the reference launcher itself are not provided (see above).
 * Variables from untrusted data cannot override a protected set of environment names (SEC-02).
 * Workflows live in Ashdash's own folder; your reference launcher preferences are never touched. Sync is not supported.
