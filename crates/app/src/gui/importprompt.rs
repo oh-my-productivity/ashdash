@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use ashdash_core::Mods;
-use ashdash_core::workflow::{PackagePreview, StagedPackage, TrustSummary};
+use ashdash_core::workflow::{PackagePreview, StagedPackage, TrustSummary, WritePlace};
 use eframe::egui::{self, Vec2};
 
 use super::largetype::wrapped_lines;
@@ -159,16 +159,34 @@ pub(crate) fn capability_lines(t: &TrustSummary) -> Vec<String> {
             )
         ));
     }
-    let (outside, inside): (Vec<_>, Vec<_>) = t.file_writes.iter().partition(|w| w.is_outside());
+    let outside: Vec<_> = t.file_writes.iter().filter(|w| w.is_outside()).collect();
+    let own: Vec<_> = t
+        .file_writes
+        .iter()
+        .filter(|w| w.place == WritePlace::WorkflowFolder)
+        .collect();
+    let inside: Vec<_> = t
+        .file_writes
+        .iter()
+        .filter(|w| matches!(w.place, WritePlace::WorkflowData | WritePlace::WorkflowCache))
+        .collect();
     if !outside.is_empty() {
         out.push(format!(
             "Writes files anywhere your account can (or at a place decided at run time): {}",
             listed(&outside.iter().map(|w| w.describe()).collect::<Vec<_>>(), MAX_COMMAND)
         ));
     }
+    if !own.is_empty() {
+        // The installed folder holds info.plist and the scripts: whatever is written there can
+        // add objects or change code after this prompt has been answered.
+        out.push(format!(
+            "Can modify its own files (scripts, settings) after you install it: {}",
+            listed(&own.iter().map(|w| w.describe()).collect::<Vec<_>>(), MAX_COMMAND)
+        ));
+    }
     if !inside.is_empty() {
         out.push(format!(
-            "Writes files in its own folders: {}",
+            "Writes files in its data or cache folder: {}",
             listed(&inside.iter().map(|w| w.describe()).collect::<Vec<_>>(), MAX_COMMAND)
         ));
     }
@@ -185,6 +203,12 @@ pub(crate) fn capability_lines(t: &TrustSummary) -> Vec<String> {
         out.push(format!(
             "Refers to files outside its folder: {}",
             listed(&t.external_files, MAX_COMMAND)
+        ));
+    }
+    if !t.opens_at_run_time.is_empty() {
+        out.push(format!(
+            "Opens files chosen at run time: {} (this can be an app or script shipped inside the package)",
+            listed(&t.opens_at_run_time, MAX_COMMAND)
         ));
     }
     if t.external_triggers > 0 {
@@ -454,7 +478,7 @@ impl LauncherApp {
 
 #[cfg(test)]
 mod tests {
-    use ashdash_core::workflow::{FileWriteInfo, InstalledWorkflow, WriteKind, WritePlace};
+    use ashdash_core::workflow::{FileWriteInfo, INCOMING_ARGUMENT, InstalledWorkflow, WriteKind, WritePlace};
 
     use super::*;
 
@@ -610,6 +634,10 @@ mod tests {
         for (what, text) in [
             ("url", lead(|t| t.open_url_schemes = vec!["https".into()])),
             ("file", lead(|t| t.external_files = vec!["~/x".into()])),
+            (
+                "runtime file",
+                lead(|t| t.opens_at_run_time = vec![INCOMING_ARGUMENT.into()]),
+            ),
             ("trigger", lead(|t| t.external_triggers = 1)),
             ("clipboard", lead(|t| t.copies_to_clipboard = 1)),
             (
@@ -639,7 +667,7 @@ mod tests {
         assert!(all.contains("overwrites ~/Library/LaunchAgents/x.plist"), "{all}");
         assert!(all.contains("prepends to {query} (decided at run time)"), "{all}");
         assert!(
-            all.contains("Writes files in its own folders: appends to notes.txt (its data folder)"),
+            all.contains("Writes files in its data or cache folder: appends to notes.txt (its data folder)"),
             "{all}"
         );
         // lists are cut like the other lists
@@ -647,6 +675,49 @@ mod tests {
             .map(|i| write_file(&format!("/tmp/f{i}"), WriteKind::Overwrite, WritePlace::Anywhere))
             .collect();
         assert!(prompt_text(&p).plain().contains("(+7 more)"));
+    }
+
+    #[test]
+    fn writing_into_its_own_installed_folder_is_a_separate_warning() {
+        // Write File with "relative to the workflow folder" can overwrite info.plist or a
+        // script after the prompt: not "its own folders" in the harmless sense.
+        let mut p = only_write_file();
+        p.trust.file_writes = vec![
+            write_file("notes.txt", WriteKind::Append, WritePlace::WorkflowData),
+            write_file("run.sh", WriteKind::Overwrite, WritePlace::WorkflowFolder),
+        ];
+        let all = prompt_text(&p).plain();
+        assert!(
+            all.contains(
+                "Can modify its own files (scripts, settings) after you install it: overwrites run.sh (its own folder)"
+            ),
+            "{all}"
+        );
+        assert!(
+            all.contains("Writes files in its data or cache folder: appends to notes.txt"),
+            "{all}"
+        );
+        assert!(!all.contains("Writes files in its own folders"), "{all}");
+        assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
+        // only the own-folder write: still a line of its own, no data/cache line
+        p.trust.file_writes = vec![write_file("run.sh", WriteKind::Overwrite, WritePlace::WorkflowFolder)];
+        let all = prompt_text(&p).plain();
+        assert!(all.contains("Can modify its own files"), "{all}");
+        assert!(!all.contains("data or cache folder"), "{all}");
+    }
+
+    #[test]
+    fn files_opened_at_run_time_are_listed_and_not_called_harmless() {
+        let sentence = "Runs no scripts and no terminal commands";
+        let mut t = TrustSummary::default();
+        t.opens_at_run_time = vec![INCOMING_ARGUMENT.into(), "{var:app}".into()];
+        let text = capability_lines(&t).join("\n");
+        assert!(!text.contains(sentence), "{text}");
+        assert!(
+            text.contains("Opens files chosen at run time: (the incoming argument), {var:app}"),
+            "{text}"
+        );
+        assert!(text.contains("an app or script shipped inside the package"), "{text}");
     }
 
     #[test]

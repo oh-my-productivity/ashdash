@@ -19,6 +19,11 @@ pub const SCHEME_DYNAMIC: &str = "{dynamic}";
 /// Reported for URL templates that have no `scheme:` prefix at all.
 pub const SCHEME_NONE: &str = "(none)";
 
+/// Reported in [`TrustSummary::opens_at_run_time`] for an Open File object whose file field is
+/// empty: the executor then opens the incoming argument, which any earlier object (or a Script
+/// Filter result) may have set to a path inside the package itself.
+pub const INCOMING_ARGUMENT: &str = "(the incoming argument)";
+
 /// Longest terminal command template kept verbatim in the summary (characters).
 const MAX_COMMAND_CHARS: usize = 500;
 /// Longest Write File path template kept verbatim in the summary (characters).
@@ -108,6 +113,11 @@ pub struct TrustSummary {
     /// Files outside the workflow directory that objects refer to (absolute, `~` or `..` paths in
     /// script files, Open File, Launch Files and the like), sorted and distinct.
     pub external_files: Vec<String>,
+    /// Open File / Launch Files objects whose target is produced at run time: an empty file field
+    /// (= the incoming argument, [`INCOMING_ARGUMENT`]) or a path with a `{placeholder}`. The
+    /// target can be anything, including an app or script shipped inside the package, so such a
+    /// workflow is never passive. Template text as written, sorted and distinct.
+    pub opens_at_run_time: Vec<String>,
     /// External Trigger objects (what other workflows or a URL could start).
     pub external_triggers: usize,
     /// Write File objects, in graph order: which files the workflow can create, overwrite,
@@ -142,6 +152,7 @@ impl TrustSummary {
             && self.file_writes.is_empty()
             && self.open_url_schemes.is_empty()
             && self.external_files.is_empty()
+            && self.opens_at_run_time.is_empty()
             && self.external_triggers == 0
             && self.copies_to_clipboard == 0
     }
@@ -175,6 +186,19 @@ fn is_external(path: &str) -> bool {
             || std::path::Path::new(p)
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir)))
+}
+
+/// Open File / Launch Files target templates: a target chosen at run time goes to `runtime`,
+/// a literal one outside the workflow folder to `files`.
+fn note_opened(template: &str, runtime: &mut BTreeSet<String>, files: &mut BTreeSet<String>) {
+    let t = template.trim();
+    if t.is_empty() {
+        runtime.insert(INCOMING_ARGUMENT.into());
+    } else if t.contains('{') {
+        runtime.insert(t.to_string());
+    } else if is_external(t) {
+        files.insert(t.to_string());
+    }
 }
 
 /// Classify a Write File object the way the executor will resolve it (`exec.rs`).
@@ -245,6 +269,7 @@ impl Workflow {
         let mut interpreters = BTreeSet::new();
         let mut schemes = BTreeSet::new();
         let mut files = BTreeSet::new();
+        let mut runtime = BTreeSet::new();
         for n in &self.nodes {
             match n.kind.as_str() {
                 "alfred.workflow.action.script"
@@ -276,15 +301,12 @@ impl Workflow {
                     s.terminal_commands.push(t);
                 }
                 "alfred.workflow.action.openfile" => {
-                    let f = n.s("sourcefile");
-                    if is_external(&f) {
-                        files.insert(f);
-                    }
+                    note_opened(&n.s("sourcefile"), &mut runtime, &mut files);
                 }
                 "alfred.workflow.action.launchfiles" => {
                     for p in n.config.get("paths").and_then(|p| p.as_array()).into_iter().flatten() {
-                        if let Some(p) = p.as_str().filter(|p| is_external(p)) {
-                            files.insert(p.to_string());
+                        if let Some(p) = p.as_str() {
+                            note_opened(p, &mut runtime, &mut files);
                         }
                     }
                 }
@@ -299,6 +321,7 @@ impl Workflow {
         s.interpreters = interpreters.into_iter().collect();
         s.open_url_schemes = schemes.into_iter().collect();
         s.external_files = files.into_iter().collect();
+        s.opens_at_run_time = runtime.into_iter().collect();
         s
     }
 }
@@ -412,6 +435,37 @@ mod tests {
         );
         assert_eq!(s.external_triggers, 1);
         assert!(s.runs_code());
+        // O3 (empty field) opens whatever arrives as the argument: reported, not skipped.
+        assert_eq!(s.opens_at_run_time, [INCOMING_ARGUMENT]);
+    }
+
+    #[test]
+    fn open_file_with_an_empty_or_dynamic_field_is_never_passive() {
+        // The three-object graph from the re-review (N1): keyword -> Arg and Vars sets the
+        // argument to a file shipped in the package -> Open File with an empty field. It runs
+        // no script of its own and names no external file, yet it launches shipped code.
+        let s = wf(json!([
+            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go", "argumenttype": 2}},
+            {"uid": "A", "type": "alfred.workflow.utility.argument",
+             "config": {"argument": "~/Library/Application Support/reference-launchero/workflows/user.workflow.t.trust/payload.app"}},
+            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": ""}},
+        ]))
+        .trust_summary();
+        assert_eq!(s.scripts, 0);
+        assert!(!s.runs_code(), "nothing here is a script or a Terminal command ...");
+        assert!(!s.is_passive(), "... but it opens a file chosen at run time");
+        assert_eq!(s.opens_at_run_time, [INCOMING_ARGUMENT]);
+
+        // Placeholders are decided by data, in Open File and in Launch Files.
+        let s = wf(json!([
+            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "{query}"}},
+            {"uid": "P", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "{var:app}/Contents"}},
+            {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["{var:p}", "/Applications/Safari.app"]}},
+        ]))
+        .trust_summary();
+        assert!(!s.is_passive());
+        assert_eq!(s.opens_at_run_time, ["{query}", "{var:app}/Contents", "{var:p}"]);
+        assert_eq!(s.external_files, ["/Applications/Safari.app"]);
     }
 
     #[test]
@@ -513,6 +567,7 @@ mod tests {
         assert!(!with(|t| t.terminal_commands.push("ls".into())));
         assert!(!with(|t| t.open_url_schemes.push("https".into())));
         assert!(!with(|t| t.external_files.push("~/x".into())));
+        assert!(!with(|t| t.opens_at_run_time.push(INCOMING_ARGUMENT.into())));
         assert!(!with(|t| t.external_triggers = 1));
         assert!(!with(|t| t.copies_to_clipboard = 1));
         assert!(!with(|t| t.file_writes.push(FileWriteInfo {

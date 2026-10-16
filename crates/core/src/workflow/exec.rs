@@ -282,6 +282,46 @@ fn with_uuid(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Remove `.` and resolve `..` textually (no disk access, so it also works for paths that do
+/// not exist yet).
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Is `path` the `info.plist` of the workflow folder `dir`? Compared textually (after
+/// resolving `.`/`..`) and, when both exist, by real location; the file name ignores case
+/// because the default macOS volume does.
+fn is_info_plist_of(dir: &Path, path: &Path) -> bool {
+    let norm = lexical_normalize(path);
+    let named = norm
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("info.plist"));
+    if !named {
+        return false;
+    }
+    let Some(parent) = norm.parent() else { return false };
+    if parent == lexical_normalize(dir) {
+        return true;
+    }
+    match (parent.canonicalize(), dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn rend(st: &State, t: &str) -> String {
     render(t, &st.arg, &st.vars)
 }
@@ -580,6 +620,15 @@ impl Workflow {
                 }
                 if node.b("adduuid") {
                     path = with_uuid(&path);
+                }
+                // The import prompt describes the objects that are in the package. A workflow
+                // that could overwrite its own info.plist could add objects (scripts) later, so
+                // that one file is off limits. Other files in the folder stay writable (the reference launcher
+                // semantics), and a script can of course still write anywhere it wants: this
+                // closes the declarative loophole, it is not a sandbox (SEC-30).
+                if is_info_plist_of(&self.dir, &path) {
+                    self.warn(fx, "Write File refuses to change the workflow's own info.plist");
+                    return Flow::Stop;
                 }
                 let mode = match node.i("type") {
                     1 => WriteMode::Append,

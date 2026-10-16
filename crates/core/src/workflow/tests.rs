@@ -414,6 +414,48 @@ fn write_file_output_resolves_path_and_modes() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn write_file_never_rewrites_the_workflows_own_info_plist() {
+    // Re-review N2: relative-to-the-workflow-folder writes may land beside the scripts, but a
+    // package must not add objects to itself after the import prompt. info.plist is refused
+    // however the path is spelled (relative, `./`, `sub/..`, any case, or absolute via a variable).
+    let (wf, paths, root) = load(
+        "selfplist",
+        json!({
+            "variables": {},
+            "objects": [
+                obj("W", "alfred.workflow.output.writefile", json!({
+                    "filename": "{query}", "filetext": "<plist/>", "type": 0,
+                    "relativepathmode": 2, "createintermediatefolders": true})),
+            ],
+            "connections": {}
+        }),
+    );
+    let writes = |fx: &[Effect]| fx.iter().filter(|e| matches!(e, Effect::WriteFile(_))).count();
+    let abs = wf.dir.join("info.plist").display().to_string();
+    for name in [
+        "info.plist",
+        "./info.plist",
+        "sub/../info.plist",
+        "INFO.plist",
+        "Info.Plist",
+        abs.as_str(),
+    ] {
+        let fx = run_at(&wf, &paths, "W", name);
+        assert_eq!(writes(&fx), 0, "{name}: {fx:?}");
+        assert!(
+            notes(&fx).iter().any(|n| n.contains("info.plist")),
+            "{name}: the refusal is reported: {fx:?}"
+        );
+    }
+    // other files in the folder (scripts, settings of the workflow's own) keep working
+    for name in ["run.sh", "sub/info.plist", "info.plist.bak"] {
+        let fx = run_at(&wf, &paths, "W", name);
+        assert_eq!(writes(&fx), 1, "{name}: {fx:?}");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 // ------------------------------------------------------------ triggers
 
 fn trigger_workflow(tag: &str) -> (Workflow, Paths, PathBuf) {

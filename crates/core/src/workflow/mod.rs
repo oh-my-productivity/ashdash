@@ -28,7 +28,7 @@ pub use filter::{KeywordResults, ModOverride, WorkflowAction, rerun_interval};
 pub use model::{Connection, Node, Workflow, load_all};
 pub use package::{InstalledWorkflow, PackagePreview, StagedPackage, import_package, stage_package};
 pub use script::{ScriptOutput, run_osascript};
-pub use trust::{FileWriteInfo, TrustSummary, WriteKind, WritePlace};
+pub use trust::{FileWriteInfo, INCOMING_ARGUMENT, TrustSummary, WriteKind, WritePlace};
 pub use userconfig::ConfigVar;
 
 pub const KIND_KEYWORD: &str = "alfred.workflow.input.keyword";
