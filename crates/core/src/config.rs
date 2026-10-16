@@ -571,8 +571,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(cfg.max_results, 9);
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
         assert_eq!(after["future_key"], json!({"a": [1, 2, {"b": null}], "c": "d"}));
         assert_eq!(after["clipboard"]["future_nested"], json!([true]));
         assert_eq!(after["clipboard"]["max_entries"], 8);
@@ -580,8 +579,7 @@ mod tests {
         assert_eq!(after["max_results"], 9);
         // the typed settings still load, and plain save() keeps them too
         Config::load_strict(&paths).unwrap().save(&paths).unwrap();
-        let again: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        let again: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
         assert_eq!(again, after);
         let _ = std::fs::remove_dir_all(&paths.data);
     }
@@ -600,8 +598,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
         assert!(after.get("clipboard_history_size").is_none());
         assert_eq!(after["clipboard"]["max_entries"], 12);
         assert_eq!(after["extra"], 1);

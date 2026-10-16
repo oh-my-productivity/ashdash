@@ -1051,7 +1051,8 @@ mod tests {
         write_hotkey_workflow(&Paths::under(&root).workflows_dir(), "bg");
         w.refresh_in_background();
         // the call returned without scanning; the host is told once the snapshot is in place
-        rx.recv_timeout(std::time::Duration::from_secs(10)).expect("host notified");
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("host notified");
         assert_eq!(names(&w), ["bg"]);
         let _ = std::fs::remove_dir_all(&root);
     }

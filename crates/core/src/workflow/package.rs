@@ -537,9 +537,19 @@ mod tests {
         assert_eq!(WORKFLOW_PACKAGE_EXTENSIONS.len(), 4);
         for e in WORKFLOW_PACKAGE_EXTENSIONS {
             assert!(is_workflow_package(Path::new(&format!("/x/a.{e}"))), "{e}");
-            assert!(is_workflow_package(Path::new(&format!("a.{}", e.to_uppercase()))), "{e} upper");
+            assert!(
+                is_workflow_package(Path::new(&format!("a.{}", e.to_uppercase()))),
+                "{e} upper"
+            );
         }
-        for no in ["a.alfred2workflow", "a.zip", "alfredworkflow", "a.alfredworkflow.txt", "", "a."] {
+        for no in [
+            "a.alfred2workflow",
+            "a.zip",
+            "alfredworkflow",
+            "a.alfredworkflow.txt",
+            "",
+            "a.",
+        ] {
             assert!(!is_workflow_package(Path::new(no)), "{no:?}");
         }
     }

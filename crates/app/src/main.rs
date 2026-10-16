@@ -349,10 +349,19 @@ mod tests {
     #[test]
     fn import_takes_a_file_and_the_yes_flag_in_any_order() {
         assert_eq!(parse(&["a.alfredworkflow"]), Ok((false, "a.alfredworkflow".into())));
-        assert_eq!(parse(&["--yes", "a.alfredworkflow"]), Ok((true, "a.alfredworkflow".into())));
-        assert_eq!(parse(&["a.alfredworkflow", "--yes"]), Ok((true, "a.alfredworkflow".into())));
+        assert_eq!(
+            parse(&["--yes", "a.alfredworkflow"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
+        assert_eq!(
+            parse(&["a.alfredworkflow", "--yes"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
         // `--` ends the options, so a file whose name starts with a dash can still be imported
-        assert_eq!(parse(&["--", "--odd.alfredworkflow"]), Ok((false, "--odd.alfredworkflow".into())));
+        assert_eq!(
+            parse(&["--", "--odd.alfredworkflow"]),
+            Ok((false, "--odd.alfredworkflow".into()))
+        );
         assert_eq!(parse(&["--yes", "--", "-x"]), Ok((true, "-x".into())));
     }
 

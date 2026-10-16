@@ -394,7 +394,8 @@ mod tests {
 
     #[test]
     fn script_filter_results_steering_later_steps_are_flagged() {
-        let sf = json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
+        let sf =
+            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
         // each acting kind, directly and through a junction
         for kind in [
             "alfred.workflow.action.script",
@@ -425,7 +426,8 @@ mod tests {
 
     #[test]
     fn script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged() {
-        let sf = json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
+        let sf =
+            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
         let acting = json!({"uid": "A", "type": "alfred.workflow.action.openurl", "config": {"url": "https://x.test"}});
         let note = json!({"uid": "N", "type": "alfred.workflow.output.notification", "config": {}});
         // only a notification / clipboard after it
@@ -438,8 +440,11 @@ mod tests {
         // a cycle terminates
         let j1 = json!({"uid": "J1", "type": "alfred.workflow.utility.junction", "config": {}});
         let j2 = json!({"uid": "J2", "type": "alfred.workflow.utility.junction", "config": {}});
-        let s = wf_wired(json!([sf, j1, j2]), json!({"SF": [wire("J1")], "J1": [wire("J2")], "J2": [wire("J1")]}))
-            .trust_summary();
+        let s = wf_wired(
+            json!([sf, j1, j2]),
+            json!({"SF": [wire("J1")], "J1": [wire("J2")], "J2": [wire("J1")]}),
+        )
+        .trust_summary();
         assert!(!s.results_steer_later_steps);
     }
 
