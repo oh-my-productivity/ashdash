@@ -15,7 +15,7 @@
 //! item's (script-level ones remain), as documented by the reference launcher.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -30,8 +30,9 @@ use super::{
     KIND_EXTERNAL_TRIGGER, KIND_FILE_FILTER, KIND_KEYWORD, KIND_LIST_FILTER, KIND_SCRIPT_FILTER, SCRIPT_FILTER_TIMEOUT,
 };
 use super::{Node, Workflow, render};
+use crate::actions::{Os, RealOs};
 use crate::config::Paths;
-use crate::files::expand_tilde;
+use crate::files::{SearchBudget, expand_tilde};
 use crate::fuzzy;
 use crate::item::{Action, Icon, Item, Mods};
 
@@ -207,8 +208,30 @@ impl Workflow {
         (r.items, r.exclusive)
     }
 
+    /// With the real OS and the default file-search budget; the engine uses
+    /// [`Workflow::keyword_results_os`] with its own handle and the configured budget.
     pub fn keyword_results(&self, query: &str, paths: &Paths) -> KeywordResults {
-        self.keyword_results_with(query, paths, &filefilter::mdfind)
+        self.keyword_results_os(query, paths, &RealOs, &SearchBudget::default())
+    }
+
+    /// [`Workflow::keyword_items`] through `os`: File Filter objects run `mdfind` with `budget`
+    /// (time and output bytes), like the built-in file search.
+    pub fn keyword_items_os(
+        &self,
+        query: &str,
+        paths: &Paths,
+        os: &dyn Os,
+        budget: &SearchBudget,
+    ) -> (Vec<Item>, bool) {
+        let r = self.keyword_results_os(query, paths, os, budget);
+        (r.items, r.exclusive)
+    }
+
+    /// [`Workflow::keyword_results`] through `os` with an explicit file-search `budget`.
+    pub fn keyword_results_os(&self, query: &str, paths: &Paths, os: &dyn Os, budget: &SearchBudget) -> KeywordResults {
+        self.keyword_results_with(query, paths, &|pred: &str, scopes: &[PathBuf]| {
+            filefilter::mdfind(os, budget, pred, scopes)
+        })
     }
 
     /// Like [`Workflow::keyword_results`] with an injectable Spotlight search

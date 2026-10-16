@@ -91,6 +91,16 @@ impl FileWriteInfo {
     }
 }
 
+/// An application an Open File (`openwith`) or Open URL (`browser`) object hands its target to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct LaunchedApp {
+    /// The application as written in the workflow (an app name, or a path).
+    pub app: String,
+    /// A literal path that points into the workflow's own folder (relative, or absolute under
+    /// the workflow directory): the workflow ships the code it launches.
+    pub shipped: bool,
+}
+
 /// What a workflow can do on the user's machine, as declared in its object graph.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TrustSummary {
@@ -118,6 +128,14 @@ pub struct TrustSummary {
     /// target can be anything, including an app or script shipped inside the package, so such a
     /// workflow is never passive. Template text as written, sorted and distinct.
     pub opens_at_run_time: Vec<String>,
+    /// Applications that Open File (`openwith`) and Open URL (`browser`) launch, sorted and
+    /// distinct. The application is started with the target as its document, so a path inside
+    /// the package is code the workflow ships and runs.
+    pub launched_apps: Vec<LaunchedApp>,
+    /// Open File / Launch Files targets that are literal relative paths: the executor resolves
+    /// them against the workflow's own folder, so they are files (possibly apps or scripts)
+    /// shipped inside the package. As written, sorted and distinct.
+    pub opens_shipped_files: Vec<String>,
     /// External Trigger objects (what other workflows or a URL could start).
     pub external_triggers: usize,
     /// Write File objects, in graph order: which files the workflow can create, overwrite,
@@ -159,6 +177,8 @@ impl TrustSummary {
             && self.open_url_schemes.is_empty()
             && self.external_files.is_empty()
             && self.opens_at_run_time.is_empty()
+            && self.launched_apps.is_empty()
+            && self.opens_shipped_files.is_empty()
             && self.external_triggers == 0
             && self.copies_to_clipboard == 0
             && !self.results_steer_later_steps
@@ -196,8 +216,14 @@ fn is_external(path: &str) -> bool {
 }
 
 /// Open File / Launch Files target templates: a target chosen at run time goes to `runtime`,
-/// a literal one outside the workflow folder to `files`.
-fn note_opened(template: &str, runtime: &mut BTreeSet<String>, files: &mut BTreeSet<String>) {
+/// a literal one outside the workflow folder to `files`, a literal relative one (resolved
+/// against the workflow folder by the executor) to `shipped`.
+fn note_opened(
+    template: &str,
+    runtime: &mut BTreeSet<String>,
+    files: &mut BTreeSet<String>,
+    shipped: &mut BTreeSet<String>,
+) {
     let t = template.trim();
     if t.is_empty() {
         runtime.insert(INCOMING_ARGUMENT.into());
@@ -205,7 +231,30 @@ fn note_opened(template: &str, runtime: &mut BTreeSet<String>, files: &mut BTree
         runtime.insert(t.to_string());
     } else if is_external(t) {
         files.insert(t.to_string());
+    } else {
+        shipped.insert(t.to_string());
     }
+}
+
+/// An application field (`openwith`, `browser`) is a path rather than an app name when it has a
+/// `/` or ends in `.app`; the executor resolves a relative one against the workflow folder.
+pub(super) fn app_is_path(app: &str) -> bool {
+    app.contains('/') || app.to_ascii_lowercase().ends_with(".app")
+}
+
+/// Record the application field of an Open File / Open URL object.
+fn note_app(app: &str, dir: &std::path::Path, apps: &mut BTreeSet<LaunchedApp>) {
+    let a = app.trim();
+    if a.is_empty() {
+        return;
+    }
+    let literal = !a.contains('{');
+    let relative = app_is_path(a) && !a.starts_with('/') && !a.starts_with('~');
+    let under_dir = a.starts_with('/') && std::path::Path::new(a).starts_with(dir);
+    apps.insert(LaunchedApp {
+        app: a.to_string(),
+        shipped: literal && (relative || under_dir),
+    });
 }
 
 /// Classify a Write File object the way the executor will resolve it (`exec.rs`).
@@ -315,6 +364,8 @@ impl Workflow {
         let mut schemes = BTreeSet::new();
         let mut files = BTreeSet::new();
         let mut runtime = BTreeSet::new();
+        let mut apps = BTreeSet::new();
+        let mut shipped = BTreeSet::new();
         for n in &self.nodes {
             match n.kind.as_str() {
                 "alfred.workflow.action.script"
@@ -340,18 +391,25 @@ impl Workflow {
                 }
                 "alfred.workflow.action.openurl" => {
                     schemes.insert(url_scheme(&n.s("url")));
+                    note_app(&n.s("browser"), &self.dir, &mut apps);
+                }
+                // "Search the web" opens a fixed https URL, in the `browser` application if set.
+                "alfred.workflow.action.systemwebsearch" => {
+                    schemes.insert("https".into());
+                    note_app(&n.s("browser"), &self.dir, &mut apps);
                 }
                 "alfred.workflow.action.terminalcommand" => {
                     let t: String = n.s("text").chars().take(MAX_COMMAND_CHARS).collect();
                     s.terminal_commands.push(t);
                 }
                 "alfred.workflow.action.openfile" => {
-                    note_opened(&n.s("sourcefile"), &mut runtime, &mut files);
+                    note_opened(&n.s("sourcefile"), &mut runtime, &mut files, &mut shipped);
+                    note_app(&n.s("openwith"), &self.dir, &mut apps);
                 }
                 "alfred.workflow.action.launchfiles" => {
                     for p in n.config.get("paths").and_then(|p| p.as_array()).into_iter().flatten() {
                         if let Some(p) = p.as_str() {
-                            note_opened(p, &mut runtime, &mut files);
+                            note_opened(p, &mut runtime, &mut files, &mut shipped);
                         }
                     }
                 }
@@ -367,6 +425,8 @@ impl Workflow {
         s.open_url_schemes = schemes.into_iter().collect();
         s.external_files = files.into_iter().collect();
         s.opens_at_run_time = runtime.into_iter().collect();
+        s.launched_apps = apps.into_iter().collect();
+        s.opens_shipped_files = shipped.into_iter().collect();
         s.results_steer_later_steps = self.script_results_reach_actions();
         s
     }
@@ -548,6 +608,8 @@ mod tests {
         assert!(s.runs_code());
         // O3 (empty field) opens whatever arrives as the argument: reported, not skipped.
         assert_eq!(s.opens_at_run_time, [INCOMING_ARGUMENT]);
+        // O2 and the relative Launch Files path are shipped with the workflow.
+        assert_eq!(s.opens_shipped_files, ["inside/x", "local/readme.md"]);
     }
 
     #[test]
@@ -577,6 +639,76 @@ mod tests {
         assert!(!s.is_passive());
         assert_eq!(s.opens_at_run_time, ["{query}", "{var:app}/Contents", "{var:p}"]);
         assert_eq!(s.external_files, ["/Applications/Safari.app"]);
+    }
+
+    #[test]
+    fn open_file_openwith_and_open_url_browser_are_launched_applications() {
+        // Review item 1: Keyword -> Open File ("."), `openwith` an app inside the package. No
+        // script, no external file, no URL: it still launches shipped code.
+        let s = wf(json!([
+            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go"}},
+            {"uid": "O", "type": "alfred.workflow.action.openfile",
+             "config": {"sourcefile": ".", "openwith": "payload.app"}},
+        ]))
+        .trust_summary();
+        assert!(!s.runs_code());
+        assert!(!s.is_passive(), "{s:?}");
+        assert_eq!(
+            s.launched_apps,
+            [LaunchedApp {
+                app: "payload.app".into(),
+                shipped: true
+            }]
+        );
+
+        // The same with the absolute installed path from the review.
+        let s = wf(json!([
+            {"uid": "O", "type": "alfred.workflow.action.openfile",
+             "config": {"sourcefile": "Applications",
+                        "openwith": "~/Library/Application Support/reference-launchero/workflows/user.workflow.t.trust/payload.app"}},
+        ]))
+        .trust_summary();
+        assert!(!s.is_passive(), "{s:?}");
+        assert_eq!(s.launched_apps.len(), 1);
+
+        // Open URL `browser`: named apps and system apps are listed but not "shipped".
+        let s = wf(json!([
+            {"uid": "U", "type": "alfred.workflow.action.openurl",
+             "config": {"url": "https://x.test", "browser": "Safari"}},
+            {"uid": "V", "type": "alfred.workflow.action.openurl",
+             "config": {"url": "https://x.test", "browser": "./bin/Browser.app"}},
+            {"uid": "W", "type": "alfred.workflow.action.openurl",
+             "config": {"url": "https://x.test", "browser": ""}},
+        ]))
+        .trust_summary();
+        assert_eq!(
+            s.launched_apps,
+            [
+                LaunchedApp {
+                    app: "./bin/Browser.app".into(),
+                    shipped: true
+                },
+                LaunchedApp {
+                    app: "Safari".into(),
+                    shipped: false
+                },
+            ]
+        );
+        assert!(s.launched_apps.iter().any(|a| a.shipped));
+    }
+
+    #[test]
+    fn a_relative_literal_file_is_a_file_shipped_with_the_workflow() {
+        // `open` resolves a relative path against the launcher's working directory; the
+        // executor resolves it against the workflow folder, so the summary calls it shipped.
+        let s = wf(json!([
+            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "payload.app"}},
+            {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["tools/run.command"]}},
+        ]))
+        .trust_summary();
+        assert!(!s.is_passive());
+        assert_eq!(s.opens_shipped_files, ["payload.app", "tools/run.command"]);
+        assert!(s.external_files.is_empty() && s.opens_at_run_time.is_empty());
     }
 
     #[test]
@@ -679,6 +811,11 @@ mod tests {
         assert!(!with(|t| t.open_url_schemes.push("https".into())));
         assert!(!with(|t| t.external_files.push("~/x".into())));
         assert!(!with(|t| t.opens_at_run_time.push(INCOMING_ARGUMENT.into())));
+        assert!(!with(|t| t.launched_apps.push(LaunchedApp {
+            app: "Safari".into(),
+            shipped: false
+        })));
+        assert!(!with(|t| t.opens_shipped_files.push("a.app".into())));
         assert!(!with(|t| t.external_triggers = 1));
         assert!(!with(|t| t.copies_to_clipboard = 1));
         assert!(!with(|t| t.file_writes.push(FileWriteInfo {

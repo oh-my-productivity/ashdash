@@ -238,14 +238,21 @@ impl Workflow {
 }
 
 /// Load every workflow found directly under each directory in `roots`.
+///
+/// Hidden folders (a name starting with `.`) are not workflows: the importer keeps staging
+/// folders, the new tree and the previous version of a workflow being replaced there
+/// (`.import-*`), and a reload during an install must not see a second copy of it. Leftovers of
+/// an interrupted install are cleaned up first (`package::sweep_interrupted_installs`).
 pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {
     let mut out = Vec::new();
     for root in roots {
+        super::package::sweep_interrupted_installs(root, super::package::STALE_SWAP);
         let Ok(rd) = std::fs::read_dir(root) else { continue };
         let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         dirs.sort();
         for d in dirs {
-            if d.join("info.plist").is_file() {
+            let hidden = d.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+            if !hidden && d.join("info.plist").is_file() {
                 match Workflow::load(&d) {
                     Ok(w) => out.push(w),
                     Err(e) => eprintln!("ashdash: skipping workflow {}: {e:#}", d.display()),

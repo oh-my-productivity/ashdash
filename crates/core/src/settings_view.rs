@@ -128,12 +128,23 @@ pub fn set(config: &mut Config, path: &str, raw: &str) -> Result<()> {
     if lookup(&view(&updated), path) != Some(&new) {
         bail!("invalid value for '{path}': {raw}");
     }
-    // A web search the engine would skip is refused here, not dropped later: only entries that
-    // are newly bad count, so an old bad entry never blocks unrelated edits or its own repair.
-    let was_bad = crate::websearch::checked(&config.web_searches).1.len();
-    let (_, now_bad) = crate::websearch::checked(&updated.web_searches);
-    if now_bad.len() > was_bad {
-        bail!("{}", now_bad.join("; "));
+    // A web search the engine would skip is refused here, not dropped later. What is checked is
+    // what this call writes: the entries of a new list (all of them: compare entries, not how
+    // many are bad), or the one entry a `web_searches.N...` path edits. An old bad entry that the
+    // edit does not touch never blocks unrelated edits or its own repair.
+    let mut parts = path.split('.');
+    if parts.next() == Some("web_searches") {
+        let written: Vec<&crate::websearch::WebSearch> = match parts.next().and_then(|i| i.parse::<usize>().ok()) {
+            Some(i) => updated.web_searches.get(i).into_iter().collect(),
+            None => updated.web_searches.iter().collect(),
+        };
+        let problems: Vec<String> = written
+            .into_iter()
+            .flat_map(|w| crate::websearch::checked(std::slice::from_ref(w)).1)
+            .collect();
+        if !problems.is_empty() {
+            bail!("{}", problems.join("; "));
+        }
     }
     *config = updated;
     Ok(())
@@ -950,6 +961,30 @@ mod tests {
         assert_eq!(c.max_results, 12);
         // and the bad entry can be fixed
         set(&mut c, "web_searches.1.url", "https://y.test/?q={query}").unwrap();
+    }
+
+    #[test]
+    fn replacing_the_whole_web_search_list_checks_every_entry_not_the_count() {
+        // Review item 10: with one entry already bad, a new array that still has exactly one bad
+        // entry (a different one) used to pass the count comparison.
+        let mut c = Config::default();
+        c.web_searches[1].url = "file:///x/{query}".into();
+        let good = |k: &str| json!({"keyword": k, "title": k, "url": "https://x.test/?q={query}", "fallback": false});
+        let bad = |k: &str, u: &str| json!({"keyword": k, "title": k, "url": u, "fallback": false});
+        for list in [
+            json!([good("a"), bad("b", "javascript:alert({query})")]),
+            json!([good("a"), bad("b", "file:///etc/{query}")]), // the same kind of bad as the old one
+            json!([bad("a", "https://user:pw@x.test/?q={query}")]),
+            json!([good("a"), good("b"), bad("c", "https://x.test/")]),
+        ] {
+            let before = serde_json::to_value(&c).unwrap();
+            let err = set(&mut c, "web_searches", &list.to_string()).unwrap_err();
+            assert!(format!("{err:#}").contains("not allowed"), "{list}: {err:#}");
+            assert_eq!(serde_json::to_value(&c).unwrap(), before, "{list}: nothing is written");
+        }
+        // an all-valid list is accepted and repairs the old bad entry
+        set(&mut c, "web_searches", &json!([good("a"), good("b")]).to_string()).unwrap();
+        assert_eq!(c.web_searches.len(), 2);
     }
 
     #[test]

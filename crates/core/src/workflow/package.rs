@@ -189,8 +189,17 @@ pub fn stage_package(paths: &Paths, package: &Path) -> Result<StagedPackage> {
     sweep_stale(&root);
     let dest_root = paths.workflows_dir();
     std::fs::create_dir_all(&dest_root)?;
+    sweep_interrupted_installs(&dest_root, STALE_SWAP);
     stage_in(package, &root, &dest_root, Some(paths))
 }
+
+/// Hidden folders beside an installed workflow while it is swapped: the complete new tree, and the
+/// previous version moved aside. Both names carry the start time (seconds), the old one also the
+/// installed folder's name so a crash between the two renames can be undone.
+const COPY_PREFIX: &str = ".import-copy-";
+const OLD_PREFIX: &str = ".import-old-";
+/// A swap takes microseconds (the copy is made first); leftovers older than this are a crash's.
+pub(super) const STALE_SWAP: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Name of the staging folder inside the data folder.
 const STAGING_DIR: &str = "import-staging";
@@ -206,6 +215,53 @@ fn sweep_stale(root: &Path) {
             .is_some_and(|age| age > STALE_STAGING);
         if old && e.file_name().to_string_lossy().starts_with(".import-") {
             let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Clean up what an interrupted install left in a workflows folder `root`: `.import-*` staging
+/// folders older than a day, a half-made `.import-copy-*` tree, and an `.import-old-*` previous
+/// version -- which is put back if its installed folder is missing (the crash fell between the
+/// two renames) and removed otherwise. Anything younger than `stale_after` (a swap in another
+/// process) is left alone. Only names this module writes are touched.
+pub(super) fn sweep_interrupted_installs(root: &Path, stale_after: std::time::Duration) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let now = unix_secs();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(".import-") {
+            continue;
+        }
+        let path = e.path();
+        let started_before = |secs: &str| {
+            secs.parse::<u64>()
+                .is_ok_and(|s| now.saturating_sub(s) >= stale_after.as_secs())
+        };
+        if let Some(rest) = name.strip_prefix(OLD_PREFIX) {
+            let mut parts = rest.splitn(5, '-');
+            let (secs, dest) = (parts.next().unwrap_or(""), parts.nth(3).unwrap_or(""));
+            if !started_before(secs) || dest.is_empty() || dest.contains('/') {
+                continue;
+            }
+            if std::fs::symlink_metadata(root.join(dest)).is_err() {
+                let _ = std::fs::rename(&path, root.join(dest));
+            } else {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if let Some(rest) = name.strip_prefix(COPY_PREFIX) {
+            if started_before(rest.split('-').next().unwrap_or("")) {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > STALE_STAGING);
+            if old {
+                let _ = std::fs::remove_dir_all(&path);
+            }
         }
     }
 }
@@ -281,37 +337,6 @@ fn is_cross_device(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(18)
 }
 
-/// Put `new` at `dest`. When the plain rename crosses a volume boundary the tree is copied
-/// (contents, modes, links, then fsynced) into a hidden folder beside `dest` -- the same folder,
-/// hence the same volume -- and that copy is renamed into place. A failure at any point removes
-/// the copy; `dest` is only ever replaced by a complete tree. `new` is removed after a successful
-/// copy install and left alone otherwise.
-fn place(
-    new: &Path,
-    dest: &Path,
-    scratch_parent: &Path,
-    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    match rename(new, dest) {
-        Err(e) if is_cross_device(&e) => {
-            let n = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let copy = scratch_parent.join(format!(".import-copy-{}-{n}", std::process::id()));
-            let result = copy_tree_synced(new, &copy).and_then(|()| rename(&copy, dest));
-            match result {
-                Ok(()) => {
-                    let _ = std::fs::remove_dir_all(new);
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_dir_all(&copy);
-                    Err(e)
-                }
-            }
-        }
-        other => other,
-    }
-}
-
 /// Copy a directory tree (files with their permission bits, directories, symlinks as links) and
 /// fsync every file and directory. `to` must not exist; it is created 0700 first and gets the
 /// source's mode last.
@@ -357,25 +382,91 @@ fn copy_tree_synced(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Seconds since the epoch, as written into the names of swap leftovers.
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// How the complete tree got beside the destination.
+enum Ready {
+    /// `new` was renamed to the ready path (same volume); give it back if the swap fails.
+    Moved,
+    /// `new` was copied across a volume boundary; `new` is removed after a successful install.
+    Copied,
+}
+
+/// Put a complete copy of `new` at `ready`, a hidden folder beside the destination (hence on its
+/// volume). The slow part of an install -- on a different volume the tree is copied, modes and
+/// links kept, and fsynced -- happens here, **before** the installed version is touched.
+fn make_ready(
+    new: &Path,
+    ready: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<Ready> {
+    match rename(new, ready) {
+        Ok(()) => Ok(Ready::Moved),
+        Err(e) if is_cross_device(&e) => match copy_tree_synced(new, ready) {
+            Ok(()) => Ok(Ready::Copied),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(ready);
+                Err(e)
+            }
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Install `new` as `dest`. The complete tree is first put beside `dest` ([`make_ready`]); only
+/// then is the previous version moved aside and the tree renamed into place: two renames, so the
+/// workflow is missing for microseconds rather than for the length of a cross-volume copy. If the
+/// final rename fails the previous version is restored. `new` is removed after a successful copy
+/// install and otherwise left (or put back) so the caller may retry.
 fn install_with(
     new: &Path,
     dest: &Path,
     scratch_parent: &Path,
     rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
+    let n = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let secs = unix_secs();
+    let ready = scratch_parent.join(format!("{COPY_PREFIX}{secs}-{}-{n}", std::process::id()));
+    let how = make_ready(new, &ready, rename).context("installing the workflow")?;
+    let give_back = |ready: &Path| match how {
+        Ready::Moved => {
+            let _ = rename(ready, new);
+        }
+        Ready::Copied => {
+            let _ = std::fs::remove_dir_all(ready);
+        }
+    };
+    let dest_name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut last: Option<std::io::Error> = None;
     for attempt in 0..5 {
-        let n = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let aside = scratch_parent.join(format!(".import-old-{}-{n}-{attempt}", std::process::id()));
+        let aside = scratch_parent.join(format!(
+            "{OLD_PREFIX}{secs}-{}-{n}-{attempt}-{dest_name}",
+            std::process::id()
+        ));
         let moved = match rename(dest, &aside) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(e).context("replacing the installed workflow"),
+            Err(e) => {
+                give_back(&ready);
+                return Err(e).context("replacing the installed workflow");
+            }
         };
-        match place(new, dest, scratch_parent, rename) {
+        match rename(&ready, dest) {
             Ok(()) => {
                 if moved {
                     let _ = std::fs::remove_dir_all(&aside);
+                }
+                if matches!(how, Ready::Copied) {
+                    let _ = std::fs::remove_dir_all(new);
                 }
                 return Ok(());
             }
@@ -388,12 +479,14 @@ fn install_with(
                     e.kind(),
                     std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::AlreadyExists
                 ) {
+                    give_back(&ready);
                     return Err(e).context("installing the workflow");
                 }
                 last = Some(e);
             }
         }
     }
+    give_back(&ready);
     Err(anyhow!(
         "could not install the workflow: {}",
         last.map(|e| e.to_string()).unwrap_or_default()
@@ -707,6 +800,176 @@ mod tests {
         install_with(&staging, &dest, &root, &rename).unwrap();
         assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "plist");
         assert!(!dest.join("old-only.txt").exists());
+        assert!(leftovers(&root).is_empty(), "{:?}", leftovers(&root));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn minimal_workflow(dir: &Path, name: &str, bundle: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>\
+             <key>name</key><string>{name}</string><key>bundleid</key><string>{bundle}</string>\
+             <key>objects</key><array/></dict></plist>"
+        );
+        std::fs::write(dir.join("info.plist"), xml).unwrap();
+    }
+
+    #[test]
+    fn load_all_skips_dot_directories_so_a_swap_in_progress_is_not_a_second_workflow() {
+        // Review item 9: `.import-old-*`, `.import-copy-*` and `.import-*` staging folders sit in
+        // the workflows folder and hold a complete info.plist.
+        let root = std::env::temp_dir().join(format!("oa-loadall-dots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        minimal_workflow(&root.join("user.workflow.a"), "A", "t.a");
+        minimal_workflow(&root.join(".import-old-0-1-2-0-user.workflow.a"), "A", "t.a");
+        minimal_workflow(&root.join(".import-copy-0-1-2"), "A", "t.a");
+        minimal_workflow(&root.join(".import-1-2-abc"), "A", "t.a");
+        minimal_workflow(&root.join(".hidden"), "H", "t.h");
+        let all = crate::workflow::load_all(std::slice::from_ref(&root));
+        assert_eq!(all.len(), 1, "{:?}", all.iter().map(|w| &w.id).collect::<Vec<_>>());
+        assert_eq!(all[0].id, "user.workflow.a");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_old_version_stays_visible_until_the_new_copy_is_complete() {
+        // Review item 9: on a cross-volume install the copy is the slow part. It happens first;
+        // only then is the old version moved aside and the copy renamed into place.
+        let base = std::env::temp_dir().join(format!("oa-exdev-vis-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (staging, root) = (base.join("staging/.import-v"), base.join("workflows"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        make_tree(&staging);
+        let dest = root.join("user.workflow.t.v");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("info.plist"), "OLD").unwrap();
+        let log = std::cell::RefCell::new(Vec::<String>::new());
+        let rename = |from: &Path, to: &Path| -> std::io::Result<()> {
+            let old_visible = std::fs::read_to_string(dest.join("info.plist")).ok();
+            let what = if from == dest {
+                format!("old->aside (copy complete: {})", to.parent() == Some(root.as_path()))
+            } else if to == dest {
+                format!(
+                    "copy->dest (copy has info.plist: {}, old visible: {})",
+                    from.join("info.plist").is_file(),
+                    old_visible.is_some()
+                )
+            } else {
+                format!("other (old visible: {})", old_visible.as_deref() == Some("OLD"))
+            };
+            log.borrow_mut().push(what);
+            if from.starts_with(base.join("staging")) {
+                return Err(exdev());
+            }
+            std::fs::rename(from, to)
+        };
+        install_with(&staging, &dest, &root, &rename).unwrap();
+        let log = log.into_inner();
+        assert_eq!(
+            log,
+            [
+                "other (old visible: true)", // the staging rename that fails with EXDEV: the copy follows
+                "old->aside (copy complete: true)",
+                "copy->dest (copy has info.plist: true, old visible: false)",
+            ],
+            "{log:#?}"
+        );
+        // Between "old->aside" and "copy->dest" nothing slow happens: no copy is made there.
+        assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "plist");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn interrupted_installs_are_swept_and_a_lost_workflow_is_put_back() {
+        let root = std::env::temp_dir().join(format!("oa-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let now = unix_secs();
+        let make = |name: &str, body: &str| {
+            let d = root.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("info.plist"), body).unwrap();
+        };
+        // crash between the two renames: the old version is the only copy -> put back
+        make(".import-old-1000-1-1-0-user.workflow.lost", "LOST");
+        // successful swap whose cleanup failed: the installed folder exists -> remove the old one
+        make("user.workflow.kept", "NEW");
+        make(".import-old-1000-1-2-0-user.workflow.kept", "OLD");
+        // a half-made copy
+        make(".import-copy-1000-1-3", "HALF");
+        // a swap in another process, started just now: untouched
+        make(&format!(".import-old-{now}-9-9-0-user.workflow.live"), "LIVE");
+        make(&format!(".import-copy-{now}-9-8"), "LIVE");
+        // something that is not ours, and an old-looking name with junk in it
+        make(".DS_Store.d", "X");
+        make(".import-old-notanumber-1-1-0-user.workflow.z", "Z");
+        make(".import-old-1000-1-1-0-", "NODEST");
+
+        sweep_interrupted_installs(&root, STALE_SWAP);
+
+        let read = |n: &str| std::fs::read_to_string(root.join(n).join("info.plist")).ok();
+        assert_eq!(read("user.workflow.lost").as_deref(), Some("LOST"));
+        assert_eq!(read("user.workflow.kept").as_deref(), Some("NEW"));
+        assert!(!root.join(".import-old-1000-1-1-0-user.workflow.lost").exists());
+        assert!(!root.join(".import-old-1000-1-2-0-user.workflow.kept").exists());
+        assert!(!root.join(".import-copy-1000-1-3").exists());
+        assert!(
+            root.join(format!(".import-old-{now}-9-9-0-user.workflow.live"))
+                .exists()
+        );
+        assert!(root.join(format!(".import-copy-{now}-9-8")).exists());
+        assert!(root.join(".DS_Store.d").exists());
+        assert!(root.join(".import-old-notanumber-1-1-0-user.workflow.z").exists());
+        assert!(root.join(".import-old-1000-1-1-0-").exists());
+        // and a reload brings the restored workflow back
+        let ids: Vec<_> = crate::workflow::load_all(std::slice::from_ref(&root))
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert!(ids.is_empty(), "the test plists are not workflows: {ids:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staging_a_package_sweeps_the_workflows_folder() {
+        let root = std::env::temp_dir().join(format!("oa-sweep-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = Paths::under(&root);
+        let wfs = paths.workflows_dir();
+        std::fs::create_dir_all(wfs.join(".import-copy-1000-1-3")).unwrap();
+        let pkg = root.join("sample.alfredworkflow");
+        sample_package(&pkg);
+        let _staged = stage_package(&paths, &pkg).unwrap();
+        assert!(!wfs.join(".import-copy-1000-1-3").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_same_volume_install_gives_the_staged_tree_back() {
+        let base = std::env::temp_dir().join(format!("oa-giveback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (staging, root) = (base.join("staging/.import-g"), base.join("workflows"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        make_tree(&staging);
+        let dest = root.join("user.workflow.t.g");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("info.plist"), "OLD").unwrap();
+        let rename = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if to == dest
+                && from
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(COPY_PREFIX))
+            {
+                return Err(std::io::Error::other("simulated failure"));
+            }
+            std::fs::rename(from, to)
+        };
+        install_with(&staging, &dest, &root, &rename).unwrap_err();
+        assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "OLD");
+        assert!(staging.join("info.plist").is_file(), "the caller may retry");
         assert!(leftovers(&root).is_empty(), "{:?}", leftovers(&root));
         let _ = std::fs::remove_dir_all(&base);
     }
