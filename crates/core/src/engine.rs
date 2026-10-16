@@ -42,6 +42,11 @@ pub struct Engine {
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
     providers: Vec<Box<dyn Provider>>,
+    /// Settings applied after start-up by [`Engine::apply_config`]; they take precedence over
+    /// `config` and `providers` (which stay as the start-up snapshot).
+    live: RwLock<Option<Arc<Live>>>,
+    /// What providers are built from (kept for [`Engine::apply_config`]).
+    deps: RegistryDeps,
     /// Everything that reaches the machine from `perform` (Universal Actions).
     os: Arc<dyn Os>,
     /// Background reload bookkeeping (see [`Engine::reload`]).
@@ -50,6 +55,19 @@ pub struct Engine {
     settings_lock: Mutex<()>,
     /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
     clip_env: Box<dyn clipboard::command::ClipEnv + Send + Sync>,
+}
+
+/// Configuration and the providers built from it, swapped as one unit.
+struct Live {
+    config: Config,
+    providers: Vec<Box<dyn Provider>>,
+}
+
+/// What [`Engine::apply_config`] could not apply to the running engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApplyReport {
+    /// Setting names that only take effect after a restart.
+    pub restart_required: Vec<&'static str>,
 }
 
 #[derive(Default)]
@@ -138,7 +156,8 @@ impl Engine {
     }
 
     fn with_deps(paths: Paths, config: Config, deps: RegistryDeps) -> Engine {
-        let usage = Usage::load(paths.usage_file());
+        let mut usage = Usage::load(paths.usage_file());
+        usage.set_enabled(config.learn_usage);
         let mut clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard.max_entries);
         config.clipboard.apply(&mut clipboard);
         // Served from the cache at once (or scanned synchronously on the very first run);
@@ -156,7 +175,9 @@ impl Engine {
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
             providers,
-            os: deps.os,
+            live: RwLock::new(None),
+            os: Arc::clone(&deps.os),
+            deps,
             reload_gate: Arc::default(),
             settings_lock: Mutex::new(()),
             clip_env: Box::new(clipboard::command::SystemEnv::default()),
@@ -219,14 +240,15 @@ impl Engine {
         self.reload_job().run();
     }
 
-    /// Workflows and snippets only (applications are handled by the app index).
-    fn reload_content(&self) {
+    /// Workflows and snippets only (applications are handled by the app index). Used by the
+    /// settings watcher and the preferences window after they changed those files.
+    pub fn reload_content(&self) {
         self.reload_job().run_content();
     }
 
     fn reload_job(&self) -> ReloadJob {
         let mut roots = vec![self.paths.workflows_dir()];
-        roots.extend(self.config.workflow_dirs.iter().cloned());
+        roots.extend(self.config_now().workflow_dirs.iter().cloned());
         ReloadJob {
             app_index: Arc::clone(&self.app_index),
             workflows: Arc::clone(&self.workflows),
@@ -234,6 +256,47 @@ impl Engine {
             workflow_roots: roots,
             snippets_file: self.paths.snippets_file(),
         }
+    }
+
+    /// The settings in force: the last [`Engine::apply_config`], or the start-up settings.
+    pub fn config_now(&self) -> Config {
+        match &*self.live.read().unwrap() {
+            Some(l) => l.config.clone(),
+            None => self.config.clone(),
+        }
+    }
+
+    /// Put new settings into force without restarting: rebuilds the providers (provider
+    /// switches, web searches, file search scope, bookmark sources), re-applies the clipboard
+    /// retention / ignore list, the usage-learning switch and the extra workflow folders.
+    /// Queries running meanwhile finish with the old settings. Settings that are read once at
+    /// start-up are listed in the report (`app_dirs`); the global hotkey and the theme belong to
+    /// the window, which applies them itself.
+    pub fn apply_config(&self, new: Config) -> ApplyReport {
+        let old = self.config_now();
+        let mut report = ApplyReport::default();
+        if new.app_dirs != old.app_dirs {
+            report.restart_required.push("app_dirs");
+        }
+        let providers = providers::registry_for(&new, &self.deps);
+        new.clipboard.apply(&mut self.clipboard.lock().unwrap());
+        self.usage.lock().unwrap().set_enabled(new.learn_usage);
+        let workflows_moved = new.workflow_dirs != old.workflow_dirs;
+        *self.live.write().unwrap() = Some(Arc::new(Live { config: new, providers }));
+        if workflows_moved {
+            self.reload_content();
+        }
+        report
+    }
+
+    /// Whether result picks are recorded and used for ranking.
+    pub fn usage_enabled(&self) -> bool {
+        self.usage.lock().unwrap().is_enabled()
+    }
+
+    /// Forget everything learned from earlier picks (memory and `usage.json`).
+    pub fn clear_usage(&self) {
+        self.usage.lock().unwrap().clear();
     }
 
     pub fn clipboard(&self) -> Arc<Mutex<ClipboardHistory>> {
@@ -267,24 +330,7 @@ impl Engine {
     pub fn workflow_settings(&self, bundle_id: &str) -> Option<Vec<WorkflowSetting>> {
         let wfs = self.workflows.read().unwrap();
         let wf = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id)?;
-        let vars = wf.base_vars(&self.paths);
-        Some(
-            wf.user_config
-                .iter()
-                .map(|c| {
-                    let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
-                    WorkflowSetting {
-                        variable: c.variable.clone(),
-                        label: c.label.clone(),
-                        description: c.description.clone(),
-                        kind: c.kind.clone(),
-                        is_default: value == c.default,
-                        default: c.default.clone(),
-                        value,
-                    }
-                })
-                .collect(),
-        )
+        Some(crate::settings_view::workflow_settings_of(wf, &self.paths))
     }
 
     /// Save a value for one entry of a workflow's configuration sheet. It is
@@ -308,16 +354,7 @@ impl Engine {
         if !wf.user_config.iter().any(|c| c.variable == variable) {
             bail!("workflow '{}' has no setting '{variable}'", wf.name);
         }
-        let file = wf.user_values_file(&self.paths);
-        let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        match value {
-            Some(v) => map.insert(variable.to_string(), v.into()),
-            None => map.remove(variable),
-        };
-        crate::config::write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+        crate::settings_view::write_workflow_value(wf, &self.paths, variable, value)?;
         // The values are cached per loaded workflow: drop the cache so the next run re-reads them.
         wf.reset_session();
         Ok(())
@@ -333,8 +370,13 @@ impl Engine {
         if q.trim().is_empty() {
             return Vec::new();
         }
+        let live = self.live.read().unwrap().clone();
+        let (config, providers) = match &live {
+            Some(l) => (&l.config, &l.providers),
+            None => (&self.config, &self.providers),
+        };
         let state = EngineState {
-            config: &self.config,
+            config,
             paths: &self.paths,
             apps: &self.apps,
             workflows: &self.workflows,
@@ -349,11 +391,11 @@ impl Engine {
         let mut items = Vec::new();
         let mut fixed = Vec::new(); // from providers that opt out of learning
         let mut trailing = Vec::new();
-        for p in &self.providers {
+        for p in providers {
             let out = p.query(&ctx);
             if out.exclusive {
                 let mut v = out.items;
-                v.truncate(self.config.max_results);
+                v.truncate(config.max_results);
                 return v;
             }
             match (p.placement(), p.learns()) {
@@ -371,7 +413,7 @@ impl Engine {
         }
         items.extend(fixed);
         sort_items(&mut items);
-        items.truncate(self.config.max_results);
+        items.truncate(config.max_results);
         items.extend(trailing);
         items
     }

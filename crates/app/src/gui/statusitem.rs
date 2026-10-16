@@ -17,6 +17,7 @@ use objc2_foundation::NSString;
 pub enum MenuCmd {
     Show,
     Reload,
+    Preferences,
     Quit,
 }
 
@@ -41,6 +42,11 @@ define_class!(
         #[unsafe(method(reloadIndex:))]
         fn reload_index(&self, _sender: Option<&AnyObject>) {
             self.send(MenuCmd::Reload);
+        }
+
+        #[unsafe(method(openPreferences:))]
+        fn open_preferences(&self, _sender: Option<&AnyObject>) {
+            self.send(MenuCmd::Preferences);
         }
 
         #[unsafe(method(quitLauncher:))]
@@ -101,10 +107,7 @@ pub fn install(tx: Sender<MenuCmd>, ctx: egui::Context) -> Option<StatusItem> {
     menu.addItem(&menu_item(mtm, "Show Ashdash", Some(sel!(showLauncher:)), &target));
     menu.addItem(&menu_item(mtm, "Reload", Some(sel!(reloadIndex:)), &target));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
-    // TODO(prefs-window): enable once the preferences window exists.
-    let prefs = menu_item(mtm, "Preferences…", None, &target);
-    prefs.setEnabled(false);
-    menu.addItem(&prefs);
+    menu.addItem(&menu_item(mtm, "Preferences…", Some(sel!(openPreferences:)), &target));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     menu.addItem(&menu_item(mtm, "Quit Ashdash", Some(sel!(quitLauncher:)), &target));
 

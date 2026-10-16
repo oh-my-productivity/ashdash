@@ -23,17 +23,22 @@ pub(super) fn install_hotkey(
     let (toggle_tx, toggle_rx) = channel::<()>();
     let mut manager = None;
     let mut error = None;
+    // Installed even when the registration below fails: the handler can only be set once per
+    // process, and live reload (gui/prefs/reload.rs) may register a working hotkey later.
+    {
+        let ctx = ctx.clone();
+        GlobalHotKeyEvent::set_event_handler(Some(move |ev: GlobalHotKeyEvent| {
+            // Workflow hotkeys share this process-wide handler (crate::hotkeys).
+            crate::hotkeys::route(&ev);
+            if ev.id == super::prefs::hotkey::main_id() && ev.state == HotKeyState::Pressed {
+                let _ = toggle_tx.send(());
+                ctx.request_repaint();
+            }
+        }));
+    }
     match register_hotkey(&engine.config.hotkey) {
         Ok((m, id)) => {
-            let ctx = ctx.clone();
-            GlobalHotKeyEvent::set_event_handler(Some(move |ev: GlobalHotKeyEvent| {
-                // Workflow hotkeys share this process-wide handler (crate::hotkeys).
-                crate::hotkeys::route(&ev);
-                if ev.id == id && ev.state == HotKeyState::Pressed {
-                    let _ = toggle_tx.send(());
-                    ctx.request_repaint();
-                }
-            }));
+            super::prefs::hotkey::set_main_id(id);
             manager = Some(m);
             eprintln!(
                 "ashdash: press {} to open (Esc to close, Cmd+Q to quit)",
@@ -121,6 +126,7 @@ impl LauncherApp {
                     std::thread::spawn(move || engine.reload());
                     self.automation.reload_hotkeys(self._hotkey_manager.as_ref());
                 }
+                MenuCmd::Preferences => super::prefs::open_or_report(),
                 MenuCmd::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }
         }

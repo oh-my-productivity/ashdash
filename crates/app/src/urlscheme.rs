@@ -57,6 +57,8 @@ pub enum UrlCommand {
         arg: String,
     },
     Reload,
+    /// Open the preferences window.
+    Prefs,
     /// A theme file name inside the themes directory (no path separators).
     Theme {
         name: String,
@@ -186,7 +188,7 @@ pub fn parse(url: &str) -> Result<UrlCommand, UrlError> {
         }
     }
     let allowed: &[&str] = match verb.as_str() {
-        "show" | "reload" => &[],
+        "show" | "reload" | "prefs" => &[],
         "search" => &["query"],
         "trigger" => &["bundle", "name", "arg"],
         "theme" => &["name"],
@@ -201,6 +203,7 @@ pub fn parse(url: &str) -> Result<UrlCommand, UrlError> {
     match verb.as_str() {
         "show" => Ok(UrlCommand::Show),
         "reload" => Ok(UrlCommand::Reload),
+        "prefs" => Ok(UrlCommand::Prefs),
         "search" => {
             let query = take(&mut params, "query")?;
             if query.len() > MAX_QUERY {
@@ -414,6 +417,10 @@ impl UrlDispatcher {
                 log_invocation("reload", "-");
                 self.sink.emit(AppEvent::Reload);
             }
+            UrlCommand::Prefs => {
+                log_invocation("prefs", "-");
+                self.sink.emit(AppEvent::Preferences);
+            }
             UrlCommand::Theme { name } => {
                 log_invocation("theme", &name);
                 let file = self.theme_file(&name)?;
@@ -601,6 +608,7 @@ mod tests {
             }
         );
         assert_eq!(q("ashdash://reload"), UrlCommand::Reload);
+        assert_eq!(q("ashdash://prefs"), UrlCommand::Prefs);
         assert_eq!(q("ashdash://show"), UrlCommand::Show);
         assert_eq!(
             q("ashdash://theme?name=Dark%20Mode"),
@@ -796,10 +804,17 @@ mod tests {
         r.d.dispatch("ashdash://search?query=saf").unwrap();
         r.d.dispatch("ashdash://reload").unwrap();
         r.d.dispatch("ashdash://show").unwrap();
+        r.d.dispatch("ashdash://prefs").unwrap();
         assert_eq!(
             r.sink.take(),
-            vec![AppEvent::Search("saf".into()), AppEvent::Reload, AppEvent::Show]
+            vec![
+                AppEvent::Search("saf".into()),
+                AppEvent::Reload,
+                AppEvent::Show,
+                AppEvent::Preferences
+            ]
         );
+        assert!(r.d.dispatch("ashdash://prefs?x=1").is_err());
         assert!(r.d.dispatch("reference://search?query=saf").is_err());
         assert!(r.sink.take().is_empty());
         let _ = fs::remove_dir_all(&r.dir);

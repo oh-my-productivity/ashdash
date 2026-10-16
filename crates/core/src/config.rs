@@ -88,6 +88,9 @@ pub struct Config {
     /// Provider ids (see `providers::provider_ids`) that are switched off.
     /// Unknown ids are ignored, so a setting survives a provider being renamed.
     pub providers_disabled: Vec<String>,
+    /// Learn from the results you pick to rank them (`usage.json`). Off = nothing is
+    /// recorded and existing data does not influence ranking. Preferences switch.
+    pub learn_usage: bool,
 }
 
 /// Serializable form of [`FileSearchScope`]. Paths may start with `~`.
@@ -320,6 +323,7 @@ impl Default for Config {
             file_search: FileSearchSettings::default(),
             clipboard: ClipboardSettings::default(),
             providers_disabled: Vec::new(),
+            learn_usage: true,
         }
     }
 }

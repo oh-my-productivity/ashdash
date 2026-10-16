@@ -29,6 +29,10 @@ impl Backend for EngineHost {
     fn validate_theme(&self, file: &Path) -> Result<(), String> {
         Theme::load(file).map(|_| ()).map_err(|e| format!("{e:#}"))
     }
+
+    fn clear_usage(&self) {
+        self.engine.clear_usage();
+    }
 }
 
 impl UrlHost for EngineHost {

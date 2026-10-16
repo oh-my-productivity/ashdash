@@ -23,6 +23,8 @@ pub enum AppEvent {
     /// Re-scan applications, workflows and snippets; re-register workflow hotkeys.
     Reload,
     Quit,
+    /// Open the preferences window (a separate process).
+    Preferences,
     /// Apply an `.alfredappearance` file.
     Theme(std::path::PathBuf),
     /// Present the result of something that ran without the window (a hotkey,
