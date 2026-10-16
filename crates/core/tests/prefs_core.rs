@@ -98,7 +98,10 @@ fn web_searches_with_non_web_urls_are_skipped_and_reported() {
     assert!(report.warnings[0].contains("ssh"));
     assert!(all(&engine, "ssh x").iter().all(|id| !id.starts_with("web:ssh")));
     assert!(all(&engine, "fine x").iter().any(|id| id.starts_with("web:fine")));
-    assert!(engine.apply_config(engine.config_now().clone()).warnings.len() == 1, "still reported");
+    assert!(
+        engine.apply_config(engine.config_now().clone()).warnings.len() == 1,
+        "still reported"
+    );
 }
 
 #[test]

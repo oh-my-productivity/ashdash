@@ -561,9 +561,19 @@ mod tests {
         c.save(&r.paths).unwrap();
         r.reload.apply_disk_config(&mut w);
         r.reload.publish();
-        assert!(!web_search_titles(&r.engine, "zork hi").iter().any(|t| t.contains("Zork")));
+        assert!(
+            !web_search_titles(&r.engine, "zork hi")
+                .iter()
+                .any(|t| t.contains("Zork"))
+        );
         let st = status::read(&r.paths).unwrap();
-        assert!(st.problems.iter().any(|p| p.contains("zork") && p.contains("not allowed")), "{:?}", st.problems);
+        assert!(
+            st.problems
+                .iter()
+                .any(|p| p.contains("zork") && p.contains("not allowed")),
+            "{:?}",
+            st.problems
+        );
         // fixing the entry clears the problem
         let mut c = Config::load(&r.paths);
         c.web_searches.retain(|s| s.keyword != "zork");

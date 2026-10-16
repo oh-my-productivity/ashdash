@@ -1535,7 +1535,9 @@ mod tests {
         let extra = root.join("extra-workflows");
         std::fs::create_dir_all(extra.join("copy")).unwrap();
         let doc = json!({"name": "Extra", "bundleid": "extra.b", "objects": [], "connections": {}});
-        json_to_plist(&doc).to_file_xml(extra.join("copy").join("info.plist")).unwrap();
+        json_to_plist(&doc)
+            .to_file_xml(extra.join("copy").join("info.plist"))
+            .unwrap();
         let e = Arc::new(e);
         // Hold the workflow list so a synchronous scan could never finish its swap.
         let guard = e.workflows.write().unwrap();

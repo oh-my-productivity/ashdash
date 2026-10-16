@@ -281,9 +281,10 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     });
     let dest = paths.data.join("themes").join(format!("{stem}.alfredappearance"));
     write_private(&dest, &bytes).context("copying the theme")?;
-    let mut config = Config::load(paths);
-    config.theme = Some(dest);
-    config.save(paths).context("saving config.json")?;
+    Config::edit_locked(paths, |config| {
+        config.theme = Some(dest);
+        Ok(())
+    })?;
     THEME_EPOCH.fetch_add(1, Ordering::AcqRel);
     let shown = if theme.name.is_empty() {
         stem
@@ -706,6 +707,27 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn theme_install_waits_for_the_config_lock() {
+        let root = temp_dir("theme-lock");
+        let paths = Paths::under(&root);
+        let src = root.join("download.alfredappearance");
+        std::fs::write(&src, THEME_XML).unwrap();
+        let guard = ashdash_core::config::ConfigLock::acquire(&paths).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (p2, s2) = (paths.clone(), src.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(install_theme(&p2, &s2).is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+            "the theme was written while another writer held the config lock"
+        );
+        drop(guard);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(true));
+        assert!(Config::load(&paths).theme.is_some());
     }
 
     #[test]

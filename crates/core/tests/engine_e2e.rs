@@ -481,8 +481,14 @@ fn run_node_reports_unknown_bundle_node_and_disabled_workflows() {
     let e = env.engine();
     let none = std::collections::BTreeMap::new;
     assert!(matches!(e.run_node("no.such", "H", "", none()), Outcome::Error(_)));
-    assert!(matches!(e.run_node("user.workflow.hk", "NOPE", "", none()), Outcome::Error(_)));
-    assert!(matches!(e.run_node("user.workflow.off", "H", "", none()), Outcome::Error(_)));
+    assert!(matches!(
+        e.run_node("user.workflow.hk", "NOPE", "", none()),
+        Outcome::Error(_)
+    ));
+    assert!(matches!(
+        e.run_node("user.workflow.off", "H", "", none()),
+        Outcome::Error(_)
+    ));
 }
 
 /// A hotkey workflow whose output text names the copy that ran.
@@ -509,7 +515,10 @@ fn run_node_runs_the_copy_that_owns_the_hotkey_when_bundle_ids_collide() {
     env.install_workflow("user.workflow.one", &marked_hotkey_workflow("qa.same", "first"));
     let second_root = env.root.join("more-workflows");
     std::fs::create_dir_all(second_root.join("copy-two")).unwrap();
-    common::write_info_plist(&second_root.join("copy-two"), &marked_hotkey_workflow("qa.same", "second"));
+    common::write_info_plist(
+        &second_root.join("copy-two"),
+        &marked_hotkey_workflow("qa.same", "second"),
+    );
     let mut cfg = env.config();
     cfg.workflow_dirs = vec![second_root];
     let e = Engine::new(env.paths.clone(), cfg);
