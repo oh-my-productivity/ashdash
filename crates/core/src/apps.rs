@@ -39,9 +39,14 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<AppEntry> {
     crate::index::scan_entries(dirs)
 }
 
+/// An app's `Info.plist` is a few KB; one this big is not read.
+const MAX_INFO_PLIST_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Locate the `.icns` file of an app bundle from its Info.plist.
 fn icns_path(app: &Path) -> Option<PathBuf> {
-    let info = plist::Value::from_file(app.join("Contents/Info.plist")).ok()?;
+    // Bounded in size and nesting: a hostile bundle's Info.plist must not abort the launcher.
+    let bytes = crate::theme::read_limited(&app.join("Contents/Info.plist"), MAX_INFO_PLIST_BYTES).ok()?;
+    let info = crate::theme::parse_plist(&bytes).ok()?;
     let name = info.as_dictionary()?.get("CFBundleIconFile")?.as_string()?.to_string();
     // SEC-17: `CFBundleIconFile` is a plain file name inside Resources; anything with a
     // separator, `..` or an absolute path (and any symlink) is refused.
@@ -185,6 +190,31 @@ mod tests {
         // ...while a normal icon, with or without extension, resolves
         std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
         assert_eq!(icns_path(&app), Some(app.join("Contents/Resources/icon.icns")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hostile_info_plist_is_ignored_not_fatal() {
+        let root = std::env::temp_dir().join(format!("oa-apps-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = fake_app(&root, "icon");
+        std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
+        assert!(icns_path(&app).is_some(), "the control case resolves");
+        let depth = 120_000; // ~1.8 MB: overflowed the stack of a 2 MiB thread
+        let text = format!(
+            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIconFile</key><string>icon</string><key>x</key>{}{}</dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        );
+        std::fs::write(app.join("Contents/Info.plist"), text).unwrap();
+        assert_eq!(icns_path(&app), None);
+        // and one over the size cap is not even read
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            vec![b' '; MAX_INFO_PLIST_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(icns_path(&app), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

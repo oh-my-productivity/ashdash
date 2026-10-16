@@ -326,6 +326,7 @@ impl LauncherApp {
                 Show if !self.visible => self.show(ctx),
                 Show => {}
                 Search(text) => self.show_with_query(ctx, text),
+                Prefill(text) => self.show_with_prefill(ctx, text),
                 Reload => {
                     let engine = Arc::clone(&self.engine);
                     std::thread::spawn(move || engine.reload());

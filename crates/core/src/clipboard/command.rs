@@ -102,8 +102,14 @@ pub fn run_with(history: &Mutex<ClipboardHistory>, cmd: &ClipCommand, env: &dyn 
             Outcome::Done
         }
         ClipCommand::PasteText { text, cursor_back } => {
+            // Tell the watcher first: this text (a snippet, maybe a token or a password) goes
+            // through the pasteboard and must not end up in clipboard.json.
+            h.note_own_paste(text);
             drop(h);
             if let Err(e) = env.copy_text(text) {
+                if let Ok(mut h) = history.lock() {
+                    h.forget_own_paste(text);
+                }
                 return Outcome::Error(format!("{e:#}"));
             }
             paste::outcome(paste::paste_via(env.keys(), *cursor_back, env.settle()))
@@ -227,6 +233,63 @@ mod tests {
         };
         assert_eq!(run_with(&h, &cmd, &f), Outcome::Done);
         assert_eq!(*f.log.borrow(), vec!["copy:Dear ,", "key9+cmd", "key123"]);
+    }
+
+    #[test]
+    fn snippet_pastes_are_noted_for_the_watcher_but_history_pastes_are_not() {
+        let (h, id) = setup();
+        let f = Fake {
+            trusted: true,
+            ..Default::default()
+        };
+        let cmd = ClipCommand::PasteText {
+            text: "s3cret-token".into(),
+            cursor_back: None,
+        };
+        assert_eq!(run_with(&h, &cmd, &f), Outcome::Done);
+        assert!(
+            h.lock().unwrap().take_own_paste("s3cret-token"),
+            "noted before the copy"
+        );
+        assert!(!h.lock().unwrap().take_own_paste("s3cret-token"), "answers once");
+        // pasting an existing history entry is the user's own clip: nothing is noted
+        assert_eq!(run_with(&h, &ClipCommand::Paste { id }, &f), Outcome::Done);
+        assert!(!h.lock().unwrap().take_own_paste("hello"));
+    }
+
+    #[test]
+    fn a_failed_snippet_copy_leaves_no_note_behind() {
+        struct NoCopy;
+        impl KeySender for NoCopy {
+            fn trusted(&self) -> bool {
+                true
+            }
+            fn tap(&self, _: u16, _: bool) -> Result<(), String> {
+                Ok(())
+            }
+            fn pause(&self, _: Duration) {}
+        }
+        impl ClipEnv for NoCopy {
+            fn restore(&self, _: &ClipboardHistory, _: &ClipEntry) -> Result<()> {
+                Ok(())
+            }
+            fn copy_text(&self, _: &str) -> Result<()> {
+                anyhow::bail!("pbcopy failed")
+            }
+            fn keys(&self) -> &dyn KeySender {
+                self
+            }
+            fn settle(&self) -> Duration {
+                Duration::ZERO
+            }
+        }
+        let (h, _) = setup();
+        let cmd = ClipCommand::PasteText {
+            text: "x".into(),
+            cursor_back: None,
+        };
+        assert!(matches!(run_with(&h, &cmd, &NoCopy), Outcome::Error(_)));
+        assert!(!h.lock().unwrap().take_own_paste("x"));
     }
 
     #[test]

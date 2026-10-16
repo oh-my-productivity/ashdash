@@ -20,6 +20,10 @@ pub enum AppEvent {
     Show,
     /// Show the launcher with this text typed into the search field.
     Search(String),
+    /// Show the launcher with this text in the field, but do **not** run the query until the
+    /// user edits it. For text that came from outside the user's own hands (`ashdash://search`):
+    /// running it would start Script Filters with attacker-chosen text, with no consent.
+    Prefill(String),
     /// Re-scan applications, workflows and snippets; re-register workflow hotkeys.
     Reload,
     /// The background scan of the workflow folders finished: register the hotkeys it found.

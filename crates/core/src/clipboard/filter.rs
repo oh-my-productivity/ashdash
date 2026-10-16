@@ -36,6 +36,8 @@ pub enum SkipReason {
     MarkerType(String),
     /// The frontmost application is on the ignore list.
     IgnoredApp(String),
+    /// Ashdash put this text there itself (snippet auto-paste): it is not something the user copied.
+    OwnPaste,
 }
 
 /// Decide whether a pasteboard change may be recorded, and if not, why.

@@ -16,12 +16,15 @@
 //!
 //! There is deliberately no verb that imports, runs scripts, reads the
 //! clipboard, opens files or runs system commands (docs/SECURITY.md section 6).
+//! `search` only *fills the field* ([`AppEvent::Prefill`]): a query that matches a workflow
+//! keyword would otherwise start that workflow's Script Filter on text chosen by a web page,
+//! so nothing is searched until the user edits the text.
 //! Invocations are logged without arguments.
 //!
 //! Only `ashdash://` is handled. `reference://` belongs to a real reference launcher install
 //! and is rejected here.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -155,7 +158,8 @@ pub fn parse(url: &str) -> Result<UrlCommand, UrlError> {
         return Err(UrlError::ControlCharacter);
     }
     let prefix = format!("{URL_SCHEME}://");
-    if url.len() < prefix.len() || !url[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+    // `get`, not a slice: byte `prefix.len()` may sit inside a multibyte character.
+    if !url.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix)) {
         return Err(UrlError::WrongScheme);
     }
     let rest = &url[prefix.len()..];
@@ -286,37 +290,74 @@ pub enum Decision {
     Deny,
 }
 
+/// What a file looked like when we last read or wrote it (modification time, length): a change
+/// means someone edited it and the in-memory copy is stale.
+type FileStamp = (SystemTime, u64);
+
+fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
+    let md = fs::metadata(path).ok()?;
+    Some((md.modified().ok()?, md.len()))
+}
+
+fn read_decisions(path: &std::path::Path) -> BTreeMap<String, Decision> {
+    let mut decisions = BTreeMap::new();
+    if let Ok(text) = fs::read_to_string(path)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+        && let Some(map) = v.get("bundles").and_then(|b| b.as_object())
+    {
+        for (k, v) in map {
+            match v.as_str() {
+                Some("allow") => decisions.insert(k.clone(), Decision::Allow),
+                Some("deny") => decisions.insert(k.clone(), Decision::Deny),
+                _ => None,
+            };
+        }
+    }
+    decisions
+}
+
 /// Remembered per-bundle-id consent for URL-triggered workflows.
+///
+/// The file is the truth, not the memory: [`TrustStore::refresh`] re-reads it when it changed
+/// since we last saw it, so deleting an entry to be asked again (TROUBLESHOOTING.md) works in a
+/// running launcher, and [`TrustStore::set`] never writes a stale copy over a hand edit.
 #[derive(Debug)]
 pub struct TrustStore {
     path: PathBuf,
     decisions: BTreeMap<String, Decision>,
+    stamp: Option<FileStamp>,
 }
 
 impl TrustStore {
     pub fn load(path: PathBuf) -> Self {
-        let mut decisions = BTreeMap::new();
-        if let Ok(text) = fs::read_to_string(&path)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Some(map) = v.get("bundles").and_then(|b| b.as_object())
-        {
-            for (k, v) in map {
-                match v.as_str() {
-                    Some("allow") => decisions.insert(k.clone(), Decision::Allow),
-                    Some("deny") => decisions.insert(k.clone(), Decision::Deny),
-                    _ => None,
-                };
-            }
+        let stamp = file_stamp(&path);
+        let decisions = read_decisions(&path);
+        TrustStore { path, decisions, stamp }
+    }
+
+    /// Re-read the file when it changed (or appeared, or vanished) since we last looked.
+    pub fn refresh(&mut self) {
+        let now = file_stamp(&self.path);
+        if now != self.stamp {
+            self.decisions = read_decisions(&self.path);
+            self.stamp = now;
         }
-        TrustStore { path, decisions }
     }
 
     pub fn get(&self, bundle: &str) -> Option<Decision> {
         self.decisions.get(bundle).copied()
     }
 
-    /// Remember a decision and write the file (0600, replaced atomically).
+    /// [`TrustStore::refresh`] then [`TrustStore::get`]: the decision as the file says it now.
+    pub fn lookup(&mut self, bundle: &str) -> Option<Decision> {
+        self.refresh();
+        self.get(bundle)
+    }
+
+    /// Remember a decision and write the file (0600, replaced atomically). Entries that were
+    /// added to the file by hand since we last read it are kept.
     pub fn set(&mut self, bundle: &str, d: Decision) -> std::io::Result<()> {
+        self.refresh();
         self.decisions.insert(bundle.to_string(), d);
         let bundles: serde_json::Map<String, serde_json::Value> = self
             .decisions
@@ -339,7 +380,9 @@ impl TrustStore {
             .open(&tmp)?;
         f.write_all(serde_json::to_string_pretty(&doc)?.as_bytes())?;
         f.sync_all()?;
-        fs::rename(&tmp, &self.path)
+        fs::rename(&tmp, &self.path)?;
+        self.stamp = file_stamp(&self.path);
+        Ok(())
     }
 }
 
@@ -353,9 +396,18 @@ pub trait UrlHost: Send + Sync {
     fn run_trigger(&self, bundle: &str, name: &str, arg: &str) -> Outcome;
 }
 
+/// What the user said to the consent question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Allow,
+    Deny,
+    /// The dialog timed out, was dismissed or could not be shown. Not a decision: never stored.
+    Unanswered,
+}
+
 /// Asks the user whether a workflow may be started from URLs.
 pub trait Prompter: Send + Sync {
-    fn confirm(&self, workflow_name: &str, bundle: &str) -> bool;
+    fn confirm(&self, workflow_name: &str, bundle: &str) -> Answer;
 }
 
 pub struct UrlDispatcher {
@@ -365,6 +417,20 @@ pub struct UrlDispatcher {
     trust: Mutex<TrustStore>,
     limiter: Mutex<RateLimiter>,
     themes_dir: PathBuf,
+    /// Bundle ids whose consent question is on screen right now (one dialog per bundle id).
+    asking: Mutex<BTreeSet<String>>,
+}
+
+/// Marks a bundle id as "being asked"; clears it when dropped, whatever the answer was.
+struct Asking<'a> {
+    set: &'a Mutex<BTreeSet<String>>,
+    bundle: String,
+}
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.bundle);
+    }
 }
 
 impl UrlDispatcher {
@@ -382,7 +448,17 @@ impl UrlDispatcher {
             trust: Mutex::new(trust),
             limiter: Mutex::new(RateLimiter::new(6, Duration::from_secs(10))),
             themes_dir,
+            asking: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    /// Claim the consent question for `bundle`; `None` when one is already on screen.
+    fn begin_asking(&self, bundle: &str) -> Option<Asking<'_>> {
+        let mut set = self.asking.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(bundle.to_string()).then(|| Asking {
+            set: &self.asking,
+            bundle: bundle.to_string(),
+        })
     }
 
     /// Entry point for the Apple Event handler (main thread): never blocks it.
@@ -411,7 +487,10 @@ impl UrlDispatcher {
             }
             UrlCommand::Search { query } => {
                 log_invocation("search", "-");
-                self.sink.emit(AppEvent::Search(query));
+                // A web page can send this with one click: the text is put in the field but
+                // nothing runs on it (no workflow keyword, no Script Filter) until the user edits
+                // it. The CLI and AppleScript `search` are local and keep running the query.
+                self.sink.emit(AppEvent::Prefill(query));
             }
             UrlCommand::Reload => {
                 log_invocation("reload", "-");
@@ -447,25 +526,48 @@ impl UrlDispatcher {
         }
     }
 
+    /// First use of a workflow from a URL: ask once. At most one question per bundle id is open
+    /// at a time (further links for it are dropped, so a page cannot stack dialogs), and an
+    /// answer that is not a clear yes or no (timeout, dismissed) is not stored.
+    fn ask(&self, workflow: &str, bundle: &str) -> Result<bool, String> {
+        let Some(_asking) = self.begin_asking(bundle) else {
+            return Err(format!(
+                "a question about starting '{bundle}' from a link is already open"
+            ));
+        };
+        // Someone may have answered (or edited the file) while we waited for the claim.
+        let decided = self.trust.lock().unwrap().lookup(bundle);
+        if let Some(d) = decided {
+            return Ok(d == Decision::Allow);
+        }
+        // Asked outside the lock: the dialog can stay open for a minute.
+        let decision = match self.prompter.confirm(workflow, bundle) {
+            Answer::Allow => Decision::Allow,
+            Answer::Deny => Decision::Deny,
+            Answer::Unanswered => {
+                return Err(format!(
+                    "no answer about starting '{bundle}' from a link; nothing was saved"
+                ));
+            }
+        };
+        if let Err(e) = self.trust.lock().unwrap().set(bundle, decision) {
+            eprintln!("ashdash: could not save URL consent: {e}");
+        }
+        Ok(decision == Decision::Allow)
+    }
+
     fn trigger(&self, bundle: &str, name: &str, arg: &str) -> Result<(), String> {
         let Some(workflow) = self.host.external_trigger(bundle, name) else {
             return Err(format!(
                 "no enabled workflow '{bundle}' with an External Trigger '{name}'"
             ));
         };
-        let known = self.trust.lock().unwrap().get(bundle);
+        // (bound first: the guard must not be held across `ask`, which locks the store again)
+        let known = self.trust.lock().unwrap().lookup(bundle);
         let allowed = match known {
             Some(Decision::Allow) => true,
             Some(Decision::Deny) => false,
-            None => {
-                // Asked outside the lock: the dialog can stay open for a minute.
-                let yes = self.prompter.confirm(&workflow, bundle);
-                let d = if yes { Decision::Allow } else { Decision::Deny };
-                if let Err(e) = self.trust.lock().unwrap().set(bundle, d) {
-                    eprintln!("ashdash: could not save URL consent: {e}");
-                }
-                yes
-            }
+            None => self.ask(&workflow, bundle)?,
         };
         if !allowed {
             return Err(format!("workflow '{bundle}' is not allowed to be started from URLs"));
@@ -494,7 +596,7 @@ fn log_invocation(verb: &str, subject: &str) {
 pub struct DialogPrompter;
 
 impl Prompter for DialogPrompter {
-    fn confirm(&self, workflow_name: &str, bundle: &str) -> bool {
+    fn confirm(&self, workflow_name: &str, bundle: &str) -> Answer {
         let message = format!(
             "A link or app wants to run the workflow \"{workflow_name}\" ({bundle}) in Ashdash.\n\n\
              Workflows can run scripts, open files and URLs and change your data. Only allow this if you trust the workflow and where the link came from."
@@ -514,7 +616,24 @@ impl Prompter for DialogPrompter {
             .arg(message)
             .stdin(std::process::Stdio::null())
             .output();
-        matches!(out, Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "Allow")
+        match out {
+            Ok(o) => dialog_answer(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
+            Err(_) => Answer::Unanswered,
+        }
+    }
+}
+
+/// Map the `osascript` result onto an [`Answer`]. Only the two buttons are decisions: when the
+/// dialog gives up after 60 s `button returned` is empty, and a dismissed or failed dialog exits
+/// non-zero. Neither is the user saying "never".
+fn dialog_answer(success: bool, stdout: &str) -> Answer {
+    if !success {
+        return Answer::Unanswered;
+    }
+    match stdout.trim() {
+        "Allow" => Answer::Allow,
+        "Don't Allow" => Answer::Deny,
+        _ => Answer::Unanswered,
     }
 }
 
@@ -704,6 +823,41 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_text_anywhere_never_panics_the_parser() {
+        // `ashdash:/é` is 11 bytes and byte 10 is inside the `é`: the scheme check used to slice there.
+        assert_eq!(parse("ashdash:/é"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("ashdash:é"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("é"), Err(UrlError::WrongScheme));
+        // Fuzz-style: every multibyte shape inserted at every position of valid and almost-valid URLs.
+        let seeds = [
+            "ashdash://search?query=saf",
+            "ashdash://trigger?bundle=b&name=x&arg=y",
+            "ashdash://reload/",
+            "ashdash://",
+            "ashdash:/",
+            "",
+        ];
+        let chars = ["é", "€", "😀", "\u{200e}", "\u{0301}", "日本"];
+        for seed in seeds {
+            for (i, _) in seed.char_indices().chain(std::iter::once((seed.len(), ' '))) {
+                for ch in chars {
+                    let mut url = seed.to_string();
+                    url.insert_str(i, ch);
+                    let _ = parse(&url);
+                    // and replacing a run of bytes with the character, so a char straddles byte 9/10
+                    let cut = (i + 2).min(seed.len());
+                    if seed.is_char_boundary(cut) {
+                        let _ = parse(&format!("{}{ch}{}", &seed[..i], &seed[cut..]));
+                    }
+                }
+            }
+        }
+        // a multibyte scheme prefix of exactly the right byte length is a wrong scheme, not a match
+        assert_eq!(parse("alfréd://x"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("ASHDASH://show"), Ok(UrlCommand::Show));
+    }
+
+    #[test]
     fn trigger_argument_may_contain_newline_and_tab() {
         assert_eq!(
             q("ashdash://trigger?bundle=b&name=x&arg=a%0Ab%09c"),
@@ -750,18 +904,24 @@ mod tests {
     }
 
     struct FakePrompter {
-        answer: bool,
+        answer: Mutex<Answer>,
         asked: Mutex<Vec<String>>,
+        /// When set, `confirm` announces itself and waits for the test to release it.
+        gate: Option<(std::sync::mpsc::SyncSender<()>, Mutex<std::sync::mpsc::Receiver<()>>)>,
     }
     impl Prompter for FakePrompter {
-        fn confirm(&self, _: &str, bundle: &str) -> bool {
+        fn confirm(&self, _: &str, bundle: &str) -> Answer {
             self.asked.lock().unwrap().push(bundle.into());
-            self.answer
+            if let Some((announce, release)) = &self.gate {
+                announce.send(()).unwrap();
+                release.lock().unwrap().recv().unwrap();
+            }
+            *self.answer.lock().unwrap()
         }
     }
 
     struct Rig {
-        d: UrlDispatcher,
+        d: Arc<UrlDispatcher>,
         sink: Arc<VecSink>,
         host: Arc<FakeHost>,
         prompter: Arc<FakePrompter>,
@@ -769,6 +929,15 @@ mod tests {
     }
 
     fn rig(tag: &str, answer: bool, outcome: Outcome) -> Rig {
+        rig_with(tag, if answer { Answer::Allow } else { Answer::Deny }, outcome, None)
+    }
+
+    fn rig_with(
+        tag: &str,
+        answer: Answer,
+        outcome: Outcome,
+        gate: Option<(std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>)>,
+    ) -> Rig {
         let dir = std::env::temp_dir().join(format!("al-url-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("themes")).unwrap();
@@ -779,8 +948,9 @@ mod tests {
             outcome,
         });
         let prompter = Arc::new(FakePrompter {
-            answer,
+            answer: Mutex::new(answer),
             asked: Mutex::new(vec![]),
+            gate: gate.map(|(tx, rx)| (tx, Mutex::new(rx))),
         });
         let d = UrlDispatcher::new(
             sink.clone(),
@@ -790,7 +960,7 @@ mod tests {
             dir.join("themes"),
         );
         Rig {
-            d,
+            d: Arc::new(d),
             sink,
             host,
             prompter,
@@ -808,7 +978,7 @@ mod tests {
         assert_eq!(
             r.sink.take(),
             vec![
-                AppEvent::Search("saf".into()),
+                AppEvent::Prefill("saf".into()),
                 AppEvent::Reload,
                 AppEvent::Show,
                 AppEvent::Preferences
@@ -817,6 +987,18 @@ mod tests {
         assert!(r.d.dispatch("ashdash://prefs?x=1").is_err());
         assert!(r.d.dispatch("reference://search?query=saf").is_err());
         assert!(r.sink.take().is_empty());
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn search_from_a_url_never_becomes_a_query() {
+        let r = rig("prefill", true, Outcome::Done);
+        // a text that would hit a workflow keyword (and so run its Script Filter)
+        r.d.dispatch("ashdash://search?query=deploy%20--prod").unwrap();
+        let events = r.sink.take();
+        assert_eq!(events, vec![AppEvent::Prefill("deploy --prod".into())]);
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::Search(_))));
+        assert!(r.host.runs.lock().unwrap().is_empty());
         let _ = fs::remove_dir_all(&r.dir);
     }
 
@@ -868,6 +1050,115 @@ mod tests {
             TrustStore::load(r.dir.join("url-trust.json")).get("com.ok"),
             Some(Decision::Deny)
         );
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    const TRIGGER: &str = "ashdash://trigger?bundle=com.ok&name=go";
+
+    #[test]
+    fn a_timeout_or_dismissed_dialog_is_not_a_decision() {
+        let r = rig_with("noanswer", Answer::Unanswered, Outcome::Done, None);
+        let err = r.d.dispatch(TRIGGER).unwrap_err();
+        assert!(err.contains("nothing was saved"), "{err}");
+        assert!(r.host.runs.lock().unwrap().is_empty());
+        assert!(
+            !r.dir.join("url-trust.json").exists(),
+            "nothing written for a non-answer"
+        );
+        // the next link asks again, and a real answer is then stored
+        *r.prompter.answer.lock().unwrap() = Answer::Allow;
+        r.d.dispatch(TRIGGER).unwrap();
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 2);
+        assert_eq!(
+            TrustStore::load(r.dir.join("url-trust.json")).get("com.ok"),
+            Some(Decision::Allow)
+        );
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn the_dialog_result_maps_to_an_answer() {
+        assert_eq!(dialog_answer(true, "Allow\n"), Answer::Allow);
+        assert_eq!(dialog_answer(true, "Don't Allow\n"), Answer::Deny);
+        // "giving up after 60": the button is empty
+        assert_eq!(dialog_answer(true, "\n"), Answer::Unanswered);
+        assert_eq!(dialog_answer(true, ""), Answer::Unanswered);
+        // dismissed (-128) or osascript failed
+        assert_eq!(dialog_answer(false, ""), Answer::Unanswered);
+        assert_eq!(dialog_answer(false, "Allow"), Answer::Unanswered);
+        assert_eq!(dialog_answer(true, "Maybe"), Answer::Unanswered);
+    }
+
+    #[test]
+    fn only_one_question_per_bundle_is_open_at_a_time() {
+        let (announce_tx, announce_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let r = rig_with("stack", Answer::Allow, Outcome::Done, Some((announce_tx, release_rx)));
+        let first = {
+            let d = Arc::clone(&r.d);
+            std::thread::spawn(move || d.dispatch(TRIGGER))
+        };
+        announce_rx.recv().unwrap(); // the first dialog is on screen
+        // more links for the same workflow while it is open: dropped, no second dialog
+        for _ in 0..4 {
+            let err = r.d.dispatch(TRIGGER).unwrap_err();
+            assert!(err.contains("already open"), "{err}");
+        }
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 1);
+        release_tx.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        // answered: the claim is released and the stored decision applies, no new question
+        r.d.dispatch(TRIGGER).unwrap();
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 1);
+        assert_eq!(r.host.runs.lock().unwrap().len(), 2);
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn the_claim_is_released_when_the_question_fails() {
+        let r = rig_with("release", Answer::Unanswered, Outcome::Done, None);
+        for _ in 0..3 {
+            let err = r.d.dispatch(TRIGGER).unwrap_err();
+            assert!(!err.contains("already open"), "{err}");
+        }
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 3);
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn edits_to_the_consent_file_are_seen_without_a_restart() {
+        let r = rig("reread", true, Outcome::Done);
+        let file = r.dir.join("url-trust.json");
+        r.d.dispatch(TRIGGER).unwrap();
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 1);
+
+        // the user deletes the entry "to be asked again": a running launcher asks again
+        fs::write(&file, r#"{"version":1,"bundles":{}}"#).unwrap();
+        r.d.dispatch(TRIGGER).unwrap();
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 2);
+
+        // a hand-written "deny" is honoured at once ...
+        fs::write(&file, r#"{"version":1,"bundles":{"com.ok":"deny","other":"allow"}}"#).unwrap();
+        assert!(r.d.dispatch(TRIGGER).is_err());
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 2);
+        assert_eq!(r.host.runs.lock().unwrap().len(), 2);
+
+        // ... and a later answer for another workflow does not write the stale copy over it
+        fs::write(
+            &file,
+            r#"{"version":1,"bundles":{"com.ok":"allow","hand.added.entry":"deny"}}"#,
+        )
+        .unwrap();
+        r.d.trust.lock().unwrap().set("new.one", Decision::Allow).unwrap();
+        let after = TrustStore::load(file.clone());
+        assert_eq!(after.get("hand.added.entry"), Some(Decision::Deny));
+        assert_eq!(after.get("com.ok"), Some(Decision::Allow));
+        assert_eq!(after.get("new.one"), Some(Decision::Allow));
+
+        // deleting the file forgets everything
+        fs::remove_file(&file).unwrap();
+        r.d.dispatch(TRIGGER).unwrap();
+        assert_eq!(r.prompter.asked.lock().unwrap().len(), 3);
         let _ = fs::remove_dir_all(&r.dir);
     }
 

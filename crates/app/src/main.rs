@@ -39,6 +39,7 @@ USAGE:
   ashdash quit                    quit the running launcher
   ashdash login-item enable|disable|status
                                       launch at login (needs the Ashdash.app bundle)
+  ashdash --version               print the version
   ashdash paths                   print data / config locations
   ashdash config path             print the settings file location
   ashdash config get [key]        print all settings, or one by dotted path (clipboard.max_entries)
@@ -68,8 +69,23 @@ fn parse_import_args(args: &[String]) -> std::result::Result<(bool, PathBuf), St
     file.map(|f| (yes, f)).ok_or_else(|| "no file given".into())
 }
 
+/// `ashdash --version` / `-V` / `version`: the first word only, so a file or text that happens
+/// to be called `-V` further along (`ashdash search -V`) is not mistaken for the flag.
+fn is_version_request(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("-V" | "--version" | "version"))
+}
+
+fn version_line() -> String {
+    format!("ashdash {}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Before anything touches the data folder or the settings file.
+    if is_version_request(&args) {
+        println!("{}", version_line());
+        return Ok(());
+    }
     let paths = Paths::system();
     let config = Config::load(&paths);
 
@@ -344,6 +360,43 @@ mod tests {
 
     fn parse(a: &[&str]) -> std::result::Result<(bool, PathBuf), String> {
         parse_import_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    fn strings(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn version_flags_are_recognised_only_as_the_first_word() {
+        for yes in [&["--version"][..], &["-V"], &["version"], &["--version", "extra"]] {
+            assert!(is_version_request(&strings(yes)), "{yes:?}");
+        }
+        for no in [
+            &[][..],
+            &["search", "-V"],
+            &["query", "--version"],
+            &["-v"],
+            &["--versions"],
+            &["import", "--version"],
+        ] {
+            assert!(!is_version_request(&strings(no)), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn the_version_line_is_the_crate_version() {
+        assert_eq!(version_line(), format!("ashdash {}", env!("CARGO_PKG_VERSION")));
+        assert!(
+            version_line()
+                .split(' ')
+                .nth(1)
+                .unwrap()
+                .chars()
+                .next()
+                .unwrap()
+                .is_ascii_digit()
+        );
+        assert!(HELP.contains("--version"));
     }
 
     #[test]

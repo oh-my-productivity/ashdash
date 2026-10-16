@@ -7,9 +7,114 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 pub type Rgba = [u8; 4];
+
+/// Themes are small property lists; anything bigger is refused before it is parsed.
+pub const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
+/// Deepest array/dictionary nesting accepted in a property list (the workflow parser's cap).
+pub const MAX_PLIST_DEPTH: usize = 64;
+
+/// Parse a property list (XML, binary or ASCII) after checking how deeply it nests.
+///
+/// `plist::Value::from_reader` builds and drops its tree recursively, so a ~2 MB file of nested
+/// `<array>` elements overflows the stack and aborts the whole process (confirmed for plist
+/// 1.10.1; the same shape as the calculator's SEC-08). The probe below reads the same bytes
+/// through plist's event-driven serde deserializer and fails at [`MAX_PLIST_DEPTH`], so its own
+/// recursion never gets deeper than the cap; the tree is only built for files that passed.
+/// Callers must also bound the input size ([`read_limited`]).
+pub fn parse_plist(bytes: &[u8]) -> Result<plist::Value> {
+    plist::from_reader::<_, DepthProbe>(std::io::Cursor::new(bytes))?;
+    Ok(plist::Value::from_reader(std::io::Cursor::new(bytes))?)
+}
+
+thread_local! {
+    static PROBE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Holds one level of nesting; gives it back when dropped (also on an error return).
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter<E: serde::de::Error>() -> Result<DepthGuard, E> {
+        PROBE_DEPTH.with(|d| {
+            if d.get() >= MAX_PLIST_DEPTH {
+                return Err(E::custom(format!(
+                    "the property list is nested more than {MAX_PLIST_DEPTH} levels deep"
+                )));
+            }
+            d.set(d.get() + 1);
+            Ok(DepthGuard)
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        PROBE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Accepts any property list and keeps nothing but the nesting depth check.
+struct DepthProbe;
+
+impl<'de> serde::Deserialize<'de> for DepthProbe {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<DepthProbe, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = DepthProbe;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a property list")
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_bytes<E: serde::de::Error>(self, _: &[u8]) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<DepthProbe, A::Error> {
+                let _level = DepthGuard::enter()?;
+                while seq.next_element::<DepthProbe>()?.is_some() {}
+                Ok(DepthProbe)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<DepthProbe, A::Error> {
+                let _level = DepthGuard::enter()?;
+                while map.next_key::<DepthProbe>()?.is_some() {
+                    map.next_value::<DepthProbe>()?;
+                }
+                Ok(DepthProbe)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// Read a whole file, refusing one larger than `max` bytes (without reading past `max + 1`).
+pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?.take(max + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        bail!("the file is unusually large (over {max} bytes)");
+    }
+    Ok(buf)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
@@ -90,8 +195,8 @@ fn col(d: Option<&plist::Dictionary>, key: &str) -> Option<Rgba> {
 }
 
 impl Theme {
-    pub fn load(path: &Path) -> Result<Theme> {
-        let root = plist::Value::from_file(path).with_context(|| format!("reading {}", path.display()))?;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Theme> {
+        let root = parse_plist(bytes)?;
         let t = root
             .as_dictionary()
             .and_then(|d| d.get("alfredtheme"))
@@ -140,6 +245,11 @@ impl Theme {
         set!(out.separator, col(dict(&wrap, "separator"), "color"));
         Ok(out)
     }
+
+    pub fn load(path: &Path) -> Result<Theme> {
+        let bytes = read_limited(path, MAX_THEME_BYTES).with_context(|| format!("reading {}", path.display()))?;
+        Theme::from_bytes(&bytes).with_context(|| format!("reading {}", path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +286,103 @@ mod tests {
         assert_eq!(t.result_selected_background, [0x48, 0, 0x69, 0xE4]);
         assert_eq!(t.result_text_size, 22.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A plist of `depth` nested arrays inside the `alfredtheme` dictionary.
+    fn nested_theme(depth: usize) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        )
+    }
+
+    fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("oa-theme-{tag}-{}.alfredappearance", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_deeply_nested_theme_is_refused_not_a_stack_overflow() {
+        // 1.9 MB, under the Finder size cap: `plist::Value::from_file` overflowed the stack on this
+        // (SIGABRT, "fatal runtime error: stack overflow"). Test threads have a 2 MiB stack.
+        let text = nested_theme(125_000);
+        assert!(text.len() > 1_800_000 && text.len() < 2 * 1024 * 1024, "{}", text.len());
+        let path = temp_file("deep", text.as_bytes());
+        let err = Theme::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("nested"), "{err:#}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn nesting_up_to_the_cap_parses_and_one_more_level_does_not() {
+        let at_cap = nested_theme(MAX_PLIST_DEPTH - 2); // root dict + alfredtheme dict + arrays
+        assert!(parse_plist(at_cap.as_bytes()).is_ok());
+        let over = nested_theme(MAX_PLIST_DEPTH - 1);
+        let err = parse_plist(over.as_bytes()).unwrap_err();
+        assert!(format!("{err:#}").contains("nested"), "{err:#}");
+        // ordinary files are untouched
+        assert!(parse_plist(b"<plist version=\"1.0\"><dict/></plist>").is_ok());
+        assert!(parse_plist(b"not a plist").is_err());
+    }
+
+    #[test]
+    fn every_kind_of_value_passes_the_probe_in_both_encodings() {
+        let mut d = plist::Dictionary::new();
+        d.insert("bool".into(), true.into());
+        d.insert("int".into(), 5i64.into());
+        d.insert("big".into(), u64::MAX.into());
+        d.insert("real".into(), 1.5f64.into());
+        d.insert("str".into(), "é".into());
+        d.insert("data".into(), plist::Value::Data(vec![1, 2, 3]));
+        d.insert(
+            "date".into(),
+            plist::Value::Date(plist::Date::from_xml_format("2024-01-02T03:04:05Z").unwrap()),
+        );
+        d.insert("uid".into(), plist::Value::Uid(plist::Uid::new(7)));
+        d.insert("arr".into(), plist::Value::Array(vec![1i64.into(), "x".into()]));
+        let v = plist::Value::Dictionary(d.clone());
+        let mut bin = Vec::new();
+        v.to_writer_binary(&mut bin).unwrap();
+        assert_eq!(parse_plist(&bin).unwrap(), v);
+        // XML cannot hold a Uid
+        d.remove("uid");
+        let v = plist::Value::Dictionary(d);
+        let mut xml = Vec::new();
+        v.to_writer_xml(&mut xml).unwrap();
+        assert_eq!(parse_plist(&xml).unwrap(), v);
+    }
+
+    #[test]
+    fn binary_plists_are_checked_too() {
+        let mut shallow = plist::Dictionary::new();
+        shallow.insert("a".into(), plist::Value::Array(vec![plist::Value::Array(vec![])]));
+        let mut bytes = Vec::new();
+        plist::Value::Dictionary(shallow).to_writer_binary(&mut bytes).unwrap();
+        assert!(bytes.starts_with(b"bplist"));
+        assert!(parse_plist(&bytes).is_ok());
+        // 70 levels, written by the library (deep enough to trip the cap, shallow enough to write)
+        let mut v = plist::Value::Array(vec![]);
+        for _ in 0..70 {
+            v = plist::Value::Array(vec![v]);
+        }
+        let mut deep = Vec::new();
+        v.to_writer_binary(&mut deep).unwrap();
+        assert!(parse_plist(&deep).is_err());
+    }
+
+    #[test]
+    fn a_theme_is_read_once_from_bytes_and_files_over_the_cap_are_refused() {
+        let ok = nested_theme(2);
+        assert!(Theme::from_bytes(ok.as_bytes()).is_ok());
+        let big = temp_file("big", &vec![b' '; (MAX_THEME_BYTES + 1) as usize]);
+        let err = Theme::load(&big).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        assert!(read_limited(&big, MAX_THEME_BYTES).is_err());
+        let _ = std::fs::remove_file(big);
+        let small = temp_file("small", ok.as_bytes());
+        assert_eq!(read_limited(&small, MAX_THEME_BYTES).unwrap(), ok.as_bytes());
+        let _ = std::fs::remove_file(small);
     }
 }

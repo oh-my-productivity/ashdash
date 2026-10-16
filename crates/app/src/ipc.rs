@@ -382,6 +382,24 @@ pub struct Server {
     _lock: File,
 }
 
+/// One of the `MAX_CONNECTIONS` connection slots; frees itself on drop (also while unwinding).
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Take a slot, or `None` when `MAX_CONNECTIONS` connections are already being served.
+fn admit(active: &Arc<AtomicUsize>) -> Option<ConnectionSlot> {
+    if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+        active.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    Some(ConnectionSlot(Arc::clone(active)))
+}
+
 /// Start answering requests on a background thread.
 pub fn serve(primary: Primary, handler: Arc<dyn Handler>, uid: u32) -> Server {
     let Primary { _lock, listener, path } = primary;
@@ -395,19 +413,19 @@ pub fn serve(primary: Primary, handler: Arc<dyn Handler>, uid: u32) -> Server {
                     break;
                 }
                 let Ok(stream) = conn else { continue };
-                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    active.fetch_sub(1, Ordering::SeqCst);
+                let Some(slot) = admit(&active) else {
                     let mut s = stream;
                     let _ = s.write_all(Response::err("too many connections").encode().as_bytes());
                     continue;
-                }
+                };
                 let handler = Arc::clone(&handler);
-                let active = Arc::clone(&active);
                 std::thread::spawn(move || {
+                    // Released when this closure ends, however it ends (a panicking handler
+                    // included): sixteen panics must not lock the socket out until restart.
+                    let _slot = slot;
                     if let Err(e) = handle_connection(stream, handler.as_ref(), uid) {
                         eprintln!("ashdash: ipc connection: {e}");
                     }
-                    active.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         })
@@ -769,6 +787,72 @@ mod tests {
         assert!(matches!(send(&path, &Request::Ping, t), Err(ClientError::NotRunning)));
         assert!(matches!(acquire(&path, uid).unwrap(), Acquired::Primary(_)));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Panics on `show`, answers everything else.
+    struct PanickyHandler;
+    impl Handler for PanickyHandler {
+        fn handle(&self, req: Request) -> Response {
+            if req == Request::Show {
+                panic!("handler bug (expected in this test)");
+            }
+            Response::ok("pong")
+        }
+    }
+
+    #[test]
+    fn panicking_handlers_do_not_use_up_the_connection_slots() {
+        let dir = temp("panic");
+        let uid = current_uid();
+        let path = dir.join("run").join("ipc.sock");
+        let Acquired::Primary(primary) = acquire(&path, uid).unwrap() else {
+            panic!("expected to become primary")
+        };
+        let server = serve(primary, Arc::new(PanickyHandler), uid);
+        let t = Duration::from_secs(5);
+        // Well over MAX_CONNECTIONS panics; each one used to leak a slot for good.
+        for _ in 0..(MAX_CONNECTIONS * 2) {
+            assert!(send(&path, &Request::Show, t).is_err());
+        }
+        // The handler threads release their slot while unwinding, which can trail the client's
+        // error by a moment: give them a bounded time.
+        let start = Instant::now();
+        loop {
+            let r = send(&path, &Request::Ping, t).unwrap();
+            if r.ok {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the socket stayed locked out: {}",
+                r.error
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(server);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_connection_slot_is_released_when_its_guard_drops_even_while_unwinding() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let guard = admit(&active).expect("a free slot");
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        let a = Arc::clone(&active);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("boom (expected in this test)");
+        }));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let held: Vec<_> = (0..MAX_CONNECTIONS).map(|_| admit(&a).expect("free")).collect();
+        assert!(
+            admit(&a).is_none(),
+            "the {}th connection is refused",
+            MAX_CONNECTIONS + 1
+        );
+        assert_eq!(a.load(Ordering::SeqCst), MAX_CONNECTIONS, "a refusal takes no slot");
+        drop(held);
+        assert_eq!(a.load(Ordering::SeqCst), 0);
     }
 
     #[test]

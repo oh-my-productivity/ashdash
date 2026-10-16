@@ -20,7 +20,8 @@ use objc2::runtime::AnyObject;
 use objc2::{ClassType, define_class, msg_send};
 use objc2_foundation::{NSScriptCommand, NSString};
 
-use crate::ipc::{Handler, Request, Response};
+use crate::ipc::{Handler, MAX_SEARCH, Request, Response};
+use crate::urlscheme::MAX_ARG;
 
 /// How long a script command waits for a trigger to finish.
 pub const TRIGGER_WAIT: Duration = Duration::from_millis(1500);
@@ -49,14 +50,27 @@ pub fn request_for(
     match name {
         "show" => Ok(Request::Show),
         "reload" => Ok(Request::Reload),
-        "search" => Ok(Request::Search {
-            text: need(direct, "search text")?,
-        }),
-        "run trigger" => Ok(Request::Trigger {
-            bundle: need(bundle, "workflow (in workflow ...)")?,
-            id: need(direct, "trigger id")?,
-            arg: argument.unwrap_or("").to_string(),
-        }),
+        "search" => {
+            // the same cap as the CLI socket; AppleScript is trusted by TCC, not unbounded
+            let text = need(direct, "search text")?;
+            if text.len() > MAX_SEARCH {
+                return Err(format!("search text longer than {MAX_SEARCH} bytes"));
+            }
+            Ok(Request::Search { text })
+        }
+        "run trigger" => {
+            let bundle = need(bundle, "workflow (in workflow ...)")?;
+            let id = need(direct, "trigger id")?;
+            if bundle.is_empty() || id.is_empty() {
+                return Err("'run trigger' needs a workflow bundle id and a trigger id".into());
+            }
+            // the same cap as an `ashdash://trigger` argument
+            let arg = argument.unwrap_or("").to_string();
+            if arg.len() > MAX_ARG {
+                return Err(format!("argument longer than {MAX_ARG} bytes"));
+            }
+            Ok(Request::Trigger { bundle, id, arg })
+        }
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -160,6 +174,33 @@ mod tests {
         assert!(request_for("run trigger", Some("go"), None, None).is_err());
         assert!(request_for("run trigger", None, Some("b"), None).is_err());
         assert!(request_for("quit-everything", None, None, None).is_err());
+    }
+
+    #[test]
+    fn script_commands_apply_the_same_length_caps_as_the_other_entry_points() {
+        let ok_search = "a".repeat(MAX_SEARCH);
+        assert!(request_for("search", Some(&ok_search), None, None).is_ok());
+        let long = "a".repeat(MAX_SEARCH + 1);
+        assert!(
+            request_for("search", Some(&long), None, None)
+                .unwrap_err()
+                .contains("longer")
+        );
+
+        let ok_arg = "a".repeat(MAX_ARG);
+        assert!(request_for("run trigger", Some("go"), Some("b"), Some(&ok_arg)).is_ok());
+        let long = "a".repeat(MAX_ARG + 1);
+        assert!(
+            request_for("run trigger", Some("go"), Some("b"), Some(&long))
+                .unwrap_err()
+                .contains("longer")
+        );
+        // multibyte text is counted in bytes, like the socket does
+        let wide = "é".repeat(MAX_ARG / 2 + 1);
+        assert!(request_for("run trigger", Some("go"), Some("b"), Some(&wide)).is_err());
+        // empty ids are refused here as on the socket
+        assert!(request_for("run trigger", Some(""), Some("b"), None).is_err());
+        assert!(request_for("run trigger", Some("go"), Some(""), None).is_err());
     }
 
     struct Slow(Mutex<Vec<Request>>, Duration);

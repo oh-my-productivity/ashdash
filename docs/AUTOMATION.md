@@ -37,7 +37,7 @@ a running launcher to reload (new workflows, new hotkeys). The socket itself has
 
 ```
 ashdash://show
-ashdash://search?query=<text>                       (<= 1024 bytes)
+ashdash://search?query=<text>                       (<= 1024 bytes; fills the field, does not run the query)
 ashdash://trigger?bundle=<id>&name=<trigger id>&arg=<text>   (arg <= 4096 bytes)
 ashdash://reload
 ashdash://prefs                                     (no parameters; opens the preferences window)
@@ -47,8 +47,9 @@ ashdash://theme?name=<file name>      -> <data>/themes/<name>.alfredappearance, 
 Strict parser: fixed verbs and parameter names, no userinfo/port/path, no repeated or unknown keys, `%XX` decoded exactly once
 (`+` stays `+`), UTF-8 only, no control characters (tab/newline allowed in `arg`), 16 KiB total. Rate limit: 6 URLs per 10 s.
 `trigger` fires only an **External Trigger** object of an **enabled** workflow, and only after the user consented once per bundle id
-(native dialog, default button "Don't Allow", remembered either way in `<data>/url-trust.json`, 0600; edit the file to
-reset). Invocations are logged as verb + workflow, never arguments. There is no verb for importing, scripts, files, clipboard or system commands.
+(native dialog, default button "Don't Allow", remembered either way in `<data>/url-trust.json`, 0600; delete an entry to be asked again,
+no restart needed). One dialog per bundle id at a time; a dialog that times out (60 s) or is dismissed stores nothing.
+`search` only puts the text in the launcher's field: nothing is searched (and no workflow keyword or Script Filter runs) until you edit it. Invocations are logged as verb + workflow, never arguments. There is no verb for importing, scripts, files, clipboard or system commands.
 
 Delivery: `kAEGetURL` Apple Events through `NSAppleEventManager`, registered early (URL that launches the app) and again
 after launch (AppKit installs its own handler during launch). Requires a bundle declaring `CFBundleURLTypes` (WP10).
@@ -64,7 +65,7 @@ JXA: use the bundle id (`Application('dev.ashdash.launcher').search('saf')`); `A
 with -1701 for custom commands (the path form works for properties only; cause not investigated).
 The bundle needs `NSAppleScriptEnabled=YES` and `OSAScriptingDefinition=Ashdash.sdef` with the sdef in `Contents/Resources`.
 `run trigger` returns Large Type text, raises a script error for failures, and answers an empty result when the workflow takes
-longer than 1.5 s (it keeps running). The standard suite is included, so `quit` works.
+longer than 1.5 s (it keeps running). `search` text is capped at 4096 bytes (as on the socket) and the `run trigger` argument at 4096 bytes (as in the URL scheme). The standard suite is included, so `quit` works.
 
 ## Workflow hotkeys
 

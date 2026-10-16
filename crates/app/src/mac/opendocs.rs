@@ -25,12 +25,16 @@ use ashdash_core::clipboard::snippets::{collections_dir, safe_file_stem};
 use ashdash_core::config::write_private;
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Paths, brand};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+
+use crate::gui::importprompt::clean;
 
 /// More files than this in one event are ignored (a runaway drop is never intended).
 const MAX_FILES_PER_EVENT: usize = 20;
 /// Themes are small property lists; refuse anything big before parsing it.
-const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_THEME_BYTES: u64 = ashdash_core::theme::MAX_THEME_BYTES;
+/// One line of a notification: file names and error texts are cut and cleaned to this length.
+const MAX_LINE_CHARS: usize = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocKind {
@@ -136,34 +140,28 @@ pub fn summarize(results: &[Imported]) -> Option<(String, String)> {
     let lines: Vec<String> = shown
         .iter()
         .map(|r| {
-            let name = r
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            match &r.status {
+            // File names, workflow names and error texts all come from the files: one line each,
+            // no control, format (bidi, zero-width) or blank-looking characters, bounded length.
+            let line = match &r.status {
                 Status::Imported(m) => m.clone(),
-                Status::Failed(e) => format!("{name}: {e}"),
+                Status::Failed(e) => format!("{}: {e}", display_name(&r.path)),
                 Status::Cancelled => unreachable!("filtered above"),
-            }
+            };
+            clean(&line, MAX_LINE_CHARS)
         })
         .collect();
     Some((title, lines.join("\n")))
 }
 
-/// Strip control characters and cap the length so a hostile file name cannot reshape a dialog.
+/// A file name made safe to show: the import prompt's `clean` (control and format characters,
+/// bidi overrides and blank-looking characters removed, whitespace collapsed) cut to 80 characters,
+/// so a hostile file name cannot reshape or spoof a dialog.
 pub fn display_name(path: &Path) -> String {
     let raw = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let clean: String = raw.chars().filter(|c| !c.is_control()).collect();
-    if clean.chars().count() > 80 {
-        let head: String = clean.chars().take(79).collect();
-        format!("{head}…")
-    } else {
-        clean
-    }
+    clean(&raw, 80)
 }
 
 /// `osascript` arguments for a warning dialog. Title and message travel as argv after
@@ -280,12 +278,15 @@ pub fn theme_epoch() -> u64 {
 
 /// Validate, copy to `<data>/themes/` and select a theme in `config.json`.
 pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
-    let size = std::fs::metadata(file)?.len();
-    if size > MAX_THEME_BYTES {
-        bail!("the theme file is unusually large ({size} bytes)");
-    }
-    let theme = Theme::load(file).context("not a readable theme")?;
-    let bytes = std::fs::read(file)?;
+    install_theme_with(paths, file, |f| ashdash_core::theme::read_limited(f, MAX_THEME_BYTES))
+}
+
+/// [`install_theme`] with the file read injected. The file is read **once**: the bytes that are
+/// validated are the bytes that are written, so a file swapped in between cannot be installed
+/// unchecked (and a theme is never read three times).
+fn install_theme_with(paths: &Paths, file: &Path, read: impl FnOnce(&Path) -> Result<Vec<u8>>) -> Result<String> {
+    let bytes = read(file).with_context(|| format!("reading {}", display_name(file)))?;
+    let theme = Theme::from_bytes(&bytes).context("not a readable theme")?;
     let stem = safe_file_stem(if theme.name.is_empty() {
         file.file_stem().and_then(|s| s.to_str()).unwrap_or("theme")
     } else {
@@ -303,7 +304,7 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     } else {
         theme.name.clone()
     };
-    Ok(format!("Theme \"{shown}\" installed and applied."))
+    Ok(format!("Theme \"{}\" installed and applied.", clean(&shown, 80)))
 }
 
 /// Post a user notification through `osascript` (title/body as argv, never as script text).
@@ -506,7 +507,7 @@ mod tests {
         fn snippets(&self, file: &Path) -> Result<String> {
             self.log.borrow_mut().push(format!("snippets {}", display_name(file)));
             if self.fail_snippets {
-                bail!("bad archive");
+                anyhow::bail!("bad archive");
             }
             Ok("Snippets imported".into())
         }
@@ -663,12 +664,50 @@ mod tests {
     fn display_names_cannot_inject_lines_or_overflow() {
         assert_eq!(
             display_name(Path::new("/x/a\nb\u{7}.alfredworkflow")),
-            "ab.alfredworkflow"
+            "a b.alfredworkflow"
         );
         let long = format!("/x/{}.alfredworkflow", "n".repeat(300));
         let shown = display_name(Path::new(&long));
         assert_eq!(shown.chars().count(), 80);
         assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn finder_messages_clean_file_names_like_the_import_prompt() {
+        // bidi override, zero-width space, word joiner, Hangul filler, newline and tab in a name
+        let nasty = "/x/inv\u{202e}gnp.\u{200b}ok\u{2060}\u{3164}\n\tnow.alfredsnippets";
+        let shown = display_name(Path::new(nasty));
+        assert!(
+            !shown
+                .chars()
+                .any(|c| c.is_control() || crate::gui::importprompt::is_format_char(c) || c == '\u{3164}'),
+            "{shown:?}"
+        );
+        // the notification body, for a failure and for an import message carrying the same text
+        let bad = Imported {
+            path: nasty.into(),
+            status: Status::Failed("could not read \u{202e}evil\u{200b}\nSecond line".into()),
+        };
+        let good = Imported {
+            path: "/x/ok".into(),
+            status: Status::Imported("Workflow installed (a\u{202e}b\nc)".into()),
+        };
+        let (title, body) = summarize(&[good, bad]).unwrap();
+        for text in [&title, &body] {
+            assert!(
+                text.chars()
+                    .all(|c| c == '\n' || (!c.is_control() && !crate::gui::importprompt::is_format_char(c))),
+                "{text:?}"
+            );
+        }
+        // each result is still exactly one line, whatever the names contained
+        assert_eq!(body.lines().count(), 2, "{body:?}");
+        // a long error cannot flood the notification either
+        let flood = Imported {
+            path: "/x/y".into(),
+            status: Status::Failed("e".repeat(5000)),
+        };
+        assert!(summarize(&[flood]).unwrap().1.chars().count() <= MAX_LINE_CHARS);
     }
 
     #[test]
@@ -727,6 +766,48 @@ mod tests {
     }
 
     #[test]
+    fn theme_install_reads_the_file_once_and_installs_what_it_validated() {
+        let root = temp_dir("theme-once");
+        let paths = Paths::under(&root);
+        let src = root.join("download.alfredappearance");
+        std::fs::write(&src, "swapped in after the check: not even a plist").unwrap();
+        let reads = std::cell::Cell::new(0);
+        let msg = install_theme_with(&paths, &src, |_| {
+            reads.set(reads.get() + 1);
+            Ok(THEME_XML.as_bytes().to_vec())
+        })
+        .unwrap();
+        assert_eq!(reads.get(), 1, "one read of the source");
+        assert!(msg.contains("Night/Owl"), "{msg}");
+        let installed = Config::load(&paths).theme.unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), THEME_XML.as_bytes());
+        // a read error is reported and leaves the config alone
+        let root = temp_dir("theme-once-err");
+        let paths = Paths::under(&root);
+        assert!(install_theme_with(&paths, &src, |_| anyhow::bail!("gone")).is_err());
+        assert!(Config::load(&paths).theme.is_none());
+    }
+
+    #[test]
+    fn a_deeply_nested_theme_is_refused_not_fatal() {
+        let root = temp_dir("theme-deep");
+        let paths = Paths::under(&root);
+        let src = root.join("deep.alfredappearance");
+        let depth = 120_000;
+        std::fs::write(
+            &src,
+            format!(
+                r#"<?xml version="1.0"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+                "<array>".repeat(depth),
+                "</array>".repeat(depth)
+            ),
+        )
+        .unwrap();
+        assert!(install_theme(&paths, &src).is_err());
+        assert!(Config::load(&paths).theme.is_none());
+    }
+
+    #[test]
     fn theme_install_waits_for_the_config_lock() {
         let root = temp_dir("theme-lock");
         let paths = Paths::under(&root);
@@ -759,7 +840,7 @@ mod tests {
 
         let big = root.join("big.alfredappearance");
         std::fs::write(&big, vec![b'x'; (MAX_THEME_BYTES + 1) as usize]).unwrap();
-        assert!(install_theme(&paths, &big).unwrap_err().to_string().contains("large"));
+        assert!(format!("{:#}", install_theme(&paths, &big).unwrap_err()).contains("large"));
     }
 
     /// End to end through the real importer with a sample package built by /usr/bin/zip.
