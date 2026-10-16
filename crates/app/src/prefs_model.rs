@@ -711,54 +711,11 @@ pub fn validate_snippet(
 
 // ------------------------------------------------------------------ Workflows
 
-/// Text lines describing what a workflow can do, for the import prompt and the workflow list.
-/// First line is the verdict; the rest are the specifics that were found.
+/// Text lines describing what a workflow can do, for the workflow list. First line is the
+/// verdict; the rest are the specifics that were found. One wording for every prompt and list:
+/// `gui::importprompt::capability_lines`.
 pub fn trust_lines(t: &TrustSummary) -> Vec<String> {
-    let mut v = Vec::new();
-    if t.runs_code() {
-        v.push("This workflow runs code on your Mac with your permissions.".to_string());
-    } else {
-        v.push("This workflow does not run scripts or terminal commands.".to_string());
-    }
-    if t.scripts > 0 {
-        let how = if t.interpreters.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", t.interpreters.join(", "))
-        };
-        v.push(format!(
-            "{} script{}{how}",
-            t.scripts,
-            if t.scripts == 1 { "" } else { "s" }
-        ));
-    }
-    if t.query_in_source > 0 {
-        v.push(format!(
-            "{} script{} paste what you type into the script text itself",
-            t.query_in_source,
-            if t.query_in_source == 1 { "" } else { "s" }
-        ));
-    }
-    for c in &t.terminal_commands {
-        v.push(format!("Terminal command: {c}"));
-    }
-    if !t.open_url_schemes.is_empty() {
-        v.push(format!("Opens addresses using: {}", t.open_url_schemes.join(", ")));
-    }
-    if !t.external_files.is_empty() {
-        v.push(format!(
-            "Refers to files outside itself: {}",
-            t.external_files.join(", ")
-        ));
-    }
-    if t.external_triggers > 0 {
-        v.push(format!(
-            "{} external trigger{} (other workflows or ashdash:// links can start it)",
-            t.external_triggers,
-            if t.external_triggers == 1 { "" } else { "s" }
-        ));
-    }
-    v
+    crate::gui::importprompt::capability_lines(t)
 }
 
 /// How a configuration-sheet entry is edited.
@@ -1234,7 +1191,7 @@ mod tests {
     fn trust_lines_lead_with_the_verdict() {
         let plain = trust_lines(&TrustSummary::default());
         assert_eq!(plain.len(), 1);
-        assert!(plain[0].contains("does not run"));
+        assert!(plain[0].contains("Runs no scripts"));
         let t = TrustSummary {
             scripts: 2,
             interpreters: vec!["bash".into(), "python3".into()],
@@ -1246,10 +1203,10 @@ mod tests {
             ..TrustSummary::default()
         };
         let lines = trust_lines(&t);
-        assert!(lines[0].contains("runs code"));
+        assert!(lines[0].contains("Runs code"));
         for want in [
             "2 scripts (bash, python3)",
-            "paste what you type",
+            "pastes the typed text",
             "ls {query}",
             "https",
             "~/x",
@@ -1257,6 +1214,24 @@ mod tests {
         ] {
             assert!(lines.iter().any(|l| l.contains(want)), "missing {want}: {lines:?}");
         }
+    }
+
+    #[test]
+    fn the_workflow_list_never_calls_a_file_writer_harmless() {
+        use ashdash_core::workflow::{FileWriteInfo, WriteKind, WritePlace};
+        let t = TrustSummary {
+            file_writes: vec![FileWriteInfo {
+                path: "~/.zshenv".into(),
+                place: WritePlace::Anywhere,
+                kind: WriteKind::Append,
+                dynamic: false,
+                creates_folders: false,
+            }],
+            ..TrustSummary::default()
+        };
+        let lines = trust_lines(&t);
+        assert!(!lines[0].contains("Runs no scripts and no terminal commands"), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("appends to ~/.zshenv")), "{lines:?}");
     }
 
     #[test]

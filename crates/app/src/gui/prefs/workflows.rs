@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ashdash_core::engine::WorkflowSetting;
-use ashdash_core::settings_view::{self, PackagePreview, WorkflowInfo};
-use ashdash_core::workflow::Workflow;
+use ashdash_core::settings_view::{self, WorkflowInfo};
+use ashdash_core::workflow::{StagedPackage, Workflow};
 use ashdash_core::{Config, Paths};
 use eframe::egui::{self, RichText};
 
@@ -18,7 +18,8 @@ use crate::prefs_model::{self as model, SettingControl};
 pub struct State {
     list: Vec<WorkflowInfo>,
     import_input: String,
-    preview: Option<(PathBuf, PackagePreview)>,
+    /// A package opened for review: the staged copy is what gets installed.
+    preview: Option<StagedPackage>,
     previewing: bool,
     msg: Option<Msg>,
     /// Bundle id of the workflow whose settings are expanded.
@@ -41,7 +42,14 @@ impl State {
         self.list.len()
     }
 
-    pub fn preview_done(&mut self, r: Result<(PathBuf, PackagePreview), String>) {
+    /// The wording of the open confirmation: the launcher's, cleaned and capped.
+    fn prompt(&self) -> Option<crate::gui::importprompt::PromptText> {
+        self.preview
+            .as_ref()
+            .map(|s| crate::gui::importprompt::prompt_text(s.preview()))
+    }
+
+    pub fn preview_done(&mut self, r: Result<StagedPackage, String>) {
         self.previewing = false;
         match r {
             Ok(p) => self.preview = Some(p),
@@ -77,8 +85,8 @@ impl PrefsApp {
 
     fn import_section(&mut self, ui: &mut egui::Ui) {
         section(ui, "Import", |ui| {
-            if let Some((path, pv)) = self.workflows.preview.clone() {
-                self.import_prompt(ui, &path, &pv);
+            if self.workflows.preview.is_some() {
+                self.import_prompt(ui);
                 return;
             }
             ui.horizontal(|ui| {
@@ -116,67 +124,57 @@ impl PrefsApp {
         self.workflows.msg = None;
         let (paths, tx, ctx) = (self.paths.clone(), self.tx.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let r = settings_view::preview_package(&paths, &path)
-                .map(|pv| (path, pv))
-                .map_err(|e| format!("{e:#}"));
+            let r = ashdash_core::workflow::stage_package(&paths, &path).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Task::Preview(Box::new(r)));
             ctx.request_repaint();
         });
     }
 
-    fn import_prompt(&mut self, ui: &mut egui::Ui, path: &Path, pv: &PackagePreview) {
+    /// The confirmation for the staged package: the same wording as the launcher's prompt
+    /// (`importprompt::prompt_text`, which cleans everything the package wrote).
+    fn import_prompt(&mut self, ui: &mut egui::Ui) {
+        let Some(text) = self.workflows.prompt() else {
+            return;
+        };
+        let (mut install, mut cancel) = (false, false);
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new(format!("Install “{}”?", pv.name)).strong().size(15.0));
-            let mut facts = vec![format!(
-                "Identifier: {}",
-                if pv.bundle_id.is_empty() {
-                    "(none)"
+            ui.label(RichText::new(&text.title).strong().size(15.0));
+            for (i, l) in text.lines.iter().enumerate() {
+                if l.is_empty() {
+                    ui.add_space(4.0);
+                } else if l.starts_with("Runs code") {
+                    ui.label(RichText::new(l).color(ERROR).strong());
+                } else if l.starts_with("This replaces") || l.starts_with("Settings saved") {
+                    ui.label(RichText::new(l).color(WARN));
+                } else if i + 1 == text.lines.len() {
+                    hint(ui, l);
                 } else {
-                    &pv.bundle_id
+                    ui.label(l);
                 }
-            )];
-            if !pv.version.is_empty() {
-                facts.push(format!("Version {}", pv.version));
             }
-            ui.label(facts.join("   ·   "));
-            if pv.replaces_installed {
-                ui.label(
-                    RichText::new("A workflow with this identifier is installed and will be replaced.").color(WARN),
-                );
-            }
-            ui.add_space(4.0);
-            let lines = model::trust_lines(&pv.trust);
-            let color = if pv.trust.runs_code() {
-                ERROR
-            } else {
-                ui.visuals().text_color()
-            };
-            ui.label(RichText::new(&lines[0]).color(color).strong());
-            for l in &lines[1..] {
-                ui.label(format!("• {l}"));
-            }
-            hint(ui, "Only install workflows from people you trust.");
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Install").clicked() {
-                    self.workflows.msg = Some(match self.install_workflow(path) {
-                        Ok(n) => Msg::ok(format!("Installed {n}.")),
-                        Err(e) => Msg::err(format!("Install failed: {e}")),
-                    });
-                    self.workflows.preview = None;
-                    self.workflows.import_input.clear();
-                    self.workflows.refresh(&self.paths, &self.cfg);
-                }
-                if ui.button("Cancel").clicked() {
-                    self.workflows.preview = None;
-                }
+                install = ui.button("Install").clicked();
+                cancel = ui.button("Cancel").clicked();
             });
         });
+        if install {
+            if let Some(staged) = self.workflows.preview.take() {
+                self.workflows.msg = Some(match Self::install_workflow(staged) {
+                    Ok(n) => Msg::ok(format!("Installed {n}.")),
+                    Err(e) => Msg::err(format!("Install failed: {e}")),
+                });
+            }
+            self.workflows.import_input.clear();
+            self.workflows.refresh(&self.paths, &self.cfg);
+        } else if cancel {
+            self.workflows.preview = None; // dropping the staged copy deletes it
+        }
     }
 
-    fn install_workflow(&self, path: &Path) -> Result<String, String> {
-        let dest =
-            ashdash_core::workflow::import_package(path, &self.paths.workflows_dir()).map_err(|e| format!("{e:#}"))?;
+    /// Install the copy that was shown (the package file is not read again).
+    fn install_workflow(staged: StagedPackage) -> Result<String, String> {
+        let dest = staged.install().map_err(|e| format!("{e:#}"))?;
         Ok(dest
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -394,5 +392,68 @@ impl PrefsApp {
                 "Settings are kept in config.json; `ashdash config keys` lists every setting.",
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gui::importprompt::is_format_char;
+
+    fn hostile_package(dir: &Path, name: &str, author: &str) -> PathBuf {
+        let _ = std::fs::create_dir_all(dir);
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>name</key><string>{name}</string><key>bundleid</key><string>t.prefs.hostile</string>
+<key>createdby</key><string>{author}</string><key>objects</key><array>
+<dict><key>uid</key><string>W</string><key>type</key><string>alfred.workflow.output.writefile</string>
+<key>config</key><dict><key>filename</key><string>~/.zshrc</string><key>type</key><integer>1</integer></dict></dict>
+</array></dict></plist>"#
+        );
+        let p = dir.join("h.alfredworkflow");
+        std::fs::write(&p, crate::gui::importprompt::test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();
+        p
+    }
+
+    #[test]
+    fn the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless() {
+        let root = std::env::temp_dir().join(format!("oa-prefs-wf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        let name = format!("Safe\u{202e}gnp.exe{}", "n".repeat(10_000));
+        let pkg = hostile_package(&root, &name, "Ann\u{200b} Author\nBundle id: com.apple.x");
+        let staged = ashdash_core::workflow::stage_package(&paths, &pkg).unwrap();
+
+        let mut state = State::default();
+        assert!(state.prompt().is_none());
+        state.preview_done(Ok(staged));
+        let text = state.prompt().expect("a package is under review");
+        let all = text.plain();
+        assert!(all.chars().all(|c| !is_format_char(c)), "{all:?}");
+        assert!(text.title.chars().count() < 120, "{}", text.title.chars().count());
+        assert!(all.chars().count() < 3000, "{}", all.chars().count());
+        assert!(all.contains("Author: Ann Author Bundle id: com.apple.x"), "{all}");
+        assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
+        assert!(all.contains("appends to ~/.zshrc"), "{all}");
+
+        // cancelling drops the staged copy and removes it from disk
+        assert_eq!(std::fs::read_dir(paths.data.join("import-staging")).unwrap().count(), 1);
+        state.preview = None;
+        assert_eq!(std::fs::read_dir(paths.data.join("import-staging")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installing_from_the_prefs_prompt_uses_the_staged_copy() {
+        let root = std::env::temp_dir().join(format!("oa-prefs-wf2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::under(&root);
+        let pkg = hostile_package(&root, "Shown", "A");
+        let staged = ashdash_core::workflow::stage_package(&paths, &pkg).unwrap();
+        std::fs::remove_file(&pkg).unwrap(); // the file is gone; the staged copy is not
+        let name = PrefsApp::install_workflow(staged).unwrap();
+        assert_eq!(name, "user.workflow.t.prefs.hostile");
+        assert!(paths.workflows_dir().join(name).join("info.plist").is_file());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

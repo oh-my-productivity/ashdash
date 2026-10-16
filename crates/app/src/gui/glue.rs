@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use ashdash_core::actions::Buffer;
-use ashdash_core::workflow::PackagePreview;
+use ashdash_core::workflow::StagedPackage;
 use ashdash_core::{Item, Outcome};
 use eframe::egui;
 
-use super::importprompt::{ImportPrompt, confirm_ready};
+use super::importprompt::ImportPrompt;
 use super::panel::{PanelStack, UiAction, is_workflow_package, ui_action};
 use super::{LauncherApp, mac, trace};
 
@@ -18,8 +18,9 @@ use super::{LauncherApp, mac, trace};
 pub(super) enum AsyncMsg {
     /// Applications for an "Open With..." level.
     List { token: u64, entries: Vec<Item> },
-    /// A workflow package was opened for inspection (or could not be).
-    Preview(Result<Box<(PathBuf, PackagePreview)>, String>),
+    /// A workflow package was opened for inspection (or could not be). The staged copy is
+    /// what the prompt asks about and what gets installed.
+    Preview(Result<Box<StagedPackage>, String>),
     /// An installation finished (name or error).
     Installed(Result<String, String>),
 }
@@ -130,36 +131,27 @@ impl LauncherApp {
             return;
         }
         self.status = Some("Reading the workflow…".into());
-        let (tx, ctx) = (self.glue.tx.clone(), ctx.clone());
+        let (engine, tx, ctx) = (std::sync::Arc::clone(&self.engine), self.glue.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = ashdash_core::workflow::preview_package(&path)
-                .map(|p| Box::new((path, p)))
+            let r = engine
+                .stage_workflow(&path)
+                .map(Box::new)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AsyncMsg::Preview(r));
             ctx.request_repaint();
         });
     }
 
-    /// Return on the prompt. Ignored during the first moments after it appeared.
+    /// Return on the prompt (the caller has checked `importprompt::prompt_key`: a fresh press,
+    /// after the delay). Installs the staged copy that was shown, not the file again.
     pub(super) fn confirm_import(&mut self, ctx: &egui::Context) {
-        let Some(p) = &self.glue.import else {
+        let Some(p) = self.glue.import.take() else {
             return;
         };
-        if !confirm_ready(p.shown_at.elapsed()) {
-            return;
-        }
-        let path = p.path.clone();
-        self.glue.import = None;
         self.status = Some("Installing…".into());
         let (engine, tx, ctx) = (std::sync::Arc::clone(&self.engine), self.glue.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let r = engine
-                .import_workflow(&path)
-                .map(|dest| {
-                    dest.file_name()
-                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-                })
-                .map_err(|e| format!("{e:#}"));
+            let r = super::importprompt::install_confirmed(&engine, p);
             let _ = tx.send(AsyncMsg::Installed(r));
             ctx.request_repaint();
         });
@@ -188,10 +180,9 @@ impl LauncherApp {
     pub(super) fn apply_async(&mut self, ctx: &egui::Context, msg: AsyncMsg) {
         match msg {
             list @ AsyncMsg::List { .. } => self.panel_apply(&list),
-            AsyncMsg::Preview(Ok(found)) => {
-                let (path, preview) = *found;
+            AsyncMsg::Preview(Ok(staged)) => {
                 self.status = None;
-                self.glue.import = Some(ImportPrompt::new(path, &preview));
+                self.glue.import = Some(ImportPrompt::new(*staged));
                 self.want_focus = true;
             }
             AsyncMsg::Preview(Err(e)) => self.status = Some(format!("Cannot install: {e}")),

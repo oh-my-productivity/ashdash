@@ -113,15 +113,16 @@ fn main() -> Result<()> {
                 bail!("usage: ashdash import [--yes] <file.alfredworkflow>")
             };
             let file = PathBuf::from(file);
-            // A workflow is code that will run as you: show what it can do and ask first.
-            let preview = ashdash_core::workflow::preview_package(&file)?;
-            println!("{}\n", gui::importprompt::prompt_text(&preview).plain());
-            if !yes && !gui::importprompt::ask_yes_no("Install this workflow? [y/N] ")? {
-                bail!("not installed");
-            }
+            // A workflow is code that will run as you: show what it can do and ask first. The
+            // package is opened once; what is shown is the staged copy that gets installed.
+            let staged = ashdash_core::workflow::stage_package(&paths, &file)?;
             let sock = socket_path(&paths);
-            let engine = Engine::new(paths, config);
-            let dest = engine.import_workflow(&file)?;
+            let dest = gui::importprompt::cli_import(
+                staged,
+                yes,
+                gui::importprompt::ask_yes_no,
+                |staged| Engine::new(paths, config).install_staged(staged),
+            )?;
             println!("installed to {}", dest.display());
             // Best effort: let a running launcher pick up the new workflow and its hotkeys.
             let _ = ipc::send(&sock, &ipc::Request::Reload, CONTROL_TIMEOUT);

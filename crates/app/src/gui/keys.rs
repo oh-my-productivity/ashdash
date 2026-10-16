@@ -9,6 +9,8 @@ struct Keys {
     up: bool,
     down: bool,
     enter: Option<Mods>,
+    /// The Return in `enter` is a new key press, not a key-repeat event of a held key.
+    enter_fresh: bool,
     tab: bool,
     esc: bool,
     large: bool,
@@ -16,6 +18,8 @@ struct Keys {
     quicklook: bool,
     page: i32,
     number: Option<usize>,
+    /// The Cmd+number in `number` is a new key press (see `enter_fresh`).
+    number_fresh: bool,
     /// Option+Up / Option+Down: add to / remove from the buffer.
     buffer_add: bool,
     buffer_remove: bool,
@@ -36,6 +40,18 @@ fn cursor_extent(ctx: &egui::Context, text: &str) -> (bool, bool) {
         }
         None => (len == 0, true),
     }
+}
+
+/// Whether `events` hold a key press of `key` that is not an auto-repeat. A held key keeps
+/// producing `pressed` events with `repeat: true`; only the first one is a deliberate press, and
+/// only that one may answer a "press again to confirm" question.
+pub fn fresh_press(events: &[egui::Event], key: Key) -> bool {
+    events.iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key
+        )
+    })
 }
 
 /// How far (points) the Large Type text scrolls for the keys pressed this frame.
@@ -80,6 +96,7 @@ impl LauncherApp {
                 up: false,
                 down: false,
                 enter: None,
+                enter_fresh: false,
                 tab: false,
                 esc: false,
                 large: false,
@@ -87,6 +104,7 @@ impl LauncherApp {
                 quicklook: false,
                 page: 0,
                 number: None,
+                number_fresh: false,
                 buffer_add: false,
                 buffer_remove: false,
                 right: false,
@@ -100,6 +118,8 @@ impl LauncherApp {
             k.up = i.consume_key(Modifiers::NONE, Key::ArrowUp) || i.consume_key(Modifiers::CTRL, Key::P);
             k.down = i.consume_key(Modifiers::NONE, Key::ArrowDown) || i.consume_key(Modifiers::CTRL, Key::N);
             if i.key_pressed(Key::Enter) {
+                // before consume_key removes the events
+                k.enter_fresh = fresh_press(&i.events, Key::Enter);
                 i.consume_key(m, Key::Enter);
                 k.enter = Some(mods);
             }
@@ -128,8 +148,10 @@ impl LauncherApp {
             .into_iter()
             .enumerate()
             {
+                let fresh = fresh_press(&i.events, key);
                 if i.consume_key(Modifiers::MAC_CMD, key) {
                     k.number = Some(n);
+                    k.number_fresh = fresh;
                 }
             }
             k
@@ -140,11 +162,11 @@ impl LauncherApp {
             return;
         }
         // The workflow import prompt takes over the keyboard: Return installs, Esc cancels.
-        if self.glue.import.is_some() {
-            if keys.esc {
-                self.cancel_import();
-            } else if keys.enter.is_some_and(|m| m.is_none()) {
-                self.confirm_import(ctx);
+        if let Some(p) = &self.glue.import {
+            match super::importprompt::prompt_key(keys.esc, keys.enter, keys.enter_fresh, p.shown_at.elapsed()) {
+                super::importprompt::PromptKey::Cancel => self.cancel_import(),
+                super::importprompt::PromptKey::Install => self.confirm_import(ctx),
+                super::importprompt::PromptKey::Nothing => {}
             }
             return;
         }
@@ -250,15 +272,46 @@ impl LauncherApp {
         if let Some(n) = keys.number
             && n < self.items.len().min(VISIBLE_ROWS)
         {
-            self.activate(ctx, n, Mods::NONE);
+            self.activate_with(ctx, n, Mods::NONE, keys.number_fresh);
             return;
         }
         if let Some(mods) = keys.enter {
             if self.large_type.is_some() {
                 self.close_large_type(ctx);
             } else {
-                self.activate(ctx, self.selected, mods);
+                self.activate_with(ctx, self.selected, mods, keys.enter_fresh);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(k: Key, pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_first_press_is_fresh_and_its_repeats_are_not() {
+        assert!(fresh_press(&[key(Key::Enter, true, false)], Key::Enter));
+        assert!(!fresh_press(&[key(Key::Enter, true, true)], Key::Enter));
+        assert!(!fresh_press(&[key(Key::Enter, true, true), key(Key::Enter, true, true)], Key::Enter));
+        // a release, another key, or nothing at all is not a press of this key
+        assert!(!fresh_press(&[key(Key::Enter, false, false)], Key::Enter));
+        assert!(!fresh_press(&[key(Key::Num1, true, false)], Key::Enter));
+        assert!(!fresh_press(&[], Key::Enter));
+        // a release-and-press inside one frame still counts as a new press
+        assert!(fresh_press(
+            &[key(Key::Enter, true, true), key(Key::Enter, false, false), key(Key::Enter, true, false)],
+            Key::Enter
+        ));
     }
 }

@@ -241,6 +241,12 @@ impl LauncherApp {
     }
 
     fn activate(&mut self, ctx: &egui::Context, index: usize, mods: Mods) {
+        self.activate_with(ctx, index, mods, true);
+    }
+
+    /// `fresh`: the key press behind this is a new press, not the auto-repeat of a held key.
+    /// A repeat never answers a "press again to confirm" question.
+    fn activate_with(&mut self, ctx: &egui::Context, index: usize, mods: Mods, fresh: bool) {
         let Some(item) = self.items.get(index).cloned() else {
             return;
         };
@@ -255,10 +261,14 @@ impl LauncherApp {
         // Move to Trash, whatever the Cmd variant does); we only ask, once.
         let key = confirm_key(&item.id, mods);
         let prompt = self.engine.confirmation_for(&item, mods);
-        if let ConfirmStep::Ask(msg) = confirm_step(self.confirming.as_deref(), &key, prompt) {
-            self.confirming = Some(key);
-            self.status = Some(msg);
-            return;
+        match confirm_step(self.confirming.as_deref(), &key, prompt, fresh) {
+            ConfirmStep::Ask(msg) => {
+                self.confirming = Some(key);
+                self.status = Some(msg);
+                return;
+            }
+            ConfirmStep::Wait => return,
+            ConfirmStep::Run => {}
         }
         let query = self.query.clone();
         self.hide(ctx);
@@ -280,6 +290,8 @@ enum ConfirmStep {
     Run,
     /// Show this question and wait for a second Return.
     Ask(String),
+    /// The question is already up and this Return is only a key repeat: do nothing.
+    Wait,
 }
 
 /// Identifies "this item with this action": Cmd+Return can run a different
@@ -294,10 +306,13 @@ fn confirm_key(item_id: &str, mods: Mods) -> String {
 }
 
 /// `armed` is the key already confirmed-for-asking by a previous Return,
-/// `prompt` the engine's question for this item (None = harmless).
-fn confirm_step(armed: Option<&str>, key: &str, prompt: Option<String>) -> ConfirmStep {
+/// `prompt` the engine's question for this item (None = harmless). `fresh` says the key press
+/// is a new one: the answering press of a question must be, so a Return that is merely held
+/// down (key repeat) can never confirm Shut Down or Move to Trash.
+fn confirm_step(armed: Option<&str>, key: &str, prompt: Option<String>, fresh: bool) -> ConfirmStep {
     match prompt {
         Some(question) if armed != Some(key) => ConfirmStep::Ask(question),
+        Some(_) if !fresh => ConfirmStep::Wait,
         _ => ConfirmStep::Run,
     }
 }
@@ -478,20 +493,37 @@ mod tests {
 
     #[test]
     fn a_harmless_item_runs_at_once() {
-        assert_eq!(confirm_step(None, "k", None), ConfirmStep::Run);
-        assert_eq!(confirm_step(Some("other"), "k", None), ConfirmStep::Run);
+        assert_eq!(confirm_step(None, "k", None, true), ConfirmStep::Run);
+        assert_eq!(confirm_step(Some("other"), "k", None, true), ConfirmStep::Run);
     }
 
     #[test]
     fn a_destructive_item_asks_first_and_runs_on_the_second_return() {
-        assert_eq!(confirm_step(None, "k", Some(ASK.into())), ConfirmStep::Ask(ASK.into()));
-        assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into())), ConfirmStep::Run);
+        assert_eq!(confirm_step(None, "k", Some(ASK.into()), true), ConfirmStep::Ask(ASK.into()));
+        assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into()), true), ConfirmStep::Run);
+    }
+
+    #[test]
+    fn a_held_return_never_answers_the_question() {
+        // the question is up (armed) and Return is still down: the repeats do nothing, however many
+        for _ in 0..50 {
+            assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into()), false), ConfirmStep::Wait);
+        }
+        // only a fresh press runs it
+        assert_eq!(confirm_step(Some("k"), "k", Some(ASK.into()), true), ConfirmStep::Run);
+        // a repeat before anything was asked still asks (harmless) rather than running
+        assert_eq!(
+            confirm_step(None, "k", Some(ASK.into()), false),
+            ConfirmStep::Ask(ASK.into())
+        );
+        // harmless items are unaffected by key repeat (holding Return on Open repeats Open as before)
+        assert_eq!(confirm_step(None, "k", None, false), ConfirmStep::Run);
     }
 
     #[test]
     fn confirming_one_item_does_not_confirm_another() {
         assert_eq!(
-            confirm_step(Some("a"), "b", Some(ASK.into())),
+            confirm_step(Some("a"), "b", Some(ASK.into()), true),
             ConfirmStep::Ask(ASK.into())
         );
     }
@@ -506,7 +538,7 @@ mod tests {
         // Return confirmed an Open; Cmd+Return (trash) must still ask
         let armed = confirm_key("file:x", Mods::NONE);
         assert_eq!(
-            confirm_step(Some(&armed), &confirm_key("file:x", cmd), Some(ASK.into())),
+            confirm_step(Some(&armed), &confirm_key("file:x", cmd), Some(ASK.into()), true),
             ConfirmStep::Ask(ASK.into())
         );
     }
@@ -543,10 +575,10 @@ mod tests {
         // the sequence activate() follows: ask, then (same key armed) run
         let key = confirm_key(&trash.id, Mods::NONE);
         assert_eq!(
-            confirm_step(None, &key, Some(question.clone())),
+            confirm_step(None, &key, Some(question.clone()), true),
             ConfirmStep::Ask(question.clone())
         );
-        assert_eq!(confirm_step(Some(&key), &key, Some(question)), ConfirmStep::Run);
+        assert_eq!(confirm_step(Some(&key), &key, Some(question), true), ConfirmStep::Run);
 
         // and a harmless action never asks
         let open = Item::new("act:open:/tmp/a.txt", "Open")

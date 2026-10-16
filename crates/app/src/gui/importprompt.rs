@@ -6,15 +6,18 @@
 //! exactly what its object graph can do ([`TrustSummary`]), and must confirm.
 //!
 //! [`prompt_text`] builds the wording from a [`PackagePreview`]; it is pure and shared
-//! by the launcher's in-window prompt, the Finder "open document" dialog
-//! (`mac/opendocs.rs`) and `ashdash import`. All text that comes from the package is
-//! stripped of control characters and length-capped here, so a hostile package cannot
-//! reshape the prompt.
+//! by the launcher's in-window prompt, the preferences window, the Finder "open document"
+//! dialog (`mac/opendocs.rs`) and `ashdash import`. All text that comes from the package is
+//! stripped of control and Unicode format characters (bidi overrides, zero-width) and
+//! length-capped here, so a hostile package cannot reshape or disguise the prompt.
+//!
+//! What is asked about is a [`StagedPackage`]: the package was opened once and the answer
+//! installs that very copy, never the file on disk again.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use ashdash_core::workflow::{PackagePreview, TrustSummary};
+use ashdash_core::Mods;
+use ashdash_core::workflow::{PackagePreview, StagedPackage, TrustSummary};
 use eframe::egui::{self, Vec2};
 
 use super::largetype::wrapped_lines;
@@ -46,12 +49,41 @@ impl PromptText {
     }
 }
 
-/// Remove control characters, collapse whitespace runs and cap the length.
+/// Unicode "format" characters (general category Cf): invisible, yet able to reorder
+/// (bidi embeddings, overrides and isolates) or hide (zero-width) text. Not whitespace and
+/// not `char::is_control`, so they need their own list (the standard library has no
+/// general-category lookup).
+pub fn is_format_char(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD
+        | 0x0600..=0x0605
+        | 0x061C
+        | 0x06DD
+        | 0x070F
+        | 0x0890..=0x0891
+        | 0x08E2
+        | 0x180E
+        | 0x200B..=0x200F
+        | 0x202A..=0x202E
+        | 0x2060..=0x2064
+        | 0x2066..=0x206F
+        | 0xFEFF
+        | 0xFFF9..=0xFFFB
+        | 0x110BD
+        | 0x110CD
+        | 0x13430..=0x1343F
+        | 0x1BCA0..=0x1BCA3
+        | 0x1D173..=0x1D17A
+        | 0xE0001
+        | 0xE0020..=0xE007F)
+}
+
+/// Remove control and format characters, collapse whitespace runs and cap the length.
 pub fn clean(s: &str, max: usize) -> String {
     let flat: String = s
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format_char(*c))
         .collect();
     let mut out = String::new();
     let mut last_space = true;
@@ -89,7 +121,12 @@ fn listed(items: &[String], max_each: usize) -> String {
     s
 }
 
-fn capability_lines(t: &TrustSummary) -> Vec<String> {
+/// What the workflow can do, one line each. The first line is the verdict about code: it only
+/// says "Runs no scripts and no terminal commands." for a workflow that can do nothing else
+/// the summary knows about (see [`TrustSummary::is_passive`]); a workflow that writes files,
+/// opens URLs or files, replaces the clipboard or has triggers gets a qualified lead-in and
+/// the specifics below it. Shared by every prompt and the workflow list.
+pub(crate) fn capability_lines(t: &TrustSummary) -> Vec<String> {
     let mut out = Vec::new();
     if t.runs_code() {
         let mut l = format!("Runs code: {}", plural(t.scripts, "script", "scripts"));
@@ -108,8 +145,10 @@ fn capability_lines(t: &TrustSummary) -> Vec<String> {
                 }
             ));
         }
-    } else {
+    } else if t.is_passive() {
         out.push("Runs no scripts and no terminal commands.".into());
+    } else {
+        out.push("Runs no scripts or Terminal commands, but it can do the following:".into());
     }
     if !t.terminal_commands.is_empty() {
         out.push(format!(
@@ -119,6 +158,22 @@ fn capability_lines(t: &TrustSummary) -> Vec<String> {
                 MAX_COMMAND
             )
         ));
+    }
+    let (outside, inside): (Vec<_>, Vec<_>) = t.file_writes.iter().partition(|w| w.is_outside());
+    if !outside.is_empty() {
+        out.push(format!(
+            "Writes files anywhere your account can (or at a place decided at run time): {}",
+            listed(&outside.iter().map(|w| w.describe()).collect::<Vec<_>>(), MAX_COMMAND)
+        ));
+    }
+    if !inside.is_empty() {
+        out.push(format!(
+            "Writes files in its own folders: {}",
+            listed(&inside.iter().map(|w| w.describe()).collect::<Vec<_>>(), MAX_COMMAND)
+        ));
+    }
+    if t.copies_to_clipboard > 0 {
+        out.push("Replaces what is on your clipboard.".into());
     }
     if !t.open_url_schemes.is_empty() {
         out.push(format!(
@@ -164,12 +219,35 @@ pub fn prompt_text(p: &PackagePreview) -> PromptText {
     if !description.is_empty() {
         lines.push(format!("Description: {description}"));
     }
+    if let Some(old) = &p.replaces {
+        let old_name = clean(&old.name, MAX_NAME);
+        let old_version = clean(&old.version, 40);
+        lines.push(format!(
+            "This replaces “{}”{} (installed).",
+            if old_name.is_empty() { "(unnamed)" } else { &old_name },
+            if old_version.is_empty() {
+                String::new()
+            } else {
+                format!(" {old_version}")
+            }
+        ));
+    }
+    if p.saved_settings {
+        lines.push(
+            "Settings saved for this workflow identifier are kept and the new package can read them \
+             (they may include tokens or passwords)."
+                .into(),
+        );
+    }
     lines.push(String::new());
     lines.extend(capability_lines(&p.trust));
     lines.push(String::new());
     lines.push("Workflows run on your Mac with your permissions. Only install ones you trust.".into());
     PromptText {
-        title: format!("Install workflow “{name}”?"),
+        title: format!(
+            "{} workflow “{name}”?",
+            if p.replaces.is_some() { "Replace" } else { "Install" }
+        ),
         lines,
     }
 }
@@ -200,6 +278,27 @@ pub fn confirm_ready(shown_for: Duration) -> bool {
     shown_for >= CONFIRM_DELAY
 }
 
+/// What a key press does to the open prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKey {
+    Nothing,
+    Cancel,
+    Install,
+}
+
+/// Esc cancels. Return installs only when it is a fresh press (not a key-repeat event of a
+/// Return that is still held), has no modifier, and the prompt has been up long enough
+/// ([`confirm_ready`]). A held Return therefore never confirms by repeating.
+pub fn prompt_key(esc: bool, enter: Option<Mods>, enter_fresh: bool, shown_for: Duration) -> PromptKey {
+    if esc {
+        PromptKey::Cancel
+    } else if enter.is_some_and(|m| m.is_none()) && enter_fresh && confirm_ready(shown_for) {
+        PromptKey::Install
+    } else {
+        PromptKey::Nothing
+    }
+}
+
 /// Height in points the prompt wants at `width`, capped at the room under the search field.
 pub fn prompt_height(text: &PromptText, width: f32, font_size: f32) -> f32 {
     let cols = ((width - 24.0) / (font_size * 0.5)).floor().max(10.0) as usize;
@@ -207,20 +306,98 @@ pub fn prompt_height(text: &PromptText, width: f32, font_size: f32) -> f32 {
     (rows as f32 * font_size * 1.2 + 16.0).min(super::VISIBLE_ROWS as f32 * ROW_HEIGHT)
 }
 
-/// A prompt that is up, waiting for Return or Esc.
+/// A prompt that is up, waiting for Return or Esc. It owns the staged copy of the package:
+/// confirming installs it, any other way out drops it (which deletes it).
 pub struct ImportPrompt {
-    pub path: PathBuf,
+    pub staged: StagedPackage,
     pub text: PromptText,
     pub shown_at: std::time::Instant,
 }
 
 impl ImportPrompt {
-    pub fn new(path: PathBuf, preview: &PackagePreview) -> Self {
+    pub fn new(staged: StagedPackage) -> Self {
         ImportPrompt {
-            path,
-            text: prompt_text(preview),
+            text: prompt_text(staged.preview()),
+            staged,
             shown_at: std::time::Instant::now(),
         }
+    }
+}
+
+/// Install what the open prompt showed (its staged copy), on a worker thread. Returns the
+/// folder name of the installed workflow. The package file is not read again.
+pub fn install_confirmed(engine: &ashdash_core::Engine, prompt: ImportPrompt) -> Result<String, String> {
+    engine
+        .install_staged(prompt.staged)
+        .map(|dest| {
+            dest.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        })
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// `ashdash import`: show what the staged package can do, ask (unless `yes`) and install that
+/// very copy. Declining or failing to ask drops the staged copy; nothing is installed.
+pub fn cli_import(
+    staged: StagedPackage,
+    yes: bool,
+    ask: impl FnOnce(&str) -> anyhow::Result<bool>,
+    install: impl FnOnce(StagedPackage) -> anyhow::Result<std::path::PathBuf>,
+) -> anyhow::Result<std::path::PathBuf> {
+    println!("{}\n", prompt_text(staged.preview()).plain());
+    if !yes && !ask("Install this workflow? [y/N] ")? {
+        anyhow::bail!("not installed");
+    }
+    install(staged)
+}
+
+/// A minimal "stored" (uncompressed) zip writer for tests, so no zip dependency is needed here.
+#[cfg(test)]
+pub(crate) mod test_zip {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xFFFF_FFFFu32;
+        for b in data {
+            c ^= u32::from(*b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            }
+        }
+        !c
+    }
+
+    /// A zip archive holding `files` (name, bytes), uncompressed.
+    pub fn stored(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut z = Vec::new();
+        let mut central = Vec::new();
+        for (name, data) in files {
+            let (crc, n) = (crc32(data), name.as_bytes());
+            let offset = z.len() as u32;
+            z.extend_from_slice(&[0x50, 0x4b, 3, 4, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            z.extend_from_slice(&crc.to_le_bytes());
+            z.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            z.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            z.extend_from_slice(&(n.len() as u16).to_le_bytes());
+            z.extend_from_slice(&[0, 0]);
+            z.extend_from_slice(n);
+            z.extend_from_slice(data);
+            central.extend_from_slice(&[0x50, 0x4b, 1, 2, 20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(n.len() as u16).to_le_bytes());
+            central.extend_from_slice(&[0; 12]);
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(n);
+        }
+        let cd_off = z.len() as u32;
+        z.extend_from_slice(&central);
+        z.extend_from_slice(&[0x50, 0x4b, 5, 6, 0, 0, 0, 0]);
+        z.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        z.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        z.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        z.extend_from_slice(&cd_off.to_le_bytes());
+        z.extend_from_slice(&[0, 0]);
+        z
     }
 }
 
@@ -277,6 +454,8 @@ impl LauncherApp {
 
 #[cfg(test)]
 mod tests {
+    use ashdash_core::workflow::{FileWriteInfo, InstalledWorkflow, WriteKind, WritePlace};
+
     use super::*;
 
     fn preview() -> PackagePreview {
@@ -296,7 +475,36 @@ mod tests {
                 terminal_commands: vec!["brew update".into()],
                 external_files: vec!["~/Documents/x.txt".into()],
                 external_triggers: 1,
+                ..TrustSummary::default()
             },
+            replaces: None,
+            saved_settings: false,
+        }
+    }
+
+    fn write_file(path: &str, kind: WriteKind, place: WritePlace) -> FileWriteInfo {
+        FileWriteInfo {
+            path: path.into(),
+            place,
+            kind,
+            dynamic: path.contains('{'),
+            creates_folders: false,
+        }
+    }
+
+    fn only_write_file() -> PackagePreview {
+        PackagePreview {
+            name: "Dotfiles".into(),
+            bundle_id: "x.dot".into(),
+            author: String::new(),
+            description: String::new(),
+            version: String::new(),
+            trust: TrustSummary {
+                file_writes: vec![write_file("~/.zshrc", WriteKind::Append, WritePlace::Anywhere)],
+                ..TrustSummary::default()
+            },
+            replaces: None,
+            saved_settings: false,
         }
     }
 
@@ -332,6 +540,8 @@ mod tests {
             description: String::new(),
             version: String::new(),
             trust: TrustSummary::default(),
+            replaces: None,
+            saved_settings: false,
         };
         let t = prompt_text(&p);
         let all = t.plain();
@@ -377,6 +587,254 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_that_only_writes_a_file_is_not_called_harmless() {
+        let all = prompt_text(&only_write_file()).plain();
+        assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
+        assert!(all.contains("Runs no scripts or Terminal commands, but it can"), "{all}");
+        assert!(all.contains("Writes files anywhere"), "{all}");
+        assert!(all.contains("appends to ~/.zshrc"), "{all}");
+    }
+
+    #[test]
+    fn the_harmless_sentence_is_only_for_workflows_that_do_nothing_else() {
+        let sentence = "Runs no scripts and no terminal commands";
+        let lead = |f: fn(&mut TrustSummary)| {
+            let mut t = TrustSummary::default();
+            f(&mut t);
+            capability_lines(&t).join("\n")
+        };
+        assert!(lead(|_| {}).contains(sentence));
+        for (what, text) in [
+            ("url", lead(|t| t.open_url_schemes = vec!["https".into()])),
+            ("file", lead(|t| t.external_files = vec!["~/x".into()])),
+            ("trigger", lead(|t| t.external_triggers = 1)),
+            ("clipboard", lead(|t| t.copies_to_clipboard = 1)),
+            (
+                "write",
+                lead(|t| t.file_writes = vec![write_file("n.txt", WriteKind::Overwrite, WritePlace::WorkflowData)]),
+            ),
+        ] {
+            assert!(!text.contains(sentence), "{what}: {text}");
+        }
+        // a workflow with scripts leads with the code verdict instead
+        assert!(lead(|t| t.scripts = 1).starts_with("Runs code"));
+    }
+
+    #[test]
+    fn writes_are_split_into_outside_and_in_its_own_folders() {
+        let mut p = only_write_file();
+        p.trust.file_writes = vec![
+            write_file("~/Library/LaunchAgents/x.plist", WriteKind::Overwrite, WritePlace::Anywhere),
+            write_file("{query}", WriteKind::Prepend, WritePlace::Anywhere),
+            write_file("notes.txt", WriteKind::Append, WritePlace::WorkflowData),
+        ];
+        let all = prompt_text(&p).plain();
+        assert!(all.contains("overwrites ~/Library/LaunchAgents/x.plist"), "{all}");
+        assert!(all.contains("prepends to {query} (decided at run time)"), "{all}");
+        assert!(
+            all.contains("Writes files in its own folders: appends to notes.txt (its data folder)"),
+            "{all}"
+        );
+        // lists are cut like the other lists
+        p.trust.file_writes = (0..12)
+            .map(|i| write_file(&format!("/tmp/f{i}"), WriteKind::Overwrite, WritePlace::Anywhere))
+            .collect();
+        assert!(prompt_text(&p).plain().contains("(+7 more)"));
+    }
+
+    #[test]
+    fn a_replacement_is_announced_with_the_installed_name_and_version() {
+        let mut p = preview();
+        p.replaces = Some(InstalledWorkflow {
+            name: "Weather".into(),
+            version: "1.0".into(),
+        });
+        let t = prompt_text(&p);
+        assert_eq!(t.title, "Replace workflow “Weather”?");
+        assert!(t.plain().contains("This replaces “Weather” 1.0 (installed)."), "{}", t.plain());
+        assert!(!t.plain().contains("Settings saved for this workflow"));
+        p.saved_settings = true;
+        let all = prompt_text(&p).plain();
+        assert!(
+            all.contains("Settings saved for this workflow identifier are kept") && all.contains("tokens or passwords"),
+            "{all}"
+        );
+        // a fresh install says neither
+        let all = prompt_text(&preview()).plain();
+        assert!(!all.contains("This replaces") && !all.contains("Settings saved"));
+        // installed-side text is cleaned too
+        p.replaces = Some(InstalledWorkflow {
+            name: "Old\nAuthor: Apple\u{202e}".into(),
+            version: "1\u{200b}.0".into(),
+        });
+        let lines = prompt_text(&p).lines;
+        let l = lines.iter().find(|l| l.starts_with("This replaces")).unwrap();
+        assert_eq!(l, "This replaces “Old Author: Apple” 1.0 (installed).");
+    }
+
+    #[test]
+    fn format_characters_are_stripped_and_long_names_are_capped() {
+        // right-to-left override, isolates, zero-width space/joiner, BOM, soft hyphen, tag chars
+        let evil = "pa\u{202e}yp\u{2066}al\u{2069}\u{200b}\u{200d}\u{feff}\u{ad}\u{e0041}";
+        assert_eq!(clean(evil, 80), "paypal");
+        for c in ['\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{200e}', '\u{200f}', '\u{061c}', '\u{2060}'] {
+            assert!(is_format_char(c), "{c:?}");
+            assert_eq!(clean(&format!("a{c}b"), 80), "ab");
+        }
+        for c in ['a', ' ', 'é', '世', '😀', '-', '\u{301}'] {
+            assert!(!is_format_char(c), "{c:?}");
+        }
+        // none of it reaches the prompt, whichever field it hides in
+        let mut p = preview();
+        p.name = "Safe\u{202e}gnp.exe".into();
+        p.author = "A\u{200b}pple".into();
+        p.trust.terminal_commands = vec!["echo \u{202e}hi".into()];
+        let all = prompt_text(&p).plain();
+        assert!(all.chars().all(|c| !is_format_char(c)), "{all:?}");
+        assert!(all.contains("Safegnp.exe") && all.contains("Author: Apple"));
+        // a 10 000-character name is cut
+        p.name = "n".repeat(10_000);
+        let t = prompt_text(&p);
+        assert!(t.title.chars().count() < 120, "{}", t.title.chars().count());
+        assert!(t.lines[0].chars().count() <= "Name: ".len() + MAX_NAME);
+        assert!(t.plain().chars().count() < 3000);
+    }
+
+    #[test]
+    fn a_held_return_never_installs_by_repeating() {
+        let late = CONFIRM_DELAY + Duration::from_millis(1);
+        let enter = Some(Mods::NONE);
+        // a fresh press after the delay installs
+        assert_eq!(prompt_key(false, enter, true, late), PromptKey::Install);
+        // key-repeat events of a Return that is still down do not, however long the prompt is up
+        assert_eq!(prompt_key(false, enter, false, late), PromptKey::Nothing);
+        assert_eq!(prompt_key(false, enter, false, Duration::from_secs(60)), PromptKey::Nothing);
+        // too early, or with a modifier, even a fresh press does not
+        assert_eq!(prompt_key(false, enter, true, Duration::ZERO), PromptKey::Nothing);
+        let cmd = Mods { cmd: true, ..Mods::NONE };
+        assert_eq!(prompt_key(false, Some(cmd), true, late), PromptKey::Nothing);
+        // no Return at all
+        assert_eq!(prompt_key(false, None, true, late), PromptKey::Nothing);
+        // Esc always cancels, repeat or not
+        assert_eq!(prompt_key(true, enter, false, Duration::ZERO), PromptKey::Cancel);
+    }
+
+    fn doc_plist(name: &str, bundle: &str, marker: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>name</key><string>{name}</string><key>bundleid</key><string>{bundle}</string>
+<key>objects</key><array>
+<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo {marker}</string></dict></dict>
+</array></dict></plist>"#
+        )
+    }
+
+    /// The launcher's prompt asks about the staged copy and installs that copy, whatever
+    /// happens to the file after the prompt appeared.
+    #[test]
+    fn the_launcher_prompt_installs_the_copy_it_showed() {
+        let root = std::env::temp_dir().join(format!("oa-importprompt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = ashdash_core::Paths::under(&root);
+        let engine = ashdash_core::Engine::new(
+            paths.clone(),
+            ashdash_core::Config {
+                app_dirs: vec![],
+                ..Default::default()
+            },
+        );
+        let pkg = root.join("w.alfredworkflow");
+        let write = |name: &str, bundle: &str, marker: &str| {
+            let plist = doc_plist(name, bundle, marker);
+            std::fs::write(&pkg, test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();
+        };
+        write("Shown", "t.prompt.shown", "SHOWN");
+
+        let prompt = ImportPrompt::new(engine.stage_workflow(&pkg).unwrap());
+        assert_eq!(prompt.text.title, "Install workflow “Shown”?");
+        write("Evil", "t.prompt.evil", "SWAPPED"); // the user is still reading
+        let name = install_confirmed(&engine, prompt).unwrap();
+        assert_eq!(name, "user.workflow.t.prompt.shown");
+        let dir = paths.workflows_dir();
+        let text = std::fs::read_to_string(dir.join(&name).join("info.plist")).unwrap();
+        assert!(text.contains("SHOWN") && !text.contains("SWAPPED"), "{text}");
+        assert!(!dir.join("user.workflow.t.prompt.evil").exists());
+
+        // any other way out of the prompt (Esc, hiding, a newer prompt) deletes the staged copy
+        let prompt = ImportPrompt::new(engine.stage_workflow(&pkg).unwrap());
+        assert!(prompt.text.title.starts_with("Install"), "{}", prompt.text.title);
+        drop(prompt);
+        assert_eq!(std::fs::read_dir(paths.data.join("import-staging")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_cli_installs_the_staged_copy_or_nothing() {
+        let root = std::env::temp_dir().join(format!("oa-cliimport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = ashdash_core::Paths::under(&root);
+        let engine = ashdash_core::Engine::new(
+            paths.clone(),
+            ashdash_core::Config {
+                app_dirs: vec![],
+                ..Default::default()
+            },
+        );
+        let pkg = root.join("w.alfredworkflow");
+        let write = |name: &str, bundle: &str, marker: &str| {
+            let plist = doc_plist(name, bundle, marker);
+            std::fs::write(&pkg, test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();
+        };
+        write("Shown", "t.cli.shown", "SHOWN");
+        let staging = paths.data.join("import-staging");
+        let left = || std::fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0);
+
+        // "y" typed after the file was swapped: the shown copy is installed
+        let dest = cli_import(
+            engine.stage_workflow(&pkg).unwrap(),
+            false,
+            |q| {
+                assert!(q.contains("[y/N]"));
+                write("Evil", "t.cli.evil", "SWAPPED");
+                Ok(answer_is_yes("y"))
+            },
+            |s| engine.install_staged(s),
+        )
+        .unwrap();
+        assert!(dest.ends_with("user.workflow.t.cli.shown"));
+        let text = std::fs::read_to_string(dest.join("info.plist")).unwrap();
+        assert!(text.contains("SHOWN") && !text.contains("SWAPPED"), "{text}");
+        assert!(!paths.workflows_dir().join("user.workflow.t.cli.evil").exists());
+        assert_eq!(left(), 0);
+
+        // "n", an unanswerable question (no terminal), and --yes
+        write("Other", "t.cli.other", "OTHER");
+        let no = cli_import(engine.stage_workflow(&pkg).unwrap(), false, |_| Ok(false), |_| panic!("no install"));
+        assert_eq!(no.unwrap_err().to_string(), "not installed");
+        let err = cli_import(
+            engine.stage_workflow(&pkg).unwrap(),
+            false,
+            |_| anyhow::bail!("no terminal"),
+            |_| panic!("no install"),
+        );
+        assert!(err.unwrap_err().to_string().contains("no terminal"));
+        assert!(!paths.workflows_dir().join("user.workflow.t.cli.other").exists());
+        assert_eq!(left(), 0, "declined or unanswered: the copy is deleted");
+        let dest = cli_import(
+            engine.stage_workflow(&pkg).unwrap(),
+            true,
+            |_| panic!("--yes does not ask"),
+            |s| engine.install_staged(s),
+        )
+        .unwrap();
+        assert!(dest.ends_with("user.workflow.t.cli.other"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn only_an_explicit_yes_is_a_yes() {
         for yes in ["y", "Y", "yes", " YES \n", "Yes"] {
             assert!(answer_is_yes(yes), "{yes:?}");
@@ -402,6 +860,8 @@ mod tests {
             description: String::new(),
             version: String::new(),
             trust: TrustSummary::default(),
+            replaces: None,
+            saved_settings: false,
         });
         let big = prompt_text(&preview());
         let (hs, hb) = (prompt_height(&small, 600.0, 13.0), prompt_height(&big, 600.0, 13.0));

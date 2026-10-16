@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use ashdash_core::settings_view::PackagePreview;
+use ashdash_core::workflow::StagedPackage;
 use ashdash_core::{Config, Paths};
 use anyhow::{Result, anyhow};
 use eframe::egui::{self, RichText};
@@ -28,7 +28,7 @@ pub enum Purpose {
 /// Results of work done off the UI thread.
 pub enum Task {
     Picked(Purpose, Option<PathBuf>),
-    Preview(Box<Result<(PathBuf, PackagePreview), String>>),
+    Preview(Box<Result<StagedPackage, String>>),
 }
 
 pub struct PrefsApp {

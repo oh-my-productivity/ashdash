@@ -4,8 +4,9 @@
 //! `odoc` Apple Event. [`install`] registers a handler for it; the handler hands the paths
 //! to [`open_documents`], the one function that does the work:
 //!
-//! * workflows - confirmed with the user first (a workflow is a bundle of scripts that will
-//!   run on this Mac), then `Engine::import_workflow`;
+//! * workflows - the package is opened once, the user is asked about that staged copy (a
+//!   workflow is a bundle of scripts that will run on this Mac) and, on Import, exactly that
+//!   copy is installed (`Engine::stage_workflow` / `install_staged`); the file is not read again;
 //! * snippets - `import_snippet_package` into the collections directory;
 //! * themes - validated with `Theme::load`, copied to `<data>/themes/` and selected in
 //!   `config.json`. The running window keeps its current theme until the next start.
@@ -53,9 +54,9 @@ pub fn classify(path: &Path) -> Option<DocKind> {
 
 /// The side effects of importing. Each method returns a one-line, user-facing result.
 pub trait Importer {
-    /// Ask whether a workflow may be installed. `false` cancels quietly.
-    fn confirm_workflow(&self, file: &Path) -> bool;
-    fn workflow(&self, file: &Path) -> Result<String>;
+    /// Open a workflow package, ask whether it may be installed and install what was shown.
+    /// `Ok(None)` means the user declined (cancelled quietly).
+    fn workflow(&self, file: &Path) -> Result<Option<String>>;
     fn snippets(&self, file: &Path) -> Result<String>;
     fn appearance(&self, file: &Path) -> Result<String>;
 }
@@ -107,16 +108,14 @@ fn import_one(importer: &dyn Importer, path: &Path) -> Status {
         Ok(_) => return Status::Failed("not a regular file".into()),
         Err(e) => return Status::Failed(format!("cannot read it: {e}")),
     }
-    if kind == DocKind::Workflow && !importer.confirm_workflow(path) {
-        return Status::Cancelled;
-    }
     let result = match kind {
         DocKind::Workflow => importer.workflow(path),
-        DocKind::Snippets => importer.snippets(path),
-        DocKind::Appearance => importer.appearance(path),
+        DocKind::Snippets => importer.snippets(path).map(Some),
+        DocKind::Appearance => importer.appearance(path).map(Some),
     };
     match result {
-        Ok(msg) => Status::Imported(msg),
+        Ok(Some(msg)) => Status::Imported(msg),
+        Ok(None) => Status::Cancelled,
         Err(e) => Status::Failed(format!("{e:#}")),
     }
 }
@@ -203,38 +202,50 @@ pub fn dialog_confirmed(exit_ok: bool, stdout: &str) -> bool {
 pub struct SystemImporter {
     pub engine: Arc<Engine>,
     pub paths: Paths,
+    /// Shows the confirmation and says whether the user agreed ([`osascript_dialog`] in the app;
+    /// tests pass a fake so no dialog appears).
+    pub ask: Ask,
+}
+
+/// Shows the import confirmation; `true` = the user chose Import.
+pub type Ask = Box<dyn Fn(&crate::gui::importprompt::PromptText) -> bool + Send + Sync>;
+
+/// The confirmation as a native alert (`osascript`). No `osascript`: refuse rather than install
+/// unconfirmed.
+pub fn osascript_dialog(text: &crate::gui::importprompt::PromptText) -> bool {
+    let out = Command::new("osascript")
+        .args(alert_args(&text.title, &text.lines.join("\n"), true))
+        .output();
+    match out {
+        Ok(o) => dialog_confirmed(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
+        Err(_) => false,
+    }
 }
 
 impl Importer for SystemImporter {
-    fn confirm_workflow(&self, file: &Path) -> bool {
-        // What the package says it is and what it can do, read without installing it.
-        let preview = match ashdash_core::workflow::preview_package(file) {
-            Ok(p) => p,
+    fn workflow(&self, file: &Path) -> Result<Option<String>> {
+        // Open the package once: what the package says it is and what it can do is read from
+        // the staged copy, and that same copy is installed if the user agrees.
+        let staged = match self.engine.stage_workflow(file) {
+            Ok(s) => s,
             Err(e) => {
                 let title = format!("Cannot read {}", display_name(file));
                 let _ = Command::new("osascript")
                     .args(alert_args(&title, &format!("{e:#}"), false))
                     .output();
-                return false;
+                return Ok(None);
             }
         };
-        let text = crate::gui::importprompt::prompt_text(&preview);
-        let out = Command::new("osascript")
-            .args(alert_args(&text.title, &text.lines.join("\n"), true))
-            .output();
-        match out {
-            Ok(o) => dialog_confirmed(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
-            Err(_) => false, // no osascript: refuse rather than install unconfirmed
+        let text = crate::gui::importprompt::prompt_text(staged.preview());
+        if !(self.ask)(&text) {
+            return Ok(None); // dropping `staged` deletes the copy
         }
-    }
-
-    fn workflow(&self, file: &Path) -> Result<String> {
-        let dest = self.engine.import_workflow(file)?;
+        let dest = self.engine.install_staged(staged)?;
         let name = dest
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Ok(format!("Workflow installed ({name})"))
+        Ok(Some(format!("Workflow installed ({name})")))
     }
 
     fn snippets(&self, file: &Path) -> Result<String> {
@@ -438,7 +449,11 @@ mod ae {
 /// Returns `false` when called off the main thread.
 pub fn install(engine: Arc<Engine>) -> bool {
     let paths = engine.paths.clone();
-    let importer = Arc::new(SystemImporter { engine, paths });
+    let importer = Arc::new(SystemImporter {
+        engine,
+        paths,
+        ask: Box::new(osascript_dialog),
+    });
     ae::register(Box::new(move |files| {
         let importer = Arc::clone(&importer);
         std::thread::spawn(move || {
@@ -477,13 +492,13 @@ mod tests {
     }
 
     impl Importer for Fake {
-        fn confirm_workflow(&self, file: &Path) -> bool {
+        fn workflow(&self, file: &Path) -> Result<Option<String>> {
             self.log.borrow_mut().push(format!("confirm {}", display_name(file)));
-            self.allow
-        }
-        fn workflow(&self, file: &Path) -> Result<String> {
+            if !self.allow {
+                return Ok(None);
+            }
             self.log.borrow_mut().push(format!("workflow {}", display_name(file)));
-            Ok("Workflow installed".into())
+            Ok(Some("Workflow installed".into()))
         }
         fn snippets(&self, file: &Path) -> Result<String> {
             self.log.borrow_mut().push(format!("snippets {}", display_name(file)));
@@ -736,6 +751,7 @@ mod tests {
         let importer = SystemImporter {
             engine: Arc::clone(&engine),
             paths: paths.clone(),
+            ask: Box::new(|_| true),
         };
 
         // Workflow package: a zip with info.plist at the top level.
@@ -757,7 +773,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let msg = importer.workflow(&wf_pkg).unwrap();
+        let msg = importer.workflow(&wf_pkg).unwrap().expect("confirmed");
         assert!(msg.contains("test.opendocs.sample"), "{msg}");
         assert!(
             engine
@@ -785,5 +801,86 @@ mod tests {
         assert!(status.success());
         let msg = importer.snippets(&sn_pkg).unwrap();
         assert!(msg.contains("Samples") && msg.contains("1 imported"), "{msg}");
+    }
+
+    /// A workflow package for the Finder path, built with /usr/bin/zip (`false` when there is none).
+    fn write_workflow_zip(path: &Path, name: &str, bundle: &str, marker: &str) -> bool {
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>name</key><string>{name}</string>
+<key>bundleid</key><string>{bundle}</string><key>objects</key><array>
+<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo {marker}</string></dict></dict>
+</array></dict></plist>"#
+        );
+        let src = path.with_extension("src");
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("info.plist"), plist).unwrap();
+        let _ = std::fs::remove_file(path);
+        Command::new("zip")
+            .current_dir(&src)
+            .arg("-q")
+            .arg(path)
+            .arg("info.plist")
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// The Finder dialog stays up for minutes; whatever happens to the file meanwhile, the
+    /// installed workflow is the one the dialog described.
+    #[test]
+    fn finder_import_installs_the_copy_the_dialog_described() {
+        let root = temp_dir("swap");
+        let paths = Paths::under(&root);
+        let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
+        let pkg = root.join("w.alfredworkflow");
+        if !write_workflow_zip(&pkg, "Harmless", "test.swap.harmless", "SHOWN") {
+            eprintln!("skipping: no zip tool");
+            return;
+        }
+
+        let asked = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (swap_pkg, log) = (pkg.clone(), Arc::clone(&asked));
+        let importer = SystemImporter {
+            engine: Arc::clone(&engine),
+            paths: paths.clone(),
+            ask: Box::new(move |text| {
+                log.lock().unwrap().push(text.plain());
+                // the user is still reading; the file on disk is replaced by something else
+                assert!(write_workflow_zip(&swap_pkg, "Evil", "test.swap.evil", "SWAPPED"));
+                true
+            }),
+        };
+        let msg = importer.workflow(&pkg).unwrap().expect("confirmed");
+        assert!(msg.contains("test.swap.harmless"), "{msg}");
+        let shown = asked.lock().unwrap().concat();
+        assert!(shown.contains("Harmless") && !shown.contains("Evil"), "{shown}");
+        let wf = paths.workflows_dir();
+        assert!(wf.join("user.workflow.test.swap.harmless").is_dir());
+        assert!(!wf.join("user.workflow.test.swap.evil").exists());
+        let text = std::fs::read_to_string(wf.join("user.workflow.test.swap.harmless/info.plist")).unwrap();
+        assert!(text.contains("SHOWN") && !text.contains("SWAPPED"), "{text}");
+    }
+
+    #[test]
+    fn declining_the_dialog_installs_nothing_and_leaves_no_staged_copy() {
+        let root = temp_dir("decline");
+        let paths = Paths::under(&root);
+        let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
+        let pkg = root.join("w.alfredworkflow");
+        if !write_workflow_zip(&pkg, "No", "test.decline", "x") {
+            eprintln!("skipping: no zip tool");
+            return;
+        }
+        let importer = SystemImporter {
+            engine,
+            paths: paths.clone(),
+            ask: Box::new(|_| false),
+        };
+        assert_eq!(importer.workflow(&pkg).unwrap(), None);
+        assert!(!paths.workflows_dir().join("user.workflow.test.decline").exists());
+        let staging = paths.data.join("import-staging");
+        assert_eq!(std::fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0), 0);
     }
 }
