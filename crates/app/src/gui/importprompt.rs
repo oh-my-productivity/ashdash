@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use ashdash_core::Mods;
-use ashdash_core::workflow::{LaunchedApp, PackagePreview, StagedPackage, TrustSummary, WritePlace};
+use ashdash_core::workflow::{PackagePreview, StagedPackage, TrustSummary, WritePlace};
 use eframe::egui::{self, Vec2};
 
 use super::largetype::wrapped_lines;
@@ -521,7 +521,9 @@ impl LauncherApp {
 
 #[cfg(test)]
 mod tests {
-    use ashdash_core::workflow::{FileWriteInfo, INCOMING_ARGUMENT, InstalledWorkflow, WriteKind, WritePlace};
+    use ashdash_core::workflow::{
+        FileWriteInfo, INCOMING_ARGUMENT, InstalledWorkflow, LaunchedApp, WriteKind, WritePlace,
+    };
 
     use super::*;
 
@@ -711,18 +713,20 @@ mod tests {
     #[test]
     fn a_launched_application_is_a_capability_line_and_a_shipped_one_is_called_out() {
         // Review item 1: Keyword -> Open File (".", openwith inside the package).
-        let mut t = TrustSummary::default();
-        t.launched_apps = vec![
-            LaunchedApp {
-                app: "payload.app".into(),
-                shipped: true,
-            },
-            LaunchedApp {
-                app: "Safari".into(),
-                shipped: false,
-            },
-        ];
-        t.opens_shipped_files = vec!["docs/readme.md".into()];
+        let t = TrustSummary {
+            launched_apps: vec![
+                LaunchedApp {
+                    app: "payload.app".into(),
+                    shipped: true,
+                },
+                LaunchedApp {
+                    app: "Safari".into(),
+                    shipped: false,
+                },
+            ],
+            opens_shipped_files: vec!["docs/readme.md".into()],
+            ..TrustSummary::default()
+        };
         let all = capability_lines(&t).join("\n");
         assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
         assert!(

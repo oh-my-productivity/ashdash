@@ -115,8 +115,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oa-wf-ffos-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let fake = Arc::new(FakeOs::with_output("/Users/x/a.txt\n"));
-        let mut config = Config::default();
-        config.app_dirs = vec![];
+        let mut config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
         config.file_search.mdfind_timeout_ms = 1500;
         let e = crate::engine::Engine::with_env(Paths::under(&root), config, Box::new(Arc::clone(&fake)), root.clone());
         let dir = e.paths.workflows_dir().join("user.workflow.ff");
