@@ -203,10 +203,11 @@ What Ashdash does for you:
     typed text into the script source;
   * every **Terminal command**;
   * every **Write File** target (overwrite / append / prepend, the path or `{dynamic}`, and whether it is confined to the
-    workflow's own folders or can be anywhere your account can write: a shell start-up file or a LaunchAgent plist is a way to persist);
+    workflow's own data/cache folder, its own installed folder (a separate line: "Can modify its own files"; the executor never lets Write File change the workflow's own `info.plist`), or can be anywhere your account can write: a shell start-up file or a LaunchAgent plist is a way to persist);
   * whether it **replaces what is on your clipboard** (Copy to Clipboard objects);
   * the **URL schemes** of its Open URL objects (`{dynamic}` when the scheme is decided by data);
-  * **files outside its folder** it refers to (absolute, `~` or `..` paths in Open File, Launch Files and script files);
+  * **files outside its folder** it refers to (literal absolute, `~` or `..` paths in Open File, Launch Files and script files);
+  * **files opened at run time**: an Open File object with an empty file field (it opens the incoming argument) or a path with a `{placeholder}`, which can be an app or script shipped inside the package;
   * its **External Triggers** (what another workflow or an `ashdash://` link can start);
   * a replacement notice and the saved-settings warning when the bundle id is already installed (see above).
   "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`); a workflow that

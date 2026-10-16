@@ -196,10 +196,13 @@ Details worth knowing:
   * **Runs in Terminal:** each Terminal Command object, quoted.
   * **Writes files:** each Write File object with overwrite / append / prepend and its target. Targets that are absolute,
     `~`, contain `..` or a `{placeholder}` are flagged as "anywhere your account can"; relative ones are listed as the workflow's
-    own data, cache or folder. (A script that appends to a shell start-up file is a way to persist, so this is listed even though
+    own data or cache folder. A Write File that targets the workflow's own installed folder gets its own line, "Can modify its own files"
+    (Ashdash refuses to let a workflow rewrite its own `info.plist`). (A script that appends to a shell start-up file is a way to persist, so this is listed even though
     it runs no script.)
   * **Replaces what is on your clipboard** (Copy to Clipboard objects).
   * **Opens URLs with the scheme:** the distinct URL schemes of Open URL objects (`{dynamic}` = decided by data at run time).
+  * **Opens files chosen at run time:** an Open File object with an empty file field (it opens whatever arrives as the argument) or a
+    `{placeholder}` path; that can be an app or script shipped inside the package.
   * **Refers to files outside its folder** (absolute, `~` or `..` paths), and **external triggers** that other workflows or
     `ashdash://` links can start.
   * The line "Runs no scripts and no terminal commands" appears only for a workflow that does none of the above. Anything the

@@ -70,6 +70,8 @@ Low = hardening, robustness, privacy details.
 | SEC-32 | Medium | A held Return (key repeat) satisfied "press again to confirm" for destructive actions and the import prompt's guard | `gui/keys.rs`, `gui/mod.rs`, `gui/importprompt.rs` | `a_held_return_never_answers_the_question` (mod.rs), `a_held_return_never_installs_by_repeating`, `a_first_press_is_fresh_and_its_repeats_are_not` (keys.rs) | Fixed (FIX-TRUST), see 9c |
 | SEC-33 | Low | Importing a package whose bundle id matches an installed workflow replaced it silently (outside the prefs window) and it inherited the saved settings (API tokens) | `workflow/package.rs`, `gui/importprompt.rs` | `the_preview_reports_what_would_be_replaced_and_inherited` (import_staging.rs), `a_replacement_is_announced_with_the_installed_name_and_version` | Fixed by disclosure; inheritance kept on purpose (reference-compatible), see 9c |
 | SEC-34 | Low | Prefs import prompt showed package text raw; Unicode format characters (bidi override, zero-width) survived the launcher's sanitising | `gui/importprompt.rs`, `gui/prefs/workflows.rs` | `format_characters_are_stripped_and_long_names_are_capped`, `the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless` | Fixed (FIX-TRUST), see 9c |
+| SEC-35 | Medium | Open File with an empty file field (= the incoming argument) or a `{placeholder}` path was invisible to the trust summary, so a workflow that launches an app or script shipped in its own package was called passive | `workflow/trust.rs`, `gui/importprompt.rs` | `open_file_with_an_empty_or_dynamic_field_is_never_passive` (trust.rs), `files_opened_at_run_time_are_listed_and_not_called_harmless` (importprompt.rs) | Fixed (FIX-R2), see 9c |
+| SEC-36 | Medium | Write File with "relative to the workflow folder" could overwrite the workflow's own `info.plist`/scripts after the prompt and was listed as harmless "own folders" | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `write_file_never_rewrites_the_workflows_own_info_plist` (workflow/tests.rs), `writing_into_its_own_installed_folder_is_a_separate_warning` (importprompt.rs) | Fixed for `info.plist` and disclosed for the rest (FIX-R2), see 9c |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -312,8 +314,8 @@ arbitrary bytes, wrong JSON types, truncated and mangled JSON never panics.
 - `mdfind -onlyin <home> -name <q>`: `q` is its own argv element after `-name`, so a leading `-` is data.
 - `copy_to_clipboard` uses `pbcopy` with stdin; no shell.
 - `Command::new` is always given a program path or fixed name; `PATH` hijacking of `open`, `osascript`,
-  `pbcopy`, `mdfind`, `sips`, `pmset` is possible only if the launcher's own environment is hostile.
-  Fix if desired: use absolute paths (`/usr/bin/open`, ...). Low.
+  `pbcopy`, `mdfind`, `sips`, `pmset` was possible only if the launcher's own environment is hostile. Fixed: every such tool
+  is started by absolute path (`actions::system_command`, guarded by `tests/system_programs.rs`; see the fix logs below).
 - `ASHDASH_CONFIRM=1` in the CLI only affects the dev CLI.
 - CLI `import`/`trigger` take paths and ids from argv; they are as trusted as the shell user.
 
@@ -465,9 +467,9 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   folders), clipboard replacement, URL schemes, external files and triggers. *Decision:* Copy to Clipboard is listed (it can
   replace what the user later pastes into a terminal); Reveal in Finder (`action.revealfile`) is **not**: it only selects a file
   in Finder and neither opens, runs nor changes anything. Notification, Large Type and the other output objects are likewise
-  harmless. Open File/Launch Files that run an app are still only visible as "files outside its folder" (unchanged).
+  harmless. Open File/Launch Files that run an app were still only visible as "files outside its folder" (a gap closed by SEC-35 in the re-review fixes).
 - **SEC-31** `workflow::stage_package(&Paths, file)` opens the package **once**: it extracts into a private (0700) directory
-  `<data>/import-staging/.import-*` (same volume as the workflows folder, so the install is a rename), parses and describes
+  `<data>/import-staging/.import-*` (normally the same volume as the workflows folder, so the install is a rename; on `EXDEV` it is copied beside the destination first, see FIX-R2), parses and describes
   it (`StagedPackage::preview()`); `StagedPackage::install()` moves exactly that tree into place and the file is never read
   again. Dropping a `StagedPackage` (Esc, hide, a newer prompt, "no") deletes the copy; copies older than 24 h from a crashed
   run are swept when the next one is staged; if the copy has vanished, install fails with "open the file again" instead of
@@ -495,7 +497,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 ### Status of every finding (checked in core-followups)
 
 SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired in wave 3; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
-`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure. Nothing is without a status.
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2). Nothing is without a status.
 
 ## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
 
@@ -532,8 +534,39 @@ Items refer to `docs/reviews/wave3.md`.
   refused. Writers that bypass the lock (an editor, `jq`) are not coordinated.
 - **PATH (item 13)** `actions::system_program` maps `open`, `osascript`, `osacompile`, `ditto`, `qlmanage`, `sips`, `mdfind`,
   `unzip`, `tar`, `pbcopy`, `pbpaste`, `pmset` and `screencapture` to fixed `/usr/bin` (`/usr/sbin`) paths in `actions::build`, in
-  the `engine.rs` open/reveal/copy/osascript wrappers and in the icon conversion. Other spawn sites (`system.rs`,
-  `workflow/filefilter.rs`, `clipboard/restore.rs`) are owned by other packages and still use bare names.
+  the `engine.rs` open/reveal/copy/osascript wrappers and in the icon conversion. The other spawn sites (`system.rs`,
+  `workflow/filefilter.rs`, `clipboard/restore.rs`, ...) were moved to `actions::system_command` by FIX-R2 (below).
 - **Script Filter reruns (item 12)** `schedule::RERUN_CEILING` (5 minutes): reruns of one request stop that long after its first
   run; typing (a new request) starts a new period. Mouse or arrow-key activity does not extend it.
 
+
+## 9c. Fix log (wave 3 re-review, FIX-R2, branch `fix/w3-r2`)
+
+- **SEC-35 (N1)** `TrustSummary.opens_at_run_time` lists Open File / Launch Files targets that are produced at run time: an empty
+  file field (the executor then opens the incoming argument; shown as "(the incoming argument)") and any path with a
+  `{placeholder}`; literal paths outside the folder stay in `external_files`. Such a workflow is never passive and the prompt says
+  "Opens files chosen at run time: ... (this can be an app or script shipped inside the package)". The old test that pinned the
+  empty field as harmless was corrected, not weakened. Residual: what a Script Filter or script *returns* is still invisible.
+- **SEC-36 (N2)** A Write File object in the workflow's own installed folder (`relativepathmode` 2) now has its own prompt line
+  ("Can modify its own files (scripts, settings) after you install it") and is no longer listed under the data/cache line. *Decision
+  on the executor:* the executor refuses to write the workflow's own `info.plist` (compared after resolving `.`/`..`, ignoring case,
+  and by real location when both exist), whatever the path is spelled like, in every mode, with a warning; this closes "add
+  objects after the prompt". Other files in the folder stay writable (the reference launcher semantics; a workflow may keep a settings file there).
+  Residual: a script file the workflow already runs can still be rewritten, and a Run Script can write anywhere anyway, so this is
+  a disclosure plus one hard rule, not a sandbox.
+- **Cross-volume install (N3)** `package::install_with` falls back, on `EXDEV`, to copying the staged tree (modes, links)
+  into a hidden folder *beside the destination*, fsyncing files and directories, and renaming that into place; the copy is removed
+  on any failure and the previous version is restored as before. Tested with an injected rename (`install_across_volumes_copies_next_to_the_destination`,
+  `a_failed_cross_volume_install_keeps_the_old_version_and_leaves_nothing_behind`).
+- **Reload leftovers (N4)** workflow hotkeys are re-read after a successful launcher-hotkey rebind (the old key is free) and only
+  once `Engine::reload_pending()` is false (a hotkey fired before the background refresh would find no workflow); the reload gates
+  release themselves if the worker panics (`GateRelease`), so `reload_pending()` cannot stay true.
+- **Bare tool names (N5)** `actions::system_command(name)`; `system.rs` (Lock/Sleep/Log out/..), `filefilter.rs`, `clipboard/restore.rs`,
+  `clipboard_watch.rs`, `mac/opendocs.rs` and `prefs/dialogs.rs` use it. `crates/core/tests/system_programs.rs` scans both crates and fails
+  on a new `Command::new("osascript")` (or any other name in the table) outside `actions.rs`. `zip` (tests only) is not in the table.
+- **Web search URLs (N6)** `settings_view::set` (and so `ashdash config set`) refuses a value that makes a web search newly invalid; an
+  entry that is already bad never blocks unrelated edits or its own repair. A search skipped at start-up is kept in
+  `Engine::startup_warnings()` and shown as a "settings" problem (status file + one notification), like a live reload.
+- **`clean` (N7)** blank-looking characters (U+3164, U+115F/1160, U+FFA0, U+2800, U+17B4/17B5, U+034F, U+2065) are shown as spaces and
+  collapse; a field made only of them reads as empty ("not stated" / "(unnamed)"). Variation selectors are left alone (emoji).
+- **Test hygiene** `trash_refuses_a_symlink_that_points_at_a_protected_place` creates `$HOME/Library` itself.
