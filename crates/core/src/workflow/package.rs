@@ -11,7 +11,9 @@
 //! * symlinks are created last, so no file is ever written through one;
 //! * the staging directory is removed on every failure path (drop guard);
 //! * installation renames the old version aside, renames the new tree in and only then deletes the
-//!   old one, restoring it if the second step fails.
+//!   old one, restoring it if the second step fails; when the staging folder and the workflows
+//!   folder are on different volumes (`EXDEV`) the tree is copied and fsynced beside the
+//!   destination first, so a half-written install is never visible.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -253,16 +255,107 @@ fn stage_in(package: &Path, staging_root: &Path, dest_root: &Path, paths: Option
 /// Swap `new` into `dest`: the previous version moves aside first and is restored if the final
 /// rename fails, so there is never a moment in which a failure loses the old version.
 fn install(new: &Path, dest: &Path, scratch_parent: &Path) -> Result<()> {
+    install_with(new, dest, scratch_parent, &|from, to| std::fs::rename(from, to))
+}
+
+/// `EXDEV`: source and destination are on different volumes (or one of the folders is a link to
+/// another volume), so `rename` cannot move the tree.
+fn is_cross_device(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(18)
+}
+
+/// Put `new` at `dest`. When the plain rename crosses a volume boundary the tree is copied
+/// (contents, modes, links, then fsynced) into a hidden folder beside `dest` -- the same folder,
+/// hence the same volume -- and that copy is renamed into place. A failure at any point removes
+/// the copy; `dest` is only ever replaced by a complete tree. `new` is removed after a successful
+/// copy install and left alone otherwise.
+fn place(
+    new: &Path,
+    dest: &Path,
+    scratch_parent: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match rename(new, dest) {
+        Err(e) if is_cross_device(&e) => {
+            let n = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let copy = scratch_parent.join(format!(".import-copy-{}-{n}", std::process::id()));
+            let result = copy_tree_synced(new, &copy).and_then(|()| rename(&copy, dest));
+            match result {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(new);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&copy);
+                    Err(e)
+                }
+            }
+        }
+        other => other,
+    }
+}
+
+/// Copy a directory tree (files with their permission bits, directories, symlinks as links) and
+/// fsync every file and directory. `to` must not exist; it is created 0700 first and gets the
+/// source's mode last.
+fn copy_tree_synced(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    fn walk(from: &Path, to: &Path) -> std::io::Result<()> {
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            let meta = std::fs::symlink_metadata(&src)?;
+            if meta.file_type().is_symlink() {
+                symlink(std::fs::read_link(&src)?, &dst)?;
+            } else if meta.is_dir() {
+                std::fs::DirBuilder::new().mode(0o700).create(&dst)?;
+                walk(&src, &dst)?;
+                std::fs::set_permissions(
+                    &dst,
+                    std::fs::Permissions::from_mode(meta.permissions().mode() & 0o7777),
+                )?;
+                std::fs::File::open(&dst)?.sync_all()?;
+            } else if meta.is_file() {
+                let mut input = std::fs::File::open(&src)?;
+                let mut out = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&dst)?;
+                std::io::copy(&mut input, &mut out)?;
+                out.set_permissions(std::fs::Permissions::from_mode(meta.permissions().mode() & 0o7777))?;
+                out.sync_all()?;
+            } // sockets, devices and the like never come out of the extractor
+        }
+        Ok(())
+    }
+    let meta = std::fs::metadata(from)?;
+    std::fs::DirBuilder::new().mode(0o700).create(to)?;
+    walk(from, to)?;
+    std::fs::set_permissions(to, std::fs::Permissions::from_mode(meta.permissions().mode() & 0o7777))?;
+    std::fs::File::open(to)?.sync_all()?;
+    if let Some(parent) = to.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn install_with(
+    new: &Path,
+    dest: &Path,
+    scratch_parent: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let mut last: Option<std::io::Error> = None;
     for attempt in 0..5 {
         let n = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
         let aside = scratch_parent.join(format!(".import-old-{}-{n}-{attempt}", std::process::id()));
-        let moved = match std::fs::rename(dest, &aside) {
+        let moved = match rename(dest, &aside) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => return Err(e).context("replacing the installed workflow"),
         };
-        match std::fs::rename(new, dest) {
+        match place(new, dest, scratch_parent, rename) {
             Ok(()) => {
                 if moved {
                     let _ = std::fs::remove_dir_all(&aside);
@@ -271,7 +364,7 @@ fn install(new: &Path, dest: &Path, scratch_parent: &Path) -> Result<()> {
             }
             Err(e) => {
                 if moved {
-                    let _ = std::fs::rename(&aside, dest); // restore the previous version
+                    let _ = rename(&aside, dest); // restore the previous version
                 }
                 // another import of the same workflow won the race: try again
                 if !matches!(
@@ -454,6 +547,127 @@ mod tests {
         drop(b);
         assert!(pb.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A staged-looking tree: nested directory, an executable script, a relative symlink.
+    fn make_tree(dir: &Path) {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        std::fs::create_dir_all(dir.join("lib/deep")).unwrap();
+        std::fs::write(dir.join("info.plist"), "plist").unwrap();
+        std::fs::write(dir.join("lib/deep/run.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(dir.join("lib/deep/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        symlink("deep/run.sh", dir.join("lib/link.sh")).unwrap();
+    }
+
+    fn exdev() -> std::io::Error {
+        std::io::Error::from_raw_os_error(18)
+    }
+
+    fn leftovers(root: &Path) -> Vec<String> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".import-"))
+            .collect()
+    }
+
+    #[test]
+    fn install_across_volumes_copies_next_to_the_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("oa-exdev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (staging, root) = (base.join("staging/.import-x"), base.join("workflows"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        make_tree(&staging);
+        let dest = root.join("user.workflow.t.x");
+        // Simulated second volume: any rename out of the staging folder fails with EXDEV.
+        let renames = std::cell::RefCell::new(Vec::<(PathBuf, PathBuf)>::new());
+        let rename = |from: &Path, to: &Path| -> std::io::Result<()> {
+            renames.borrow_mut().push((from.to_path_buf(), to.to_path_buf()));
+            if from.starts_with(base.join("staging")) {
+                return Err(exdev());
+            }
+            std::fs::rename(from, to)
+        };
+        install_with(&staging, &dest, &root, &rename).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "plist");
+        let run = dest.join("lib/deep/run.sh");
+        assert_eq!(std::fs::read_to_string(&run).unwrap(), "#!/bin/sh\necho hi\n");
+        assert_eq!(std::fs::metadata(&run).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            std::fs::read_link(dest.join("lib/link.sh")).unwrap(),
+            PathBuf::from("deep/run.sh")
+        );
+        assert!(
+            !staging.exists(),
+            "the staged copy is removed after a successful install"
+        );
+        assert!(leftovers(&root).is_empty(), "{:?}", leftovers(&root));
+        // the final rename into place came from the destination's own folder
+        let last = renames.borrow().last().cloned().unwrap();
+        assert_eq!(last.1, dest);
+        assert_eq!(last.0.parent().unwrap(), root);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_failed_cross_volume_install_keeps_the_old_version_and_leaves_nothing_behind() {
+        let base = std::env::temp_dir().join(format!("oa-exdev-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (staging, root) = (base.join("staging/.import-y"), base.join("workflows"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        make_tree(&staging);
+        let dest = root.join("user.workflow.t.y");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("info.plist"), "OLD").unwrap();
+        // staging -> EXDEV; the copy's final rename into place also fails (disk full, say)
+        let rename = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from.starts_with(base.join("staging")) {
+                return Err(exdev());
+            }
+            if to == dest
+                && from
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(".import-copy-"))
+            {
+                return Err(std::io::Error::other("simulated failure"));
+            }
+            std::fs::rename(from, to)
+        };
+        let err = install_with(&staging, &dest, &root, &rename).unwrap_err();
+        assert!(format!("{err:#}").contains("simulated failure"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "OLD");
+        assert!(leftovers(&root).is_empty(), "no half install: {:?}", leftovers(&root));
+        assert!(staging.exists(), "the staged tree is untouched so the caller may retry");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cross_volume_install_replaces_an_installed_version() {
+        let base = std::env::temp_dir().join(format!("oa-exdev-rep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (staging, root) = (base.join("staging/.import-z"), base.join("workflows"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        make_tree(&staging);
+        let dest = root.join("user.workflow.t.z");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("info.plist"), "OLD").unwrap();
+        std::fs::write(dest.join("old-only.txt"), "x").unwrap();
+        let rename = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from.starts_with(base.join("staging")) {
+                return Err(exdev());
+            }
+            std::fs::rename(from, to)
+        };
+        install_with(&staging, &dest, &root, &rename).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("info.plist")).unwrap(), "plist");
+        assert!(!dest.join("old-only.txt").exists());
+        assert!(leftovers(&root).is_empty(), "{:?}", leftovers(&root));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn sample_package(path: &Path) {
