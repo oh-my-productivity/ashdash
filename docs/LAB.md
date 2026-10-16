@@ -146,7 +146,7 @@ disabled (`StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null`) because ev
 
 ```sh
 tests/lab/test/run-tests.sh      # fake tart + fake ssh: slots, queueing, stale recovery, cleanup traps, sync filters, watchdog, naming guards
-shellcheck -x tests/lab/lab-* tests/lab/*.sh tests/lab/guest/* tests/lab/test/run-tests.sh   # when shellcheck is installed
+shellcheck -x -P SCRIPTDIR tests/lab/lab-* tests/lab/*.sh tests/lab/guest/* tests/lab/test/run-tests.sh tests/lab/test/fake-tart   # clean with shellcheck 0.11.0 (pip install shellcheck-py)
 ```
 
 ## Measurements
