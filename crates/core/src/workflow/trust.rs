@@ -130,6 +130,12 @@ pub struct TrustSummary {
     /// Reveal in Finder (`action.revealfile`) is deliberately *not* listed: it only selects a
     /// file in a Finder window and neither opens, runs nor changes anything.
     pub copies_to_clipboard: usize,
+    /// A Script Filter is wired (directly or through other objects) to an object that runs or
+    /// opens something: Run Script, Run NSAppleScript, Open URL, Open File, Launch Files, Write
+    /// File, Terminal Command, Run Script output or another Script Filter. The items a Script
+    /// Filter prints at run time carry `arg`, `quicklookurl` and `variables` that those objects
+    /// consume, so what they do is decided by data this summary cannot see.
+    pub results_steer_later_steps: bool,
 }
 
 impl TrustSummary {
@@ -155,6 +161,7 @@ impl TrustSummary {
             && self.opens_at_run_time.is_empty()
             && self.external_triggers == 0
             && self.copies_to_clipboard == 0
+            && !self.results_steer_later_steps
     }
 }
 
@@ -258,7 +265,45 @@ fn interpreter_label(n: &Node) -> String {
     }
 }
 
+/// Object kinds that run or open something with the data they receive.
+const ACTING_KINDS: &[&str] = &[
+    "alfred.workflow.action.script",
+    "alfred.workflow.output.script",
+    "alfred.workflow.action.applescript",
+    "alfred.workflow.input.scriptfilter",
+    "alfred.workflow.action.openurl",
+    "alfred.workflow.action.openfile",
+    "alfred.workflow.action.launchfiles",
+    "alfred.workflow.output.writefile",
+    "alfred.workflow.action.terminalcommand",
+];
+
 impl Workflow {
+    /// True when some Script Filter reaches (along `connections`, any depth) an object of one of
+    /// the [`ACTING_KINDS`].
+    fn script_results_reach_actions(&self) -> bool {
+        let kind_of = |uid: &str| self.nodes.iter().find(|n| n.uid == uid).map(|n| n.kind.as_str());
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut stack: Vec<&str> = self
+            .nodes
+            .iter()
+            .filter(|n| n.kind == super::KIND_SCRIPT_FILTER)
+            .map(|n| n.uid.as_str())
+            .collect();
+        while let Some(uid) = stack.pop() {
+            for c in self.connections.get(uid).into_iter().flatten() {
+                if !seen.insert(c.dest.as_str()) {
+                    continue;
+                }
+                if kind_of(&c.dest).is_some_and(|k| ACTING_KINDS.contains(&k)) {
+                    return true;
+                }
+                stack.push(c.dest.as_str());
+            }
+        }
+        false
+    }
+
     /// Describe what this workflow can do. See [`TrustSummary`].
     pub fn trust_summary(&self) -> TrustSummary {
         let mut s = TrustSummary {
@@ -322,6 +367,7 @@ impl Workflow {
         s.open_url_schemes = schemes.into_iter().collect();
         s.external_files = files.into_iter().collect();
         s.opens_at_run_time = runtime.into_iter().collect();
+        s.results_steer_later_steps = self.script_results_reach_actions();
         s
     }
 }
@@ -335,6 +381,71 @@ mod tests {
     fn wf(objects: serde_json::Value) -> Workflow {
         let doc = json!({"name": "T", "bundleid": "t.trust", "objects": objects, "connections": {}});
         Workflow::from_json(std::path::Path::new("/tmp/oa-trust"), "t", &doc).unwrap()
+    }
+
+    fn wf_wired(objects: serde_json::Value, connections: serde_json::Value) -> Workflow {
+        let doc = json!({"name": "T", "bundleid": "t.trust", "objects": objects, "connections": connections});
+        Workflow::from_json(std::path::Path::new("/tmp/oa-trust"), "t", &doc).unwrap()
+    }
+
+    fn wire(to: &str) -> serde_json::Value {
+        json!({"destinationuid": to, "modifiers": 0})
+    }
+
+    #[test]
+    fn script_filter_results_steering_later_steps_are_flagged() {
+        let sf =
+            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
+        // each acting kind, directly and through a junction
+        for kind in [
+            "alfred.workflow.action.script",
+            "alfred.workflow.output.script",
+            "alfred.workflow.action.applescript",
+            "alfred.workflow.action.openurl",
+            "alfred.workflow.action.openfile",
+            "alfred.workflow.action.launchfiles",
+            "alfred.workflow.output.writefile",
+            "alfred.workflow.action.terminalcommand",
+        ] {
+            let direct = wf_wired(
+                json!([sf, {"uid": "X", "type": kind, "config": {}}]),
+                json!({"SF": [wire("X")]}),
+            )
+            .trust_summary();
+            assert!(direct.results_steer_later_steps, "{kind} direct");
+            assert!(!direct.is_passive(), "{kind} direct");
+            let via = wf_wired(
+                json!([sf, {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
+                       {"uid": "X", "type": kind, "config": {}}]),
+                json!({"SF": [wire("J")], "J": [wire("X")]}),
+            )
+            .trust_summary();
+            assert!(via.results_steer_later_steps, "{kind} via junction");
+        }
+    }
+
+    #[test]
+    fn script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged() {
+        let sf =
+            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
+        let acting = json!({"uid": "A", "type": "alfred.workflow.action.openurl", "config": {"url": "https://x.test"}});
+        let note = json!({"uid": "N", "type": "alfred.workflow.output.notification", "config": {}});
+        // only a notification / clipboard after it
+        let s = wf_wired(json!([sf, note, acting]), json!({"SF": [wire("N")]})).trust_summary();
+        assert!(!s.results_steer_later_steps);
+        // an acting object that no Script Filter reaches (keyword -> url)
+        let kw = json!({"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "k"}});
+        let s = wf_wired(json!([sf, kw, acting]), json!({"K": [wire("A")]})).trust_summary();
+        assert!(!s.results_steer_later_steps);
+        // a cycle terminates
+        let j1 = json!({"uid": "J1", "type": "alfred.workflow.utility.junction", "config": {}});
+        let j2 = json!({"uid": "J2", "type": "alfred.workflow.utility.junction", "config": {}});
+        let s = wf_wired(
+            json!([sf, j1, j2]),
+            json!({"SF": [wire("J1")], "J1": [wire("J2")], "J2": [wire("J1")]}),
+        )
+        .trust_summary();
+        assert!(!s.results_steer_later_steps);
     }
 
     #[test]

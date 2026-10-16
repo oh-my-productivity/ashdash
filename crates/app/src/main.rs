@@ -47,6 +47,27 @@ USAGE:
   ashdash config keys             list every setting name
 ";
 
+const IMPORT_USAGE: &str = "usage: ashdash import [--yes] [--] <file.alfredworkflow>";
+
+/// Arguments of `ashdash import`: `--yes` and `--` (end of options) are the only options; any
+/// other `-`-prefixed word is an error (exit code 2), so a typo such as `--yess` can never be
+/// mistaken for "ask me first" or for a file name. Exactly one file is required.
+fn parse_import_args(args: &[String]) -> std::result::Result<(bool, PathBuf), String> {
+    let (mut yes, mut file, mut options_done) = (false, None, false);
+    for a in args {
+        if !options_done && a == "--" {
+            options_done = true;
+        } else if !options_done && a == "--yes" {
+            yes = true;
+        } else if !options_done && a.starts_with('-') && a.len() > 1 {
+            return Err(format!("unknown option '{a}'"));
+        } else if file.replace(PathBuf::from(a)).is_some() {
+            return Err("only one file can be imported at a time".into());
+        }
+    }
+    file.map(|f| (yes, f)).ok_or_else(|| "no file given".into())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let paths = Paths::system();
@@ -108,11 +129,13 @@ fn main() -> Result<()> {
             report(outcome)
         }
         Some("import") => {
-            let yes = args[1..].iter().any(|a| a == "--yes");
-            let Some(file) = args[1..].iter().find(|a| !a.starts_with("--")) else {
-                bail!("usage: ashdash import [--yes] <file.alfredworkflow>")
+            let (yes, file) = match parse_import_args(&args[1..]) {
+                Ok(parsed) => parsed,
+                Err(msg) => {
+                    eprintln!("ashdash: {msg}\n{IMPORT_USAGE}");
+                    std::process::exit(2);
+                }
             };
-            let file = PathBuf::from(file);
             // A workflow is code that will run as you: show what it can do and ask first. The
             // package is opened once; what is shown is the staged copy that gets installed.
             let staged = ashdash_core::workflow::stage_package(&paths, &file)?;
@@ -312,5 +335,50 @@ fn report(o: Outcome) -> Result<()> {
         }
         Outcome::Confirm(m) => bail!("{m}"),
         Outcome::Error(e) => bail!("{e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(a: &[&str]) -> std::result::Result<(bool, PathBuf), String> {
+        parse_import_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn import_takes_a_file_and_the_yes_flag_in_any_order() {
+        assert_eq!(parse(&["a.alfredworkflow"]), Ok((false, "a.alfredworkflow".into())));
+        assert_eq!(
+            parse(&["--yes", "a.alfredworkflow"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
+        assert_eq!(
+            parse(&["a.alfredworkflow", "--yes"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
+        // `--` ends the options, so a file whose name starts with a dash can still be imported
+        assert_eq!(
+            parse(&["--", "--odd.alfredworkflow"]),
+            Ok((false, "--odd.alfredworkflow".into()))
+        );
+        assert_eq!(parse(&["--yes", "--", "-x"]), Ok((true, "-x".into())));
+    }
+
+    #[test]
+    fn import_rejects_unknown_flags_and_wrong_file_counts() {
+        for bad in [
+            &["--yess", "a.alfredworkflow"][..],
+            &["a.alfredworkflow", "--force"],
+            &["-y", "a.alfredworkflow"],
+            &["--yes=1", "a.alfredworkflow"],
+            &["--", "a", "b"],
+            &["a", "b"],
+            &["--yes"],
+            &[],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(parse(&["--yess", "x"]).unwrap_err(), "unknown option '--yess'");
     }
 }

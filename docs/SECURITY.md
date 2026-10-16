@@ -61,7 +61,7 @@ Low = hardening, robustness, privacy details.
 | SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) | Open by design (documented) |
 | SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
 | SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
-| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (wave 3 review, 9c) |
+| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `workflow_roots_refuse_hard_links_but_app_roots_do_not`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (wave 3 review, 9c); hard-linked files in workflow folders refused (W4-FIX, 9d) |
 | SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups). Opt-out and clear now exist (wave 3): `learn_usage` in `config.json` (applied live through `Usage::set_enabled`), the Preferences > General switch, and "Forget what I picked..." (`Usage::clear`, via the `clear-usage` socket verb to the running launcher, or directly when none runs). **Turning learning off does not delete an existing `usage.json`**: it stays on disk (clear-text queries, mode 0600) until Forget is pressed or the file is deleted; the preferences hint says earlier picks "stop affecting the order", not that they are gone. Residual: no setting to stop clipboard recording (SEC-19 filters only) |
 | SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
 | SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b; now keyed by workflow id (9c) |
@@ -72,6 +72,9 @@ Low = hardening, robustness, privacy details.
 | SEC-34 | Low | Prefs import prompt showed package text raw; Unicode format characters (bidi override, zero-width) survived the launcher's sanitising | `gui/importprompt.rs`, `gui/prefs/workflows.rs` | `format_characters_are_stripped_and_long_names_are_capped`, `the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless` | Fixed (FIX-TRUST), see 9c |
 | SEC-35 | Medium | Open File with an empty file field (= the incoming argument) or a `{placeholder}` path was invisible to the trust summary, so a workflow that launches an app or script shipped in its own package was called passive | `workflow/trust.rs`, `gui/importprompt.rs` | `open_file_with_an_empty_or_dynamic_field_is_never_passive` (trust.rs), `files_opened_at_run_time_are_listed_and_not_called_harmless` (importprompt.rs) | Fixed (FIX-R2), see 9c |
 | SEC-36 | Medium | Write File with "relative to the workflow folder" could overwrite the workflow's own `info.plist`/scripts after the prompt and was listed as harmless "own folders" | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `write_file_never_rewrites_the_workflows_own_info_plist` (workflow/tests.rs), `writing_into_its_own_installed_folder_is_a_separate_warning` (importprompt.rs) | Fixed for `info.plist` and disclosed for the rest (FIX-R2), see 9c |
+| SEC-37 | Low | The trust summary could not say that a Script Filter's items (`arg`, `variables`, `quicklookurl`) steer later Run Script / Open URL / Open File / Write File / Terminal steps, so such a workflow could look passive | `workflow/trust.rs`, `gui/importprompt.rs` | `script_filter_results_steering_later_steps_are_flagged`, `script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged` (trust.rs); `script_filter_steering_is_stated` (importprompt.rs) | Fixed by disclosure (W4-FIX), see 9d |
+| SEC-38 | Low | `ashdash import` ignored unknown `--` flags (`--yess` silently meant "ask") and the preferences drop zone accepted only `.alfredworkflow`, so the same package was handled differently per path | `main.rs`, `gui/prefs/app.rs`, `gui/prefs/workflows.rs`, `workflow/package.rs` | `import_rejects_unknown_flags_and_wrong_file_counts` (main.rs), `the_drop_zone_accepts_every_workflow_extension_the_launcher_does`, `every_reference_package_extension_is_recognised` | Fixed (W4-FIX), see 9d |
+| SEC-39 | Low | `write_workflow_value` trusted its caller to check the variable: the preferences window did not, so any key could be stored in `workflow-config/<bundle id>.json` and reach the workflow's scripts as an environment variable | `settings_view.rs` | `write_workflow_value_only_accepts_variables_on_the_sheet` | Fixed (W4-FIX), see 9d |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -497,7 +500,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 ### Status of every finding (checked in core-followups)
 
 SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired in wave 3; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
-`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2). Nothing is without a status.
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2); SEC-37..39: fixed (W4-FIX). Nothing is without a status.
 
 ## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
 
@@ -517,7 +520,7 @@ Items refer to `docs/reviews/wave3.md`.
   import prompt is *not* the only way a workflow becomes active; `workflow_dirs` and `config.json` are another. (Item 15.)
 - **No scan on the window thread (item 9)** `Engine::apply_config` returns at once when `workflow_dirs` changed; the rescan
   runs in `Engine::reload_content_background` (`reload_pending()` is true meanwhile, so the "Reloading..." state shows).
-  The hotkey registry still reads the folders itself on the window thread when it re-registers.
+  (Wave 3: the hotkey registry still read the folders itself on the window thread when it re-registered; fixed in 9d.)
 - **Web-search URLs (item 8)** `websearch::validate_url_template` is the single rule (http/https only, a host, no userinfo,
   only `{query}`); `providers::registry_checked` skips web searches that fail it, for hand edits, `ashdash config set` and the
   preferences window alike, and `ApplyReport.warnings` / the launcher status list each skipped entry. `prefs_model` calls the
@@ -525,12 +528,11 @@ Items refer to `docs/reviews/wave3.md`.
 - **SEC-17 (item 10)** `apps.rs::icns_path` passes the *bundle* as the confinement root and `Contents/Resources/<name>` as the
   relative path, so a `Resources` that is a symlink to another folder no longer exposes that folder's images.
   `confine::confined_file_strict` additionally refuses a root that is itself a symlink (not used for app bundles or workflow
-  folders: both may legitimately be links). Hard links to files outside the root are *not* detected; creating one needs prior
-  local access to the same volume.
+  folders: both may legitimately be links). Hard links were not detected in wave 3; see 9d.
 - **Config writers (item 11)** `Config::edit_locked(paths, |cfg| ...)` / `config::ConfigLock` take an exclusive `flock` on
   `<data>/run/config.lock` (0600) around read-modify-write; `Store::edit` (prefs), `ashdash config set` and `install_theme`
   use it. Reads are strict (an unreadable file is never replaced by defaults) and nothing is written when nothing changed.
-  Keys this build does not know are still dropped by a save (`Config` has no catch-all); a file from a newer config version is
+  (Wave 3: keys this build does not know were dropped by a save; fixed in 9d.) A file from a newer config version is
   refused. Writers that bypass the lock (an editor, `jq`) are not coordinated.
 - **PATH (item 13)** `actions::system_program` maps `open`, `osascript`, `osacompile`, `ditto`, `qlmanage`, `sips`, `mdfind`,
   `unzip`, `tar`, `pbcopy`, `pbpaste`, `pmset` and `screencapture` to fixed `/usr/bin` (`/usr/sbin`) paths in `actions::build`, in
@@ -546,7 +548,7 @@ Items refer to `docs/reviews/wave3.md`.
   file field (the executor then opens the incoming argument; shown as "(the incoming argument)") and any path with a
   `{placeholder}`; literal paths outside the folder stay in `external_files`. Such a workflow is never passive and the prompt says
   "Opens files chosen at run time: ... (this can be an app or script shipped inside the package)". The old test that pinned the
-  empty field as harmless was corrected, not weakened. Residual: what a Script Filter or script *returns* is still invisible.
+  empty field as harmless was corrected, not weakened. Residual: what a Script Filter or script *returns* is still invisible (the summary now says so when a Script Filter feeds an acting step: SEC-37).
 - **SEC-36 (N2)** A Write File object in the workflow's own installed folder (`relativepathmode` 2) now has its own prompt line
   ("Can modify its own files (scripts, settings) after you install it") and is no longer listed under the data/cache line. *Decision
   on the executor:* the executor refuses to write the workflow's own `info.plist` (compared after resolving `.`/`..`, ignoring case,
@@ -570,3 +572,31 @@ Items refer to `docs/reviews/wave3.md`.
 - **`clean` (N7)** blank-looking characters (U+3164, U+115F/1160, U+FFA0, U+2800, U+17B4/17B5, U+034F, U+2065) are shown as spaces and
   collapse; a field made only of them reads as empty ("not stated" / "(unnamed)"). Variation selectors are left alone (emoji).
 - **Test hygiene** `trash_refuses_a_symlink_that_points_at_a_protected_place` creates `$HOME/Library` itself.
+
+## 9d. Fix log (wave 4, W4-FIX, branch `wp/w4-fix`): wave 3 leftovers
+
+- **Unknown config keys (SEC-18 follow-up)** `Config::save` (and so `edit_locked`, the preferences window and `ashdash config set`) merges the
+  typed settings over the file's current, migrated JSON: keys `Config` has no field for survive at the top level and inside nested objects
+  (`clipboard`, `file_search`, `bookmarks`); migrated keys (`clipboard_history_size`) do not come back. Arrays (web searches, root
+  lists) are replaced as a whole, so unknown keys *inside array elements* are still dropped. A file from a newer config version is
+  still refused. Tests: `unknown_keys_survive_a_locked_edit`, `migrated_keys_do_not_come_back_after_a_save`.
+- **SEC-37** `TrustSummary.results_steer_later_steps` is true when a Script Filter reaches, along the wires and at any depth, a Run Script,
+  Run Script output, NSAppleScript, Script Filter, Open URL, Open File, Launch Files, Write File or Terminal Command object. It makes
+  `is_passive()` false and the prompt says "Its results can change what later steps do". A Script Filter followed only by
+  notifications/clipboard output is not flagged. Still static: what the items actually contain is unknown until run time.
+- **Hard links (SEC-17 follow-up)** `confine::confined_workflow_file` is `confined_file` plus "link count must be 1": a regular file in a
+  workflow folder with more than one hard link is treated as missing (icon falls back to the glyph). It is used for workflow and Script
+  Filter icons (`workflow/filter.rs`). *Decision:* a hard link cannot be told apart from the original by path, and no zip can carry
+  one into the folder, so the rule costs nothing legitimate; the price is that a file hard-linked *inside* the folder is refused too.
+  System and app-bundle roots (`apps.rs::icns_path`) keep `confined_file`: they are not writable by the user and installers may
+  hard-link there. Residual: the check is on the file's state at lookup time (a link made between the check and the read is a
+  race for the image loader; creating one needs local access to the same volume).
+- **Hotkey registry off the window thread** `hotkeys::build_snapshot(roots)` is the only reader of the folders; `WorkflowHotkeys::
+  refresh_in_background` runs it on a thread, publishes an `Arc<Snapshot>` through a small cell (older scans never replace newer ones)
+  and sends `AppEvent::HotkeysRefreshed`; the window thread then calls `apply`, which only plans and registers from the snapshot.
+  `Automation::reload_hotkeys` no longer touches the disk. Test: `the_lookup_path_reads_only_the_snapshot_not_the_folders`,
+  `a_slow_older_refresh_never_replaces_a_newer_snapshot`, `the_background_refresh_publishes_then_tells_the_host`.
+- **SEC-39** `write_workflow_value` refuses a variable that is not on the workflow's configuration sheet.
+- **SEC-38** `ashdash import` accepts `--yes` and `--`; any other option is an error with the usage line and exit code 2; exactly
+  one file. `workflow::WORKFLOW_PACKAGE_EXTENSIONS` / `is_workflow_package` are the one list used by the launcher, Finder opens, the
+  preferences drop zone and the preferences file chooser (the chooser filter now offers all four).

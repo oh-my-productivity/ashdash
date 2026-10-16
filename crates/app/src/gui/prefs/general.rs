@@ -210,7 +210,7 @@ impl PrefsApp {
                     self.choose_file(
                         Purpose::Theme,
                         "Choose a reference-compatible theme (.alfredappearance)",
-                        "alfredappearance",
+                        &["alfredappearance"],
                     );
                 }
                 let resp = ui.add(

@@ -150,8 +150,8 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
         }
         "filetype" => Icon::Glyph("▤"),
         _ => {
-            // SEC-17: only regular files inside the workflow directory, no symlinks.
-            match crate::confine::confined_file(&wf.dir, Path::new(path)) {
+            // SEC-17: only regular files inside the workflow directory, no symlinks, no hard links.
+            match crate::confine::confined_workflow_file(&wf.dir, Path::new(path)) {
                 Some(p) => Icon::Image(p),
                 None => Icon::None,
             }
@@ -160,7 +160,7 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
 }
 
 fn workflow_icon(wf: &Workflow) -> Icon {
-    match crate::confine::confined_file(&wf.dir, Path::new("icon.png")) {
+    match crate::confine::confined_workflow_file(&wf.dir, Path::new("icon.png")) {
         Some(p) => Icon::Image(p),
         None => Icon::Glyph("◆"),
     }

@@ -42,9 +42,11 @@ pub enum DocKind {
 /// Decide what a file is from its extension (case-insensitive). The reference launcher workflow
 /// extensions are all the same zip format.
 pub fn classify(path: &Path) -> Option<DocKind> {
+    if ashdash_core::workflow::is_workflow_package(path) {
+        return Some(DocKind::Workflow);
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "alfredworkflow" | "alfred3workflow" | "alfred4workflow" | "alfred5workflow" => Some(DocKind::Workflow),
         "alfredappearance" => Some(DocKind::Appearance),
         "alfredsnippets" => Some(DocKind::Snippets),
         _ => None,

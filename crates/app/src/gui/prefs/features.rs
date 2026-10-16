@@ -419,7 +419,7 @@ impl PrefsApp {
                         self.choose_file(
                             Purpose::Snippets,
                             "Choose a snippet collection (.alfredsnippets)",
-                            "alfredsnippets",
+                            &["alfredsnippets"],
                         );
                     }
                 });

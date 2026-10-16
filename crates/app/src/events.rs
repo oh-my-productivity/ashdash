@@ -22,6 +22,8 @@ pub enum AppEvent {
     Search(String),
     /// Re-scan applications, workflows and snippets; re-register workflow hotkeys.
     Reload,
+    /// The background scan of the workflow folders finished: register the hotkeys it found.
+    HotkeysRefreshed,
     Quit,
     /// Open the preferences window (a separate process).
     Preferences,
@@ -102,15 +104,22 @@ impl Automation {
 
     /// Called once from the window constructor (main thread): lets producers
     /// wake the UI, installs the macOS URL handler and registers the hotkeys.
-    pub fn attach(&mut self, ctx: &egui::Context, manager: Option<&GlobalHotKeyManager>) {
+    pub fn attach(&mut self, ctx: &egui::Context, _manager: Option<&GlobalHotKeyManager>) {
         let _ = self.inbox.ctx.set(ctx.clone());
         self._url_handler = self.url.clone().and_then(crate::urlscheme::install_apple_event_handler);
-        self.hotkeys.reload(manager);
+        self.hotkeys.refresh_in_background();
     }
 
-    /// Re-read the workflows and re-register their hotkeys (main thread only).
-    pub fn reload_hotkeys(&mut self, manager: Option<&GlobalHotKeyManager>) {
-        self.hotkeys.reload(manager);
+    /// Re-read the workflow folders for hotkeys. The scan runs on a background thread; the
+    /// registrations follow when [`AppEvent::HotkeysRefreshed`] arrives
+    /// ([`apply_hotkeys`](Self::apply_hotkeys)). Nothing here touches the disk.
+    pub fn reload_hotkeys(&mut self, _manager: Option<&GlobalHotKeyManager>) {
+        self.hotkeys.refresh_in_background();
+    }
+
+    /// Register the hotkeys of the latest scan (main thread only; reads no folders).
+    pub fn apply_hotkeys(&mut self, manager: Option<&GlobalHotKeyManager>) {
+        self.hotkeys.apply(manager);
     }
 
     /// Follow a live settings change: the workflow folders the next
