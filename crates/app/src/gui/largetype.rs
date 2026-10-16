@@ -7,7 +7,7 @@
 
 use super::trace;
 
-use eframe::egui::{self, Align, Color32, FontId, Pos2, text::LayoutJob};
+use eframe::egui::{self, Align, Color32, FontId, Pos2, Rect as Rect2, text::LayoutJob};
 
 use super::geometry::{self, Rect};
 use super::{LauncherApp, mac, style};
@@ -71,17 +71,47 @@ impl LauncherApp {
 
         let (max_w, max_h) = (rect.width() * 0.9, rect.height() * 0.85);
         let font_size = fit_font_size(&text, max_w, max_h);
+        let text_for_scroll = text.clone();
         let mut job = LayoutJob::simple(text, FontId::proportional(font_size), Color32::WHITE, max_w);
         job.halign = Align::Center;
         let galley = ui.painter().layout_job(job);
-        let top = (rect.center().y - galley.size().y / 2.0).max(rect.top() + 8.0);
-        ui.painter()
-            .galley(Pos2::new(rect.center().x, top), galley, Color32::WHITE);
+        if needs_scroll(galley.size().y, max_h) {
+            // Even the smallest size does not fit: the text scrolls (wheel, trackpad, arrows, Page keys).
+            let area = Rect2::from_center_size(rect.center(), egui::vec2(max_w, rect.height() * 0.92));
+            let delta = std::mem::take(&mut self.glue.large_scroll);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if delta != 0.0 {
+                        ui.scroll_with_delta(egui::vec2(0.0, -delta));
+                    }
+                    ui.set_width(max_w);
+                    ui.vertical_centered(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&text_for_scroll)
+                                    .size(font_size)
+                                    .color(Color32::WHITE),
+                            )
+                            .wrap(),
+                        );
+                    });
+                });
+            });
+        } else {
+            let top = (rect.center().y - galley.size().y / 2.0).max(rect.top() + 8.0);
+            ui.painter()
+                .galley(Pos2::new(rect.center().x, top), galley, Color32::WHITE);
+        }
 
         if ctx.input(|i| i.pointer.any_click()) {
             self.close_large_type(ctx);
         }
     }
+}
+
+/// The laid-out text is taller than the room for it, so it has to scroll.
+pub fn needs_scroll(text_height: f32, available: f32) -> bool {
+    text_height > available
 }
 
 /// Average glyph advance as a fraction of the font size (proportional sans
@@ -192,6 +222,17 @@ mod tests {
         let lines_at = |size: f32| wrapped_lines(&text, (w / (size * CHAR_W)) as usize) as f32 * size * LINE_H;
         assert!(lines_at(s) <= h);
         assert!(s >= MAX_SIZE || lines_at(s + 1.0) > h);
+    }
+
+    #[test]
+    fn text_that_does_not_fit_even_at_the_minimum_size_scrolls() {
+        assert!(!needs_scroll(500.0, 700.0));
+        assert!(!needs_scroll(700.0, 700.0));
+        assert!(needs_scroll(700.5, 700.0));
+        // the pessimistic fit gives up (MIN_SIZE) exactly for text that would need scrolling
+        let huge = "word ".repeat(20_000);
+        assert_eq!(fit_font_size(&huge, 1200.0, 700.0), MIN_SIZE);
+        assert!(wrapped_lines(&huge, (1200.0 / (MIN_SIZE * CHAR_W)) as usize) as f32 * MIN_SIZE * LINE_H > 700.0);
     }
 
     #[test]

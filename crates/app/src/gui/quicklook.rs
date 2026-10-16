@@ -2,13 +2,13 @@
 //! or Cmd+Y and killed when the launcher moves on.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use ashdash_core::actions::Process;
 use ashdash_core::{Action, Item};
 use eframe::egui;
 
-use super::{LauncherApp, trace};
+use super::LauncherApp;
 
 /// The file a Quick Look request on `item` would preview: the path of a
 /// file-ish action that exists. `.app` bundles are skipped (the preview is
@@ -63,48 +63,31 @@ impl ShiftTap {
     }
 }
 
-/// The running preview, if any.
+/// The running preview, if any. The process comes from the engine's `Os`
+/// (`Engine::spawn_quick_look`), so dismissing it is `Process::kill`.
 #[derive(Default)]
 pub struct QuickLook {
-    child: Option<Child>,
+    proc: Option<Box<dyn Process>>,
 }
 
 impl QuickLook {
     pub fn is_open(&mut self) -> bool {
-        if let Some(c) = &mut self.child
-            && !matches!(c.try_wait(), Ok(None))
-        {
-            self.child = None;
+        if self.proc.as_ref().is_some_and(|p| !p.is_running()) {
+            self.proc = None;
         }
-        self.child.is_some()
+        self.proc.is_some()
     }
 
-    /// Open a preview of `path`, or close the current one (toggle).
-    pub fn toggle(&mut self, path: &Path) {
-        if self.is_open() {
-            self.close();
-        } else {
-            self.open(path);
-        }
-    }
-
-    pub fn open(&mut self, path: &Path) {
+    /// Replace the current preview (if any) with whatever `spawn` starts.
+    pub fn open_with(&mut self, spawn: impl FnOnce() -> Option<Box<dyn Process>>) {
         self.close();
-        self.child = Command::new("/usr/bin/qlmanage")
-            .arg("-p")
-            .arg(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok();
+        self.proc = spawn();
     }
 
-    /// Kill and reap the preview. Safe to call when nothing is open.
+    /// Kill the preview. Safe to call when nothing is open.
     pub fn close(&mut self) {
-        if let Some(mut c) = self.child.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        if let Some(p) = self.proc.take() {
+            p.kill();
         }
     }
 }
@@ -134,6 +117,7 @@ impl LauncherApp {
             self.quicklook_for = None;
             self.shown_at = std::time::Instant::now();
             self.want_focus = true;
+            self.raise_launcher(true);
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         self.quicklook_was_open = open;
@@ -147,14 +131,20 @@ impl LauncherApp {
         let Some(path) = target(item) else {
             return;
         };
-        trace::trace(|| format!("quicklook {}", path.display()));
-        self.quicklook_for = Some(item.id.clone());
-        self.quicklook.toggle(&path);
+        if self.quicklook.is_open() {
+            self.quicklook.close();
+        } else {
+            let id = item.id.clone();
+            self.open_quicklook(&[path], Some(id));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use super::*;
 
     fn ms(n: u64) -> Duration {
@@ -236,5 +226,69 @@ mod tests {
         let mut q = QuickLook::default();
         assert!(!q.is_open());
         q.close();
+    }
+
+    #[derive(Clone, Default)]
+    struct Fake {
+        running: Arc<AtomicBool>,
+        kills: Arc<AtomicUsize>,
+    }
+
+    impl Process for Fake {
+        fn kill(&self) {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            self.running.store(false, Ordering::SeqCst);
+        }
+        fn is_running(&self) -> bool {
+            self.running.load(Ordering::SeqCst)
+        }
+    }
+
+    fn started(f: &Fake) -> Option<Box<dyn Process>> {
+        f.running.store(true, Ordering::SeqCst);
+        Some(Box::new(f.clone()))
+    }
+
+    #[test]
+    fn dismissing_kills_the_process_handle() {
+        let f = Fake::default();
+        let mut q = QuickLook::default();
+        q.open_with(|| started(&f));
+        assert!(q.is_open());
+        q.close();
+        assert_eq!(f.kills.load(Ordering::SeqCst), 1);
+        assert!(!q.is_open());
+        q.close();
+        assert_eq!(f.kills.load(Ordering::SeqCst), 1, "a second close kills nothing");
+    }
+
+    #[test]
+    fn a_preview_that_ended_by_itself_is_noticed_and_not_killed_again() {
+        let f = Fake::default();
+        let mut q = QuickLook::default();
+        q.open_with(|| started(&f));
+        f.running.store(false, Ordering::SeqCst); // the user pressed Esc in the preview
+        assert!(!q.is_open());
+        drop(q);
+        assert_eq!(f.kills.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn opening_another_preview_ends_the_first_and_drop_ends_the_last() {
+        let (a, b) = (Fake::default(), Fake::default());
+        let mut q = QuickLook::default();
+        q.open_with(|| started(&a));
+        q.open_with(|| started(&b));
+        assert_eq!(a.kills.load(Ordering::SeqCst), 1);
+        assert!(q.is_open());
+        drop(q);
+        assert_eq!(b.kills.load(Ordering::SeqCst), 1, "no preview outlives the launcher");
+    }
+
+    #[test]
+    fn a_failed_spawn_leaves_nothing_open() {
+        let mut q = QuickLook::default();
+        q.open_with(|| None);
+        assert!(!q.is_open());
     }
 }

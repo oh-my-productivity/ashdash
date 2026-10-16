@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use super::Workflow;
 use super::script::safe_key;
+use super::{TrustSummary, Workflow};
 
 /// Most entries (files, directories, links) an archive may contain.
 pub const MAX_ENTRIES: usize = 2_000;
@@ -94,6 +94,45 @@ pub fn import_package(package: &Path, dest_root: &Path) -> Result<PathBuf> {
     install(&staging.path, &dest, dest_root)?;
     staging.keep();
     Ok(dest)
+}
+
+/// What a package declares about itself and what it can do, read without installing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagePreview {
+    pub name: String,
+    pub bundle_id: String,
+    /// `createdby` from `info.plist` (free text chosen by the package's author: never verified).
+    pub author: String,
+    pub description: String,
+    pub version: String,
+    pub trust: TrustSummary,
+}
+
+/// Open a `.alfredworkflow` package just far enough to describe it: it is extracted into a
+/// private staging directory under the same limits as [`import_package`], parsed, and removed
+/// again. Nothing is installed and nothing runs, so a UI can ask before calling the importer.
+pub fn preview_package(package: &Path) -> Result<PackagePreview> {
+    let parent = std::env::temp_dir();
+    let file = std::fs::File::open(package).with_context(|| format!("opening {}", package.display()))?;
+    let mut zip = zip::ZipArchive::new(file).context("not a valid workflow archive")?;
+    let staging = Staging::create(&parent)?; // dropped (and deleted) on every path out
+    extract_limited(&mut zip, &staging.path)?;
+    let wf = Workflow::load(&staging.path).context("archive has no readable info.plist")?;
+    let text = |key: &str| -> String {
+        plist::Value::from_file(staging.path.join("info.plist"))
+            .ok()
+            .and_then(|v| v.into_dictionary())
+            .and_then(|d| d.get(key).and_then(|v| v.as_string().map(str::to_owned)))
+            .unwrap_or_default()
+    };
+    Ok(PackagePreview {
+        name: wf.name.clone(),
+        bundle_id: wf.bundle_id.clone(),
+        author: text("createdby"),
+        description: text("description"),
+        version: wf.version.clone(),
+        trust: wf.trust_summary(),
+    })
 }
 
 /// Swap `new` into `dest`: the previous version moves aside first and is restored if the final
@@ -298,6 +337,65 @@ mod tests {
         b.keep();
         drop(b);
         assert!(pb.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn sample_package(path: &Path) {
+        use std::io::Write;
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>name</key><string>Preview Sample</string>
+<key>bundleid</key><string>test.preview.sample</string>
+<key>createdby</key><string>Ann Author</string>
+<key>description</key><string>Does things</string>
+<key>objects</key><array>
+<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo hi</string></dict></dict>
+<dict><key>uid</key><string>B</string><key>type</key><string>alfred.workflow.action.openurl</string>
+<key>config</key><dict><key>url</key><string>https://example.com/{query}</string></dict></dict>
+</array></dict></plist>"#;
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        z.start_file("info.plist", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        z.write_all(plist.as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn preview_describes_a_package_without_installing_it() {
+        let root = std::env::temp_dir().join(format!("oa-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pkg = root.join("sample.alfredworkflow");
+        sample_package(&pkg);
+        let before: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".import-"))
+            .map(|e| e.file_name())
+            .collect();
+
+        let p = preview_package(&pkg).unwrap();
+        assert_eq!(p.name, "Preview Sample");
+        assert_eq!(p.bundle_id, "test.preview.sample");
+        assert_eq!(p.author, "Ann Author");
+        assert_eq!(p.description, "Does things");
+        assert_eq!(p.trust.scripts, 1);
+        assert_eq!(p.trust.open_url_schemes, ["https"]);
+
+        // the staging directory is gone again (compare to what other tests may have left)
+        let after: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".import-"))
+            .map(|e| e.file_name())
+            .collect();
+        assert!(after.iter().all(|n| before.contains(n)), "{after:?}");
+
+        assert!(preview_package(&root.join("missing.alfredworkflow")).is_err());
+        std::fs::write(root.join("junk.alfredworkflow"), b"not a zip").unwrap();
+        assert!(preview_package(&root.join("junk.alfredworkflow")).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
