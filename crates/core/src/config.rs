@@ -368,8 +368,9 @@ impl Config {
     /// error leaves the file alone; nothing is written when `edit` changed nothing. Returns the
     /// settings now on disk and `edit`'s result.
     ///
-    /// Keys in `config.json` that this build does not know are not preserved by a save
-    /// (`Config` has no catch-all); a file from a *newer* config version is refused instead.
+    /// Keys in `config.json` that this build does not know (hand edits) survive the save, at the
+    /// top level and inside nested objects (see [`Config::save`]); a file from a *newer* config
+    /// version is refused instead.
     pub fn edit_locked<T>(
         paths: &Paths,
         edit: impl FnOnce(&mut Config) -> anyhow::Result<T>,
@@ -388,19 +389,53 @@ impl Config {
 
     /// Writes the current schema version. Refuses to overwrite a file written by a
     /// newer build, which would silently drop settings this build does not know.
+    ///
+    /// Keys of the existing file that [`Config`] has no field for are kept: the settings are
+    /// merged over the (migrated) file contents, recursing into objects. Arrays (web searches,
+    /// root lists) are replaced as a whole, so unknown keys inside array elements are not kept.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
+        let mut base = serde_json::Value::Null;
         if let Ok(bytes) = std::fs::read(paths.config_file())
             && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && v.get("version").and_then(|n| n.as_u64()).unwrap_or(0) > CURRENT_VERSION as u64
         {
-            return Err(std::io::Error::other(
-                "config.json was written by a newer version; refusing to overwrite it",
-            ));
+            if v.get("version").and_then(|n| n.as_u64()).unwrap_or(0) > CURRENT_VERSION as u64 {
+                return Err(std::io::Error::other(
+                    "config.json was written by a newer version; refusing to overwrite it",
+                ));
+            }
+            base = migrate(v);
         }
         let mut out = self.clone();
         out.version = CURRENT_VERSION;
+        let mut merged = serde_json::to_value(&out)?;
+        if base.is_object() {
+            merge_unknown(&mut base, &mut merged);
+            merged = base;
+        }
         // 0600, written through a unique temp file and renamed (SEC-18)
-        write_private(&paths.config_file(), &serde_json::to_vec_pretty(&out)?)
+        write_private(&paths.config_file(), &serde_json::to_vec_pretty(&merged)?)
+    }
+}
+
+/// Overlay `new` onto `base`: every key of `new` wins, keys only in `base` stay, nested objects
+/// merge recursively, anything else (arrays, scalars, type changes) is taken from `new`.
+/// Afterwards `base` is the result; `new` is left empty where it was moved from.
+fn merge_unknown(base: &mut serde_json::Value, new: &mut serde_json::Value) {
+    match (base.as_object_mut(), new.as_object_mut()) {
+        (Some(b), Some(n)) => {
+            for (k, v) in std::mem::take(n) {
+                match b.get_mut(&k) {
+                    Some(existing) if existing.is_object() && v.is_object() => {
+                        let mut v = v;
+                        merge_unknown(existing, &mut v);
+                    }
+                    _ => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+        }
+        _ => *base = std::mem::take(new),
     }
 }
 
@@ -512,6 +547,66 @@ mod tests {
     }
 
     use serde_json::json;
+
+    #[test]
+    fn unknown_keys_survive_a_locked_edit() {
+        let paths = tmp_paths("unknown-keys");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            serde_json::to_vec(&json!({
+                "version": CURRENT_VERSION,
+                "max_results": 5,
+                "future_key": {"a": [1, 2, {"b": null}], "c": "d"},
+                "clipboard": {"max_entries": 7, "future_nested": [true]},
+                "file_search": {"future_fs": 1.5},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (cfg, ()) = Config::edit_locked(&paths, |c| {
+            c.max_results = 9;
+            c.clipboard.max_entries = 8;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cfg.max_results, 9);
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert_eq!(after["future_key"], json!({"a": [1, 2, {"b": null}], "c": "d"}));
+        assert_eq!(after["clipboard"]["future_nested"], json!([true]));
+        assert_eq!(after["clipboard"]["max_entries"], 8);
+        assert_eq!(after["file_search"]["future_fs"], 1.5);
+        assert_eq!(after["max_results"], 9);
+        // the typed settings still load, and plain save() keeps them too
+        Config::load_strict(&paths).unwrap().save(&paths).unwrap();
+        let again: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert_eq!(again, after);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn migrated_keys_do_not_come_back_after_a_save() {
+        let paths = tmp_paths("unknown-migrated");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            br#"{"version": 1, "clipboard_history_size": 12, "extra": 1}"#,
+        )
+        .unwrap();
+        Config::edit_locked(&paths, |c| {
+            c.max_results = 3;
+            Ok(())
+        })
+        .unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert!(after.get("clipboard_history_size").is_none());
+        assert_eq!(after["clipboard"]["max_entries"], 12);
+        assert_eq!(after["extra"], 1);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
 
     fn tmp_paths(tag: &str) -> Paths {
         let root = std::env::temp_dir().join(format!("oa-cfg-{tag}-{}", std::process::id()));
