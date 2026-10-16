@@ -327,6 +327,33 @@ fn rend(st: &State, t: &str) -> String {
 }
 
 impl Workflow {
+    /// The file an Open File / Launch Files object opens: `~` expanded, and a relative path
+    /// resolved against the workflow's own folder (the reference launcher's working directory for a workflow)
+    /// rather than left to `open`, which would use the launcher's working directory. The trust
+    /// summary reports a relative literal as shipped with the workflow (`trust.rs`).
+    fn open_target(&self, s: &str) -> PathBuf {
+        let p = expand_tilde(s);
+        if p.is_relative() {
+            lexical_normalize(&self.dir.join(p))
+        } else {
+            p
+        }
+    }
+
+    /// The application of Open File (`openwith`) / Open URL (`browser`): an app *name* is passed
+    /// on as is, a path is expanded and resolved like [`Self::open_target`].
+    fn open_app(&self, app: &str) -> Option<String> {
+        if app.is_empty() {
+            return None;
+        }
+        if !super::trust::app_is_path(app) {
+            return Some(app.to_string());
+        }
+        Some(self.open_target(app).display().to_string())
+    }
+}
+
+impl Workflow {
     /// Walk the graph from the object that produced the result.
     pub fn run(&self, act: &WorkflowAction, pressed: Mods, paths: &Paths) -> Vec<Effect> {
         let mut state = State {
@@ -522,7 +549,7 @@ impl Workflow {
                     q.replace("%20", &spaces)
                 };
                 let url = render(&node.s("url"), &q, &st.vars);
-                let browser = Some(node.s("browser")).filter(|b| !b.is_empty());
+                let browser = self.open_app(&node.s("browser"));
                 fx.push(Effect::OpenUrl { url, browser });
             }
             "alfred.workflow.action.openfile" => {
@@ -532,9 +559,9 @@ impl Workflow {
                 if src.is_empty() {
                     src = st.arg.clone();
                 }
-                let with = Some(node.s("openwith")).filter(|w| !w.is_empty());
+                let with = self.open_app(&node.s("openwith"));
                 fx.push(Effect::OpenPath {
-                    path: expand_tilde(&src),
+                    path: self.open_target(&src),
                     with,
                 });
             }
@@ -542,7 +569,7 @@ impl Workflow {
                 for p in node.config.get("paths").and_then(Value::as_array).into_iter().flatten() {
                     if let Some(s) = p.as_str() {
                         fx.push(Effect::OpenPath {
-                            path: expand_tilde(&rend(st, s)),
+                            path: self.open_target(&rend(st, s)),
                             with: None,
                         });
                     }
@@ -574,7 +601,7 @@ impl Workflow {
                 if node.i("searcher") == 1_635_215_215 {
                     fx.push(Effect::OpenUrl {
                         url: format!("https://www.google.com/search?q={}", percent_encode(&st.arg)),
-                        browser: Some(node.s("browser")).filter(|b| !b.is_empty()),
+                        browser: self.open_app(&node.s("browser")),
                     });
                 } else {
                     self.warn(fx, format!("web search engine {} is not mapped", node.i("searcher")));
@@ -927,6 +954,83 @@ mod tests {
         };
         let fx = wf.run(&act, Mods::NONE, &paths);
         assert!(matches!(fx.last(), Some(Effect::Warn(_))));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relative_open_targets_and_apps_resolve_against_the_workflow_folder() {
+        // Review item 1: the classifier (trust.rs) calls a relative literal "shipped with the
+        // workflow", so the executor must not leave it to the launcher's working directory.
+        let (paths, root) = temp_paths("openrel");
+        let doc = json!({
+            "name": "R", "bundleid": "r",
+            "objects": [
+                {"uid": "F", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "payload.app", "openwith": "tools/Viewer.app"}},
+                {"uid": "G", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "/tmp/x", "openwith": "Safari"}},
+                {"uid": "H", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "~/y", "openwith": "/Applications/Safari.app"}},
+                {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["sub/a", "/abs/b"]}},
+                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "./B.app"}},
+            ],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "r", &doc);
+        let at = |uid: &str| {
+            let node = wf.nodes.iter().find(|n| n.uid == uid).unwrap();
+            let mut fx = Vec::new();
+            let mut st = State {
+                arg: String::new(),
+                vars: BTreeMap::new(),
+            };
+            wf.process(node, &mut st, &mut None, &paths, &mut fx);
+            fx
+        };
+        let d = wf.dir.clone();
+        let s = |p: PathBuf| p.display().to_string();
+        assert_eq!(
+            at("F"),
+            [Effect::OpenPath {
+                path: d.join("payload.app"),
+                with: Some(s(d.join("tools/Viewer.app")))
+            }]
+        );
+        assert_eq!(
+            at("G"),
+            [Effect::OpenPath {
+                path: PathBuf::from("/tmp/x"),
+                with: Some("Safari".into())
+            }]
+        );
+        assert_eq!(
+            at("H"),
+            [Effect::OpenPath {
+                path: expand_tilde("~/y"),
+                with: Some("/Applications/Safari.app".into())
+            }]
+        );
+        assert_eq!(
+            at("L"),
+            [
+                Effect::OpenPath {
+                    path: d.join("sub/a"),
+                    with: None
+                },
+                Effect::OpenPath {
+                    path: PathBuf::from("/abs/b"),
+                    with: None
+                },
+            ]
+        );
+        assert_eq!(
+            at("U"),
+            [Effect::OpenUrl {
+                url: "https://x.test".into(),
+                browser: Some(s(d.join("B.app")))
+            }]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

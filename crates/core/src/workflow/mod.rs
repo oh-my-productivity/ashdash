@@ -31,7 +31,7 @@ pub use package::{
     stage_package,
 };
 pub use script::{ScriptOutput, run_osascript};
-pub use trust::{FileWriteInfo, INCOMING_ARGUMENT, TrustSummary, WriteKind, WritePlace};
+pub use trust::{FileWriteInfo, INCOMING_ARGUMENT, LaunchedApp, TrustSummary, WriteKind, WritePlace};
 pub use userconfig::ConfigVar;
 
 pub const KIND_KEYWORD: &str = "alfred.workflow.input.keyword";

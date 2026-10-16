@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use ashdash_core::Mods;
-use ashdash_core::workflow::{PackagePreview, StagedPackage, TrustSummary, WritePlace};
+use ashdash_core::workflow::{LaunchedApp, PackagePreview, StagedPackage, TrustSummary, WritePlace};
 use eframe::egui::{self, Vec2};
 
 use super::largetype::wrapped_lines;
@@ -225,6 +225,26 @@ pub(crate) fn capability_lines(t: &TrustSummary) -> Vec<String> {
         out.push(format!(
             "Opens files chosen at run time: {} (this can be an app or script shipped inside the package)",
             listed(&t.opens_at_run_time, MAX_COMMAND)
+        ));
+    }
+    if !t.launched_apps.is_empty() {
+        let apps: Vec<String> = t
+            .launched_apps
+            .iter()
+            .map(|a| {
+                if a.shipped {
+                    format!("{} (shipped with the workflow)", a.app)
+                } else {
+                    a.app.clone()
+                }
+            })
+            .collect();
+        out.push(format!("Launches an application: {}", listed(&apps, MAX_COMMAND)));
+    }
+    if !t.opens_shipped_files.is_empty() {
+        out.push(format!(
+            "Opens files shipped with the workflow: {} (this can be an app or script)",
+            listed(&t.opens_shipped_files, MAX_COMMAND)
         ));
     }
     if t.results_steer_later_steps {
@@ -665,6 +685,19 @@ mod tests {
             ("clipboard", lead(|t| t.copies_to_clipboard = 1)),
             ("steered", lead(|t| t.results_steer_later_steps = true)),
             (
+                "launched app",
+                lead(|t| {
+                    t.launched_apps = vec![LaunchedApp {
+                        app: "payload.app".into(),
+                        shipped: true,
+                    }]
+                }),
+            ),
+            (
+                "shipped file",
+                lead(|t| t.opens_shipped_files = vec!["payload.app".into()]),
+            ),
+            (
                 "write",
                 lead(|t| t.file_writes = vec![write_file("n.txt", WriteKind::Overwrite, WritePlace::WorkflowData)]),
             ),
@@ -673,6 +706,39 @@ mod tests {
         }
         // a workflow with scripts leads with the code verdict instead
         assert!(lead(|t| t.scripts = 1).starts_with("Runs code"));
+    }
+
+    #[test]
+    fn a_launched_application_is_a_capability_line_and_a_shipped_one_is_called_out() {
+        // Review item 1: Keyword -> Open File (".", openwith inside the package).
+        let mut t = TrustSummary::default();
+        t.launched_apps = vec![
+            LaunchedApp {
+                app: "payload.app".into(),
+                shipped: true,
+            },
+            LaunchedApp {
+                app: "Safari".into(),
+                shipped: false,
+            },
+        ];
+        t.opens_shipped_files = vec!["docs/readme.md".into()];
+        let all = capability_lines(&t).join("\n");
+        assert!(!all.contains("Runs no scripts and no terminal commands"), "{all}");
+        assert!(
+            all.contains("Runs no scripts or Terminal commands, but it can"),
+            "{all}"
+        );
+        assert!(
+            all.contains("Launches an application: payload.app (shipped with the workflow)"),
+            "{all}"
+        );
+        assert!(all.contains("Safari"), "{all}");
+        assert!(!all.contains("Safari (shipped"), "{all}");
+        assert!(
+            all.contains("Opens files shipped with the workflow: docs/readme.md"),
+            "{all}"
+        );
     }
 
     #[test]
