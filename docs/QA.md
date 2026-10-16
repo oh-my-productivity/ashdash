@@ -169,6 +169,12 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Workflows: enable/disable a workflow (its keyword appears/disappears within a second), "Configure..." saves a value, "What can it do?" shows the summary, Remove asks twice.
 - [ ] Break `config.json` by hand (`echo '{' > ...`): the launcher keeps working with the previous settings, one notification appears, the preferences window shows the problem, and fixing the file clears it. Change `app_dirs`: the window says a restart is needed.
 
+### 3.11 Release-candidate measurements that need the real process (see docs/PERF.md)
+- [ ] Idle memory of the running launcher: start `ashdash` (bundle or release binary), wait 10 s, then `ps -o rss=,cputime= -p "$(pgrep -x ashdash)"` twice, 60 s apart. Target from the plan: RSS under 80 MB, CPU time not growing. Record the app count of the machine (`ashdash query` does not print it; count `/Applications`).
+- [ ] Hotkey-ready time: from process start to the first Option+Shift+Space that shows the window (stopwatch or `log stream`); target under 300 ms with a warm cache.
+- [ ] `mdfind` file search on a real home folder: time `open <name>` and `in <text>`; confirm the 4 s Spotlight limit and the partial-results note appear when you search something huge.
+- [ ] Download the DMG from a draft release in a browser (so it is quarantined), install it as in docs/release-notes/v0.1.0.md, and confirm the documented Gatekeeper steps work on a Mac that never saw the project.
+
 ## 4. Reporting
 
 File defects with: build (`git rev-parse --short HEAD`), macOS version, steps, expected/actual, and logs
