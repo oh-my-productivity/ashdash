@@ -226,6 +226,16 @@ impl LauncherApp {
         self.request_query();
     }
 
+    /// Show the launcher with `text` in the field and **no query running**: the text came from a
+    /// URL, so no workflow keyword or Script Filter may see it before the user has touched the
+    /// field (an edit sets `resp.changed()`, which sends the query as usual).
+    pub(super) fn show_with_prefill(&mut self, ctx: &egui::Context, text: String) {
+        self.show(ctx);
+        self.query = text;
+        self.glue.cursor_to_end = true;
+        self.status = Some("Text from a link: edit it to search".into());
+    }
+
     /// Move the query field's text cursor to the end of the (programmatically replaced) text.
     pub(super) fn apply_cursor_flag(&mut self, ctx: &egui::Context) {
         if !std::mem::take(&mut self.glue.cursor_to_end) {

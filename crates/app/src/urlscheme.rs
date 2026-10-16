@@ -16,6 +16,9 @@
 //!
 //! There is deliberately no verb that imports, runs scripts, reads the
 //! clipboard, opens files or runs system commands (docs/SECURITY.md section 6).
+//! `search` only *fills the field* ([`AppEvent::Prefill`]): a query that matches a workflow
+//! keyword would otherwise start that workflow's Script Filter on text chosen by a web page,
+//! so nothing is searched until the user edits the text.
 //! Invocations are logged without arguments.
 //!
 //! Only `ashdash://` is handled. `reference://` belongs to a real reference launcher install
@@ -155,7 +158,8 @@ pub fn parse(url: &str) -> Result<UrlCommand, UrlError> {
         return Err(UrlError::ControlCharacter);
     }
     let prefix = format!("{URL_SCHEME}://");
-    if url.len() < prefix.len() || !url[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+    // `get`, not a slice: byte `prefix.len()` may sit inside a multibyte character.
+    if !url.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix)) {
         return Err(UrlError::WrongScheme);
     }
     let rest = &url[prefix.len()..];
@@ -411,7 +415,10 @@ impl UrlDispatcher {
             }
             UrlCommand::Search { query } => {
                 log_invocation("search", "-");
-                self.sink.emit(AppEvent::Search(query));
+                // A web page can send this with one click: the text is put in the field but
+                // nothing runs on it (no workflow keyword, no Script Filter) until the user edits
+                // it. The CLI and AppleScript `search` are local and keep running the query.
+                self.sink.emit(AppEvent::Prefill(query));
             }
             UrlCommand::Reload => {
                 log_invocation("reload", "-");
@@ -704,6 +711,41 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_text_anywhere_never_panics_the_parser() {
+        // `ashdash:/é` is 11 bytes and byte 10 is inside the `é`: the scheme check used to slice there.
+        assert_eq!(parse("ashdash:/é"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("ashdash:é"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("é"), Err(UrlError::WrongScheme));
+        // Fuzz-style: every multibyte shape inserted at every position of valid and almost-valid URLs.
+        let seeds = [
+            "ashdash://search?query=saf",
+            "ashdash://trigger?bundle=b&name=x&arg=y",
+            "ashdash://reload/",
+            "ashdash://",
+            "ashdash:/",
+            "",
+        ];
+        let chars = ["é", "€", "😀", "\u{200e}", "\u{0301}", "日本"];
+        for seed in seeds {
+            for (i, _) in seed.char_indices().chain(std::iter::once((seed.len(), ' '))) {
+                for ch in chars {
+                    let mut url = seed.to_string();
+                    url.insert_str(i, ch);
+                    let _ = parse(&url);
+                    // and replacing a run of bytes with the character, so a char straddles byte 9/10
+                    let cut = (i + 2).min(seed.len());
+                    if seed.is_char_boundary(cut) {
+                        let _ = parse(&format!("{}{ch}{}", &seed[..i], &seed[cut..]));
+                    }
+                }
+            }
+        }
+        // a multibyte scheme prefix of exactly the right byte length is a wrong scheme, not a match
+        assert_eq!(parse("alfréd://x"), Err(UrlError::WrongScheme));
+        assert_eq!(parse("ASHDASH://show"), Ok(UrlCommand::Show));
+    }
+
+    #[test]
     fn trigger_argument_may_contain_newline_and_tab() {
         assert_eq!(
             q("ashdash://trigger?bundle=b&name=x&arg=a%0Ab%09c"),
@@ -808,7 +850,7 @@ mod tests {
         assert_eq!(
             r.sink.take(),
             vec![
-                AppEvent::Search("saf".into()),
+                AppEvent::Prefill("saf".into()),
                 AppEvent::Reload,
                 AppEvent::Show,
                 AppEvent::Preferences
@@ -817,6 +859,18 @@ mod tests {
         assert!(r.d.dispatch("ashdash://prefs?x=1").is_err());
         assert!(r.d.dispatch("reference://search?query=saf").is_err());
         assert!(r.sink.take().is_empty());
+        let _ = fs::remove_dir_all(&r.dir);
+    }
+
+    #[test]
+    fn search_from_a_url_never_becomes_a_query() {
+        let r = rig("prefill", true, Outcome::Done);
+        // a text that would hit a workflow keyword (and so run its Script Filter)
+        r.d.dispatch("ashdash://search?query=deploy%20--prod").unwrap();
+        let events = r.sink.take();
+        assert_eq!(events, vec![AppEvent::Prefill("deploy --prod".into())]);
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::Search(_))));
+        assert!(r.host.runs.lock().unwrap().is_empty());
         let _ = fs::remove_dir_all(&r.dir);
     }
 
