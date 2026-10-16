@@ -5,10 +5,22 @@
 //! exclusive output). Otherwise workflow items join the general pool; ids
 //! starting with `wf` are exempt from the engine's usage boost.
 
+use std::sync::Arc;
+
 use super::{Provider, ProviderOutput, QueryCtx, sort_items};
+use crate::actions::Os;
 use crate::item::Item;
 
-pub struct WorkflowProvider;
+/// File Filter objects run `mdfind` through `os` with the configured file-search budget.
+pub struct WorkflowProvider {
+    os: Arc<dyn Os>,
+}
+
+impl WorkflowProvider {
+    pub fn new(os: Arc<dyn Os>) -> WorkflowProvider {
+        WorkflowProvider { os }
+    }
+}
 
 impl Provider for WorkflowProvider {
     fn id(&self) -> &'static str {
@@ -23,8 +35,9 @@ impl Provider for WorkflowProvider {
         let st = ctx.engine_state;
         let mut items: Vec<Item> = Vec::new();
         let mut exclusive = false;
+        let budget = st.config.file_search.budget();
         for wf in st.workflows.read().unwrap().iter() {
-            let (found, ex) = wf.keyword_items(ctx.query, st.paths);
+            let (found, ex) = wf.keyword_items_os(ctx.query, st.paths, &*self.os, &budget);
             exclusive |= ex;
             items.extend(found);
         }
@@ -91,6 +104,35 @@ mod tests {
         assert!(r.iter().any(|i| i.title == "Zebra Workflow"));
         // not exclusive: fallbacks still close the list
         assert!(r.last().unwrap().id.starts_with("fallback:"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_file_filter_runs_through_the_engines_os_with_the_configured_budget() {
+        use crate::actions::testing::FakeOs;
+        use crate::config::{Config, Paths};
+        use std::sync::Arc;
+        let root = std::env::temp_dir().join(format!("oa-wf-ffos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fake = Arc::new(FakeOs::with_output("/Users/x/a.txt\n"));
+        let mut config = Config::default();
+        config.app_dirs = vec![];
+        config.file_search.mdfind_timeout_ms = 1500;
+        let e = crate::engine::Engine::with_env(Paths::under(&root), config, Box::new(Arc::clone(&fake)), root.clone());
+        let dir = e.paths.workflows_dir().join("user.workflow.ff");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = json!({"name": "FF", "bundleid": "ff.t", "objects": [
+            {"uid": "F", "type": "alfred.workflow.input.filefilter", "config": {
+                "keyword": "ffx", "withspace": true, "argumenttype": 1, "title": "Find",
+                "types": ["public.item"], "scopes": [], "fields": []}}], "connections": {}});
+        to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
+        e.reload_blocking();
+        let r = e.query("ffx ");
+        assert!(r.iter().any(|i| i.title == "a.txt"), "{r:?}");
+        let cmds = fake.cmds();
+        assert!(cmds.iter().any(|c| c.program == "mdfind"), "{cmds:?}");
+        let b = fake.budgets.lock().unwrap();
+        assert_eq!(b[0].timeout, std::time::Duration::from_millis(1500));
         let _ = std::fs::remove_dir_all(root);
     }
 }

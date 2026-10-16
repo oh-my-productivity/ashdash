@@ -188,7 +188,7 @@ pub fn registry_checked(config: &Config, deps: &RegistryDeps) -> (Vec<Box<dyn Pr
             }
         };
     }
-    add!("workflow", workflow::WorkflowProvider);
+    add!("workflow", workflow::WorkflowProvider::new(Arc::clone(&deps.os)));
     add!("shell", shell::ShellProvider);
     add!(
         "files",
