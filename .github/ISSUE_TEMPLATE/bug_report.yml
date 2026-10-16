@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check `docs/TROUBLESHOOTING.md` first.
+
+        **Do not paste** your clipboard history, `usage.json`, snippets, workflows you do not own, or screenshots of your whole
+        desktop. Use harmless example text. **Security problems:** do not publish exploit details here; no private channel
+        exists yet, so describe the area and impact only.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Exact steps, starting from a launched Ashdash. Include what you typed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Ashdash version or commit
+      description: "Output of `git rev-parse --short HEAD` for a source build, or the DMG name. (`ashdash --version` does not exist yet.)"
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How do you run it?
+      options:
+        - Ashdash.app (built with packaging/build-app.sh)
+        - cargo run / target/debug or release binary
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: "macOS 15.4, Apple Silicon (or Intel)"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output of the failing command or the terminal log
+      description: Start the binary from a terminal (`ASHDASH_TRACE=1` for focus problems) and paste the lines starting with `ashdash:`. Remove anything private.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant settings
+      description: "Only the keys that matter, from `ashdash config get <key>`. Leave out paths that reveal private information."
+      render: json
