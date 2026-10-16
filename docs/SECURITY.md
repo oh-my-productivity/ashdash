@@ -75,6 +75,13 @@ Low = hardening, robustness, privacy details.
 | SEC-37 | Low | The trust summary could not say that a Script Filter's items (`arg`, `variables`, `quicklookurl`) steer later Run Script / Open URL / Open File / Write File / Terminal steps, so such a workflow could look passive | `workflow/trust.rs`, `gui/importprompt.rs` | `script_filter_results_steering_later_steps_are_flagged`, `script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged` (trust.rs); `script_filter_steering_is_stated` (importprompt.rs) | Fixed by disclosure (W4-FIX), see 9d |
 | SEC-38 | Low | `ashdash import` ignored unknown `--` flags (`--yess` silently meant "ask") and the preferences drop zone accepted only `.alfredworkflow`, so the same package was handled differently per path | `main.rs`, `gui/prefs/app.rs`, `gui/prefs/workflows.rs`, `workflow/package.rs` | `import_rejects_unknown_flags_and_wrong_file_counts` (main.rs), `the_drop_zone_accepts_every_workflow_extension_the_launcher_does`, `every_reference_package_extension_is_recognised` | Fixed (W4-FIX), see 9d |
 | SEC-39 | Low | `write_workflow_value` trusted its caller to check the variable: the preferences window did not, so any key could be stored in `workflow-config/<bundle id>.json` and reach the workflow's scripts as an environment variable | `settings_view.rs` | `write_workflow_value_only_accepts_variables_on_the_sheet` | Fixed (W4-FIX), see 9d |
+| SEC-50 | Medium | A ~2 MB property list of nested `<array>` elements (a theme opened from Finder, `ashdash theme`, an app's `Info.plist`) overflowed the stack inside the `plist` crate and aborted the launcher | `theme.rs`, `apps.rs`, `mac/opendocs.rs` | `a_deeply_nested_theme_is_refused_not_a_stack_overflow`, `nesting_up_to_the_cap_parses_and_one_more_level_does_not`, `binary_plists_are_checked_too`, `every_kind_of_value_passes_the_probe_in_both_encodings` (theme.rs); `a_hostile_info_plist_is_ignored_not_fatal` (apps.rs); `a_deeply_nested_theme_is_refused_not_fatal` (opendocs.rs) | Fixed (W4-R2), see 9e |
+| SEC-51 | Medium | `ashdash://search` typed attacker text into the launcher *and ran it*, so a web page could start a workflow's Script Filter with `{query}` chosen by the page, with no consent dialog | `urlscheme.rs`, `events.rs`, `gui/glue.rs`, `gui/mod.rs` | `search_from_a_url_never_becomes_a_query` (urlscheme.rs); the GUI side is on-screen only (QA) | Fixed (W4-R2): the URL only fills the field, see 9e and section 6 |
+| SEC-52 | Low | URL consent dialog: one dialog per link (a page could stack dozens, each living up to 60 s); a timeout was stored as a permanent "deny"; `url-trust.json` was read once, so "delete the entry to be asked again" needed a restart and a hand edit was overwritten | `urlscheme.rs` | `only_one_question_per_bundle_is_open_at_a_time`, `the_claim_is_released_when_the_question_fails`, `a_timeout_or_dismissed_dialog_is_not_a_decision`, `the_dialog_result_maps_to_an_answer`, `edits_to_the_consent_file_are_seen_without_a_restart` | Fixed (W4-R2), see 9e |
+| SEC-53 | Medium | Snippet auto-paste went through the pasteboard (`pbcopy`, no marker type), so a snippet holding a token or password was recorded in `clipboard.json` in clear text | `clipboard/{command,history,watch,filter}.rs` | `a_snippet_pasted_by_ashdash_is_not_recorded_but_the_users_own_copies_are`, `an_old_note_does_not_hide_a_later_copy`, `markers_still_win_over_the_own_paste_note` (watch.rs); `snippet_pastes_are_noted_for_the_watcher_but_history_pastes_are_not`, `a_failed_snippet_copy_leaves_no_note_behind` (command.rs) | Fixed (W4-R2); live pasteboard not run, see 9e |
+| SEC-54 | Low | `urlscheme::parse` sliced the URL at a byte offset: `ashdash:/é` panicked the dispatch thread | `urlscheme.rs` | `multibyte_text_anywhere_never_panics_the_parser` | Fixed (W4-R2) |
+| SEC-55 | Low | The IPC connection counter was decremented after the handler returned: sixteen panicking handlers locked the socket out until restart | `ipc.rs` | `panicking_handlers_do_not_use_up_the_connection_slots`, `a_connection_slot_is_released_when_its_guard_drops_even_while_unwinding` | Fixed (W4-R2) |
+| SEC-56 | Low | AppleScript `search` / `run trigger` skipped the length caps of the socket and the URL scheme; Finder import messages showed raw file names (bidi, zero-width); a theme was read three times (check vs. copy) | `scripting.rs`, `mac/opendocs.rs` | `script_commands_apply_the_same_length_caps_as_the_other_entry_points`; `finder_messages_clean_file_names_like_the_import_prompt`, `theme_install_reads_the_file_once_and_installs_what_it_validated` | Fixed (W4-R2) |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -329,8 +336,15 @@ hostile-input boundary from day one:
 
 1. Allow-list of verbs: `search`, `show`, `trigger` (external trigger of an *enabled* workflow), plus the harmless `reload`, `theme` (by name from the themes folder) and `prefs` (opens the preferences window). No verbs for
    import-and-run, run-script, system commands, clipboard read, or file open.
+   **`search` does not search** (W4-R2, SEC-51): it shows the launcher with the text in the field (`AppEvent::Prefill`) and runs *no* query, so no workflow keyword or Script
+   Filter sees text chosen by a web page until the user edits the field (a keystroke then runs the query as usual; the footer is set to "Text from a link: edit it to search" - the footer text is code-only, not seen on screen).
+   The CLI socket and AppleScript `search` are local, same-user controls and still run the query (`AppEvent::Search`).
 2. `trigger` must require that the workflow's External Trigger object opts in to URL invocation, and a
-   per-workflow, user-visible allow setting (default: ask once, remember per bundle id).
+   per-workflow, user-visible allow setting (default: ask once, remember per bundle id). At most one question per bundle id is on
+   screen (further links for it are dropped, W4-R2); only "Allow" and "Don't Allow" are stored, a timeout or dismissed dialog is
+   not (the next link asks again); `url-trust.json` is re-read when its modification time or size changes, and `set` merges over the
+   current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten. Residual: different
+   bundle ids can each have their own dialog open (bounded by the 6-per-10-s limiter and the number of installed workflows with an External Trigger).
 3. The argument is data: pass it through argv/stdin, never as `{query}` source substitution, and never
    through the mode-0 path. Cap its length (e.g. 4 KiB) before it reaches the engine (SEC-08/09).
 4. Parse with a real URL parser; reject userinfo, fragments with control characters, invalid UTF-8, repeated
@@ -600,3 +614,22 @@ Items refer to `docs/reviews/wave3.md`.
 - **SEC-38** `ashdash import` accepts `--yes` and `--`; any other option is an error with the usage line and exit code 2; exactly
   one file. `workflow::WORKFLOW_PACKAGE_EXTENSIONS` / `is_workflow_package` are the one list used by the launcher, Finder opens, the
   preferences drop zone and the preferences file chooser (the chooser filter now offers all four).
+
+## 9e. Fix log (wave 4 review, W4-R2, branch `fix/w4-r2`)
+
+- **SEC-50 plist depth** `theme::parse_plist` is the one way the launcher parses a property list from an untrusted file (themes: `Theme::load`/`from_bytes`;
+  app `Info.plist`: `apps::icns_path`). It first runs the bytes through `plist`'s event-driven serde deserializer with a probe type that
+  fails at nesting depth 64 (`MAX_PLIST_DEPTH`, the workflow parser's cap), so its own recursion is bounded; only then is the tree built.
+  Works for XML, binary and ASCII input. Files are read through `theme::read_limited` (themes 2 MiB, `Info.plist` 4 MiB). Measured before the
+  fix: a 1.9 MB nested file aborted the test binary ("has overflowed its stack"). Not covered: a binary plist nested >64 levels *and* large enough to
+  matter was only tested at 70 levels (written by the library, which cannot write much deeper); the workflow importer's own
+  `plist::Value::from_file(info.plist)` in `workflow/package.rs` (the `text` closure) is not part of this change - it runs after the capped workflow parser has accepted the same file.
+- **SEC-51 `ashdash://search`** see section 6, item 1. New event `AppEvent::Prefill`; `LauncherApp::show_with_prefill` shows the window, sets the field and a footer note, and does not call `request_query`.
+- **SEC-52 consent dialog** `Prompter::confirm` returns `Answer::{Allow, Deny, NoAnswer}`; `dialog_answer` maps the `osascript` result (empty button after "giving up after 60", a
+  dismissed dialog, or a failed `osascript` are `NoAnswer`, which is reported and never stored). `UrlDispatcher::begin_asking` allows one open question per bundle id; `TrustStore::{refresh, lookup, set}` re-read by (mtime, length).
+- **SEC-53 snippet pastes** `ClipCommand::PasteText` calls `ClipboardHistory::note_own_paste(text)` before the pasteboard write (and `forget_own_paste` if the write fails); `Watcher::step` skips a text change whose hash matches a
+  note (`SkipReason::OwnPaste`), once per note and only for 10 s (`OWN_PASTE_TTL`). Marker types still take precedence. *Decision:* matching by content rather than by change count, because the change count after `pbcopy` is not known to the core, and a
+  marker type cannot be added by `pbcopy`. *Residual:* if the user copies the identical text within 10 s of a snippet paste, that one copy is not recorded; pasting an existing history entry (`Paste`) is not noted (it is already in the history). Not run against a real pasteboard (QA item: paste a snippet, check `ashdash query "clip ..."`).
+- **SEC-54..56** multibyte-safe scheme check (`url.get(..prefix.len())`); `ConnectionSlot` drop guard in `ipc.rs`; AppleScript `search` capped at `MAX_SEARCH` (4096 bytes), `run trigger` argument at `MAX_ARG` (4096 bytes) and empty ids refused;
+  Finder import notifications and `display_name` use `importprompt::clean` (format characters, blank-looking characters, one line, 240 / 80 characters); theme install reads the file once (`install_theme_with`), validates those bytes and writes the same bytes.
+- **`ashdash --version` / `-V` / `version`** prints `ashdash <crate version>` (first word only), exit 0, before the data folder or settings are touched.
