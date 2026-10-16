@@ -103,6 +103,14 @@ pub struct HotReload {
     problems: BTreeMap<&'static str, String>,
     restart_required: Vec<String>,
     announced: Option<String>,
+    /// Workflow hotkeys have to be re-read (folders changed, the launcher key moved, workflows
+    /// changed) but the engine's background refresh has not finished yet, so the folders it is
+    /// loading and the hotkeys registered could disagree for a moment.
+    hotkeys_due: bool,
+    ctx: egui::Context,
+    /// Tests: stands in for `Engine::reload_pending`.
+    #[cfg(test)]
+    busy_override: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Tells the user about a new problem (a notification; replaced in tests).
     notify: Box<dyn Fn(String) + Send>,
 }
@@ -138,6 +146,10 @@ impl HotReload {
             problems: BTreeMap::new(),
             restart_required: Vec::new(),
             announced: None,
+            hotkeys_due: false,
+            ctx: ctx.clone(),
+            #[cfg(test)]
+            busy_override: None,
             notify,
         };
         if me.watcher.is_none() {
@@ -166,16 +178,39 @@ impl HotReload {
                 Msg::Content => content = true,
             }
         }
-        if !(config || content) {
-            return;
-        }
         if config {
             self.apply_disk_config(host);
         }
         if content {
-            host.reload_workflow_hotkeys(&self.engine.config_now().workflow_dirs);
+            self.hotkeys_due = true;
         }
-        self.publish();
+        self.flush_hotkeys(host);
+        if config || content {
+            self.publish();
+        }
+    }
+
+    fn engine_busy(&self) -> bool {
+        #[cfg(test)]
+        if let Some(b) = &self.busy_override {
+            return b.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        self.engine.reload_pending()
+    }
+
+    /// Re-read the workflow hotkeys once the engine has finished its background refresh (a
+    /// hotkey fired meanwhile would find no workflow by id). Until then ask for another frame
+    /// shortly, so the check runs even when the launcher is hidden.
+    fn flush_hotkeys(&mut self, host: &mut dyn Window) {
+        if !self.hotkeys_due {
+            return;
+        }
+        if self.engine_busy() {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        self.hotkeys_due = false;
+        host.reload_workflow_hotkeys(&self.engine.config_now().workflow_dirs);
     }
 
     fn apply_disk_config(&mut self, host: &mut dyn Window) {
@@ -206,6 +241,9 @@ impl HotReload {
             match host.rebind_hotkey(&self.registered_hotkey, &spec) {
                 Ok(()) => {
                     self.registered_hotkey = spec;
+                    // The old key is free again: workflow hotkeys that were skipped because it
+                    // was taken get another chance.
+                    self.hotkeys_due = true;
                     host.set_hotkey_error(None);
                     self.problems.remove("hotkey");
                 }
@@ -241,7 +279,7 @@ impl HotReload {
             if let Some(w) = &self.watcher {
                 w.set_extra_roots(&self.paths, &new.workflow_dirs);
             }
-            host.reload_workflow_hotkeys(&new.workflow_dirs);
+            self.hotkeys_due = true;
         }
     }
 
@@ -630,6 +668,18 @@ mod tests {
         assert!(r.engine.workflow_summaries().iter().any(|(n, _, _)| n == "Dropped"));
     }
 
+    /// Poll until the deferred workflow-hotkey reload (if any) has run.
+    fn settle(r: &mut Rig, w: &mut FakeWindow) {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            r.reload.poll(w);
+            if !r.reload.hotkeys_due || Instant::now() > end {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn workflow_hotkeys_are_reloaded_from_the_folders_now_in_force() {
         let mut r = rig("hk-dirs", None);
@@ -638,13 +688,65 @@ mod tests {
         c.workflow_dirs = vec![r.root.join("more")];
         c.save(&r.paths).unwrap();
         r.reload.apply_disk_config(&mut w);
+        settle(&mut r, &mut w);
         assert_eq!(w.workflow_hotkey_dirs, vec![vec![r.root.join("more")]], "added folder");
 
         let mut c = Config::load(&r.paths);
         c.workflow_dirs.clear();
         c.save(&r.paths).unwrap();
         r.reload.apply_disk_config(&mut w);
+        settle(&mut r, &mut w);
         assert_eq!(w.workflow_hotkey_dirs.last(), Some(&Vec::new()), "removed folder");
+    }
+
+    #[test]
+    fn hotkeys_are_read_only_after_the_background_refresh_has_landed() {
+        // Re-review N4b: the engine rescans new workflow folders in the background; a hotkey
+        // registered before that lands would answer "no enabled workflow" when pressed.
+        let mut r = rig("hk-wait", None);
+        let mut w = FakeWindow::default();
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        r.reload.busy_override = Some(Arc::clone(&busy));
+        let mut c = Config::load(&r.paths);
+        c.workflow_dirs = vec![r.root.join("more")];
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.poll(&mut w);
+        r.reload.poll(&mut w);
+        assert_eq!(w.workflow_hotkey_reloads, 0, "the refresh is still running");
+        assert!(r.reload.hotkeys_due, "but the reload is remembered");
+        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        r.reload.poll(&mut w);
+        assert_eq!(w.workflow_hotkey_dirs, vec![vec![r.root.join("more")]]);
+        r.reload.poll(&mut w);
+        assert_eq!(w.workflow_hotkey_reloads, 1, "once, not on every poll");
+    }
+
+    #[test]
+    fn hotkeys_skipped_because_of_the_old_launcher_key_are_retried_after_a_rebind() {
+        // Re-review N4a: workflow hotkeys that collided with the launcher's old key were skipped
+        // at start-up; once the launcher moved to another key they must get another chance.
+        let mut r = rig("hk-retry", None);
+        r.reload.busy_override = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut w = FakeWindow::default();
+        let mut c = Config::load(&r.paths);
+        c.hotkey = "ctrl+alt+KeyJ".into();
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.poll(&mut w);
+        assert_eq!(w.rebinds.len(), 1);
+        assert_eq!(w.workflow_hotkey_reloads, 1, "retried after the successful rebind");
+        // a failed rebind frees nothing: no retry
+        let mut w = FakeWindow {
+            fail_rebind: true,
+            ..FakeWindow::default()
+        };
+        let mut c = Config::load(&r.paths);
+        c.hotkey = "ctrl+alt+KeyK".into();
+        c.save(&r.paths).unwrap();
+        r.reload.apply_disk_config(&mut w);
+        r.reload.poll(&mut w);
+        assert_eq!(w.workflow_hotkey_reloads, 0);
     }
 
     fn cfg() -> Config {

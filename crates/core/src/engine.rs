@@ -80,6 +80,9 @@ struct ReloadGate {
     running: bool,
     /// Another reload was requested while one was running.
     again: bool,
+    /// Tests: make the next worker pass panic (to prove the gate is released).
+    #[cfg(test)]
+    panic_once: bool,
 }
 
 /// Bookkeeping of the background workflow/snippet refresh: the roots of the *latest* request
@@ -89,6 +92,42 @@ struct ContentGate {
     running: bool,
     again: bool,
     roots: Vec<PathBuf>,
+    /// Tests: make the next worker pass panic (to prove the gate is released).
+    #[cfg(test)]
+    panic_once: bool,
+}
+
+/// Held by a reload worker: if the worker unwinds (a panic while scanning), the gate is released
+/// so [`Engine::reload_pending`] cannot stay true for the rest of the session and the next
+/// request starts a new worker. Normal exits clear the gate themselves, under the lock that
+/// also decides whether another pass is due, and [`GateRelease::disarm`] the guard.
+struct GateRelease<T> {
+    gate: Arc<Mutex<T>>,
+    clear: fn(&mut T),
+    armed: bool,
+}
+
+impl<T> GateRelease<T> {
+    fn new(gate: Arc<Mutex<T>>, clear: fn(&mut T)) -> Self {
+        GateRelease {
+            gate,
+            clear,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<T> Drop for GateRelease<T> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut g = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            (self.clear)(&mut g);
+        }
+    }
 }
 
 /// Everything a reload needs, owned so it can run on a background thread.
@@ -226,7 +265,15 @@ impl Engine {
         let spawned = std::thread::Builder::new()
             .name("ashdash-reload".into())
             .spawn(move || {
+                let mut release = GateRelease::new(Arc::clone(&gate), |g: &mut ReloadGate| {
+                    g.running = false;
+                    g.again = false;
+                });
                 loop {
+                    #[cfg(test)]
+                    if std::mem::take(&mut gate.lock().unwrap().panic_once) {
+                        panic!("test: reload worker panics");
+                    }
                     job.run();
                     let mut g = gate.lock().unwrap();
                     if g.again {
@@ -234,6 +281,7 @@ impl Engine {
                         continue;
                     }
                     g.running = false;
+                    release.disarm();
                     break;
                 }
             });
@@ -268,8 +316,16 @@ impl Engine {
         let spawned = std::thread::Builder::new()
             .name("ashdash-reload-content".into())
             .spawn(move || {
+                let mut release = GateRelease::new(Arc::clone(&gate), |g: &mut ContentGate| {
+                    g.running = false;
+                    g.again = false;
+                });
                 let mut job = worker_job;
                 loop {
+                    #[cfg(test)]
+                    if std::mem::take(&mut gate.lock().unwrap().panic_once) {
+                        panic!("test: content refresh panics");
+                    }
                     job.run_content();
                     let mut g = gate.lock().unwrap();
                     if g.again {
@@ -278,6 +334,7 @@ impl Engine {
                         continue;
                     }
                     g.running = false;
+                    release.disarm();
                     break;
                 }
             });
@@ -1579,6 +1636,35 @@ mod tests {
         wait_until("the second refresh", || {
             !e.reload_pending() && !e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra")
         });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_panic_in_the_content_refresh_does_not_leave_reload_pending_stuck() {
+        let (e, root) = engine("content-panic");
+        write_config_workflow(&e);
+        e.content_gate.lock().unwrap().panic_once = true;
+        e.reload_content_background();
+        wait_until("the failed refresh to release the gate", || !e.reload_pending());
+        // the gate works again: the next refresh runs and picks up a change
+        let plist = e.paths.workflows_dir().join("user.workflow.cfg").join("info.plist");
+        let text = std::fs::read_to_string(&plist)
+            .unwrap()
+            .replace("Hello {var:name}", "Howdy {var:name}");
+        std::fs::write(&plist, text).unwrap();
+        e.reload_content_background();
+        wait_until("the next refresh", || {
+            !e.reload_pending() && e.query("who")[0].title == "Howdy Ann"
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_panic_in_the_full_reload_does_not_leave_reload_pending_stuck() {
+        let (e, root) = engine("reload-panic");
+        e.reload_gate.lock().unwrap().panic_once = true;
+        e.reload();
+        wait_until("the failed reload to release the gate", || !e.reload_pending());
         let _ = std::fs::remove_dir_all(root);
     }
 
