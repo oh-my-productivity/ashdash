@@ -43,6 +43,10 @@ pub struct WriteFile {
     pub mode: WriteMode,
     pub create_dirs: bool,
     pub allow_empty: bool,
+    /// A file this write must never change, whatever the path is spelled like: the workflow's
+    /// own `info.plist`. Checked on the opened file (device and inode), so a symlink, a hard
+    /// link or a link created after the executor looked at the path cannot get around it.
+    pub protect: Option<PathBuf>,
 }
 
 impl WriteFile {
@@ -56,21 +60,47 @@ impl WriteFile {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let ctx = || format!("writing {}", self.path.display());
+        let mut opts = std::fs::OpenOptions::new();
         match self.mode {
-            WriteMode::Overwrite => std::fs::write(&self.path, &self.contents).with_context(ctx),
-            WriteMode::Append => {
-                let mut f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.path)
-                    .with_context(ctx)?;
+            // `fs::write` truncates on open; do it after the identity check instead.
+            WriteMode::Overwrite => opts.write(true).create(true),
+            WriteMode::Append => opts.append(true).create(true),
+            WriteMode::Prepend => opts.read(true).write(true).create(true),
+        };
+        let mut f = opts.open(&self.path).with_context(ctx)?;
+        self.refuse_protected(&f)?;
+        match self.mode {
+            WriteMode::Overwrite => {
+                f.set_len(0).with_context(ctx)?;
                 f.write_all(self.contents.as_bytes()).with_context(ctx)
             }
+            WriteMode::Append => f.write_all(self.contents.as_bytes()).with_context(ctx),
             WriteMode::Prepend => {
-                let old = std::fs::read_to_string(&self.path).unwrap_or_default();
-                std::fs::write(&self.path, format!("{}{old}", self.contents)).with_context(ctx)
+                use std::io::{Read, Seek, SeekFrom};
+                let mut old = String::new();
+                // Unreadable (not UTF-8) content counts as empty, like before.
+                let _ = f.read_to_string(&mut old);
+                f.seek(SeekFrom::Start(0)).with_context(ctx)?;
+                f.set_len(0).with_context(ctx)?;
+                f.write_all(format!("{}{old}", self.contents).as_bytes())
+                    .with_context(ctx)
             }
         }
+    }
+
+    fn refuse_protected(&self, opened: &std::fs::File) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let Some(p) = &self.protect else { return Ok(()) };
+        let (Ok(a), Ok(b)) = (opened.metadata(), std::fs::metadata(p)) else {
+            return Ok(());
+        };
+        if (a.dev(), a.ino()) == (b.dev(), b.ino()) {
+            anyhow::bail!(
+                "refusing to write {}: it is the workflow's own info.plist",
+                self.path.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -302,24 +332,33 @@ fn lexical_normalize(p: &Path) -> PathBuf {
 }
 
 /// Is `path` the `info.plist` of the workflow folder `dir`? Compared textually (after
-/// resolving `.`/`..`) and, when both exist, by real location; the file name ignores case
-/// because the default macOS volume does.
+/// resolving `.`/`..`) and, when the paths exist, by real location *including the file itself*
+/// (a package symlink `notes.txt -> info.plist` resolves to it); the file name ignores case
+/// because the default macOS volume does. [`WriteFile::perform`] repeats the check on the opened
+/// file, which also covers hard links and links made after this call.
 fn is_info_plist_of(dir: &Path, path: &Path) -> bool {
+    let is_info = |p: &Path| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("info.plist"))
+    };
     let norm = lexical_normalize(path);
-    let named = norm
-        .file_name()
-        .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("info.plist"));
-    if !named {
-        return false;
+    if is_info(&norm)
+        && let Some(parent) = norm.parent()
+    {
+        if parent == lexical_normalize(dir) {
+            return true;
+        }
+        if let (Ok(a), Ok(b)) = (parent.canonicalize(), dir.canonicalize())
+            && a == b
+        {
+            return true;
+        }
     }
-    let Some(parent) = norm.parent() else { return false };
-    if parent == lexical_normalize(dir) {
-        return true;
+    // The final component may be a link (or the path may go through linked folders).
+    if let (Ok(real), Ok(base)) = (path.canonicalize(), dir.canonicalize()) {
+        return is_info(&real) && real.parent() == Some(base.as_path());
     }
-    match (parent.canonicalize(), dir.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+    false
 }
 
 fn rend(st: &State, t: &str) -> String {
@@ -672,6 +711,7 @@ impl Workflow {
                         .get("allowemptyfiles")
                         .and_then(Value::as_bool)
                         .unwrap_or(true),
+                    protect: Some(self.dir.join("info.plist")),
                 }));
                 // "The resolved path is outputted from this object."
                 st.arg = path.display().to_string();
@@ -1031,6 +1071,97 @@ mod tests {
                 browser: Some(s(d.join("B.app")))
             }]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn write_file_workflow(tag: &str, filename: &str, mode: i64) -> (Workflow, Paths, PathBuf) {
+        let (paths, root) = temp_paths(tag);
+        let doc = json!({
+            "name": "W", "bundleid": "w",
+            "objects": [{"uid": "W", "type": "alfred.workflow.output.writefile", "config": {
+                "filename": filename, "filetext": "PWNED\n", "type": mode, "relativepathmode": 2}}],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "w", &doc);
+        (wf, paths, root)
+    }
+
+    fn write_effects(wf: &Workflow, paths: &Paths) -> Vec<Effect> {
+        let node = wf.nodes.iter().find(|n| n.uid == "W").unwrap();
+        let mut fx = Vec::new();
+        let mut st = State {
+            arg: String::new(),
+            vars: BTreeMap::new(),
+        };
+        wf.process(node, &mut st, &mut None, paths, &mut fx);
+        fx
+    }
+
+    #[test]
+    fn write_file_does_not_follow_a_package_symlink_to_info_plist() {
+        // Review item 2: `notes.txt -> info.plist` inside the package.
+        let (wf, paths, root) = write_file_workflow("wfsym", "notes.txt", 0);
+        let plist = std::fs::read(wf.dir.join("info.plist")).unwrap();
+        std::os::unix::fs::symlink("info.plist", wf.dir.join("notes.txt")).unwrap();
+        let fx = write_effects(&wf, &paths);
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::WriteFile(_))),
+            "the executor resolves the link and refuses: {fx:?}"
+        );
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Warn(m) if m.contains("info.plist"))),
+            "{fx:?}"
+        );
+        assert_eq!(std::fs::read(wf.dir.join("info.plist")).unwrap(), plist);
+
+        // A hard link or a link made between the check and the write is caught by identity
+        // when the file is opened, in every write mode.
+        std::fs::remove_file(wf.dir.join("notes.txt")).unwrap();
+        let fx = write_effects(&wf, &paths);
+        let Some(Effect::WriteFile(w)) = fx.iter().find(|e| matches!(e, Effect::WriteFile(_))) else {
+            panic!("a plain path is written: {fx:?}")
+        };
+        for (i, link) in [("hard", true), ("sym", false)].into_iter().enumerate() {
+            let p = wf.dir.join(format!("late{i}.txt"));
+            if link.1 {
+                std::fs::hard_link(wf.dir.join("info.plist"), &p).unwrap();
+            } else {
+                std::os::unix::fs::symlink("info.plist", &p).unwrap();
+            }
+            for mode in [WriteMode::Overwrite, WriteMode::Append, WriteMode::Prepend] {
+                let raced = WriteFile {
+                    path: p.clone(),
+                    mode,
+                    ..w.clone()
+                };
+                let err = raced.perform().expect_err(link.0);
+                assert!(format!("{err:#}").contains("info.plist"), "{err:#}");
+                assert_eq!(
+                    std::fs::read(wf.dir.join("info.plist")).unwrap(),
+                    plist,
+                    "{} {mode:?}",
+                    link.0
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_file_still_writes_through_a_link_to_an_ordinary_file() {
+        // A dotfile that is a symlink into a dotfiles repository keeps working (the reference launcher semantics).
+        let (wf, paths, root) = write_file_workflow("wfok", "notes.txt", 1);
+        std::fs::write(wf.dir.join("real.txt"), "a\n").unwrap();
+        std::os::unix::fs::symlink("real.txt", wf.dir.join("notes.txt")).unwrap();
+        for e in write_effects(&wf, &paths) {
+            if let Effect::WriteFile(w) = e {
+                w.perform().unwrap();
+            } else {
+                panic!("{e:?}");
+            }
+        }
+        assert_eq!(std::fs::read_to_string(wf.dir.join("real.txt")).unwrap(), "a\nPWNED\n");
         let _ = std::fs::remove_dir_all(root);
     }
 }
