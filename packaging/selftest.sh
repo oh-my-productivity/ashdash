@@ -26,7 +26,7 @@ for script in "$PACKAGING_DIR"/*.sh "$PACKAGING_DIR"/icon/*.sh "$PACKAGING_DIR"/
   check "bash -n $(basename "$script")" bash -n "$script"
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  check "shellcheck" shellcheck -x "$PACKAGING_DIR"/*.sh "$PACKAGING_DIR"/icon/*.sh "$PACKAGING_DIR"/homebrew/*.sh
+  check "shellcheck" shellcheck -x -P SCRIPTDIR "$PACKAGING_DIR"/*.sh "$PACKAGING_DIR"/icon/*.sh "$PACKAGING_DIR"/homebrew/*.sh
 else
   printf 'skip shellcheck (not installed)\n'
 fi

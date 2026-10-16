@@ -5,8 +5,9 @@ behaviour of the reference launcher and runs many reference-compatible workflows
 endorsed by or sponsored by its publisher or the reference launcher application, and it contains no reference launcher code or assets**
 ([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). "Ashdash" is a working name and will probably change before a public release.
 
-Status: pre-release (0.1.0), no published binaries yet. Read [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for what is verified and
-what is not.
+Status: pre-release, v0.1.0 release candidate; no published binaries yet. When it is published, the DMG is ad-hoc signed and not notarized (install notes:
+[docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md); changes: [CHANGELOG.md](CHANGELOG.md); measured speed: [docs/PERF.md](docs/PERF.md)).
+Read [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for what is verified and what is not.
 
 ```
 cargo run -p ashdash --release        # Option+Shift+Space opens it; Esc closes; Cmd+Q quits

@@ -3,23 +3,28 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
+# Third-party actions are pinned by commit SHA (the comment names the release).
 jobs:
   check:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: scripts/check.sh
-  # Licences, advisories, banned crates and sources (deny.toml). The action is a Docker container, so
-  # it runs on Linux; deny.toml restricts the graph to the macOS targets. Pinned by commit SHA (tag v2.1.1,
-  # cargo-deny 0.20.2). Verified locally with `cargo deny check` 0.20.2.
+  # Licences, banned crates and sources (deny.toml). Advisories are NOT checked here: a new RustSec entry for a
+  # crate this change does not touch would turn every pull request red. They run weekly in advisories.yml.
+  # The action is a Docker container, so it runs on Linux; deny.toml restricts the graph to the macOS targets.
+  # Pinned by commit SHA (tag v2.1.1, cargo-deny 0.20.2). Verified locally with `cargo deny check` 0.20.2.
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check licenses bans sources advisories
+          command: check licenses bans sources
