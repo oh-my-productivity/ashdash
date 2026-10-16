@@ -845,7 +845,11 @@ mod tests {
         }));
         assert_eq!(active.load(Ordering::SeqCst), 0);
         let held: Vec<_> = (0..MAX_CONNECTIONS).map(|_| admit(&a).expect("free")).collect();
-        assert!(admit(&a).is_none(), "the {}th connection is refused", MAX_CONNECTIONS + 1);
+        assert!(
+            admit(&a).is_none(),
+            "the {}th connection is refused",
+            MAX_CONNECTIONS + 1
+        );
         assert_eq!(a.load(Ordering::SeqCst), MAX_CONNECTIONS, "a refusal takes no slot");
         drop(held);
         assert_eq!(a.load(Ordering::SeqCst), 0);
