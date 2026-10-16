@@ -18,7 +18,6 @@
 //! `anchorfields` and `daterange` are read but not applied yet.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -136,7 +135,7 @@ pub(super) fn scopes(node: &Node) -> Vec<PathBuf> {
 
 /// The real Spotlight search.
 pub(super) fn mdfind(predicate: &str, scopes: &[PathBuf]) -> Vec<PathBuf> {
-    let mut cmd = Command::new("mdfind");
+    let mut cmd = crate::actions::system_command("mdfind");
     for s in scopes {
         cmd.arg("-onlyin").arg(s);
     }

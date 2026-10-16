@@ -184,6 +184,18 @@ pub fn system_program(program: &std::ffi::OsStr) -> OsString {
         .unwrap_or_else(|| program.to_os_string())
 }
 
+/// The bare names [`system_program`] knows.
+pub fn system_program_names() -> Vec<&'static str> {
+    SYSTEM_PROGRAMS.iter().map(|(n, _)| *n).collect()
+}
+
+/// A `Command` for a macOS tool given by bare name (`osascript`, `pmset`, `open`, `mdfind`,
+/// `pbcopy`, ...), started from its fixed absolute location. Use this instead of
+/// `Command::new("osascript")` anywhere a process is built directly.
+pub fn system_command(program: &str) -> Command {
+    Command::new(system_program(std::ffi::OsStr::new(program)))
+}
+
 fn build(cmd: &Cmd) -> Command {
     let mut c = Command::new(system_program(&cmd.program));
     c.args(&cmd.args);

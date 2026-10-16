@@ -18,7 +18,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -213,7 +212,7 @@ pub type Ask = Box<dyn Fn(&crate::gui::importprompt::PromptText) -> bool + Send 
 /// The confirmation as a native alert (`osascript`). No `osascript`: refuse rather than install
 /// unconfirmed.
 pub fn osascript_dialog(text: &crate::gui::importprompt::PromptText) -> bool {
-    let out = Command::new("osascript")
+    let out = ashdash_core::actions::system_command("osascript")
         .args(alert_args(&text.title, &text.lines.join("\n"), true))
         .output();
     match out {
@@ -230,7 +229,7 @@ impl Importer for SystemImporter {
             Ok(s) => s,
             Err(e) => {
                 let title = format!("Cannot read {}", display_name(file));
-                let _ = Command::new("osascript")
+                let _ = ashdash_core::actions::system_command("osascript")
                     .args(alert_args(&title, &format!("{e:#}"), false))
                     .output();
                 return Ok(None);
@@ -307,7 +306,7 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
 
 /// Post a user notification through `osascript` (title/body as argv, never as script text).
 pub fn notify(title: &str, body: &str) {
-    let _ = Command::new("osascript")
+    let _ = ashdash_core::actions::system_command("osascript")
         .args([
             "-e",
             "on run argv",
@@ -469,6 +468,7 @@ pub fn install(engine: Arc<Engine>) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::process::Command;
 
     use super::*;
 

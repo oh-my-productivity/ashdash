@@ -2,11 +2,11 @@
 //! script text). Blocking: call it from a thread.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Ask for one file whose name ends in `extension`. `None` when cancelled or unavailable.
 pub fn choose_file(prompt: &str, extension: &str) -> Option<PathBuf> {
-    let out = Command::new("osascript")
+    let out = ashdash_core::actions::system_command("osascript")
         .args([
             "-e",
             "on run argv",

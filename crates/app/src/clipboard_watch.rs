@@ -134,7 +134,7 @@ pub fn spawn(engine: Arc<Engine>) {
 #[cfg(test)]
 mod live {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::sync::Mutex;
 
     use ashdash_core::clipboard::filter::CONCEALED_TYPE;
@@ -144,7 +144,7 @@ mod live {
     use super::*;
 
     fn pbcopy(bytes: &[u8]) {
-        let mut c = Command::new("pbcopy")
+        let mut c = ashdash_core::actions::system_command("pbcopy")
             .env("LC_ALL", "en_US.UTF-8")
             .stdin(Stdio::piped())
             .spawn()
@@ -345,7 +345,7 @@ mod live {
     fn paste_into_scratch_textedit_document() {
         use ashdash_core::clipboard::paste;
         let osa = |script: &str| {
-            let o = Command::new("osascript")
+            let o = ashdash_core::actions::system_command("osascript")
                 .args(["-e", script])
                 .output()
                 .expect("osascript");
