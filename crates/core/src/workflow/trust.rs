@@ -21,6 +21,70 @@ pub const SCHEME_NONE: &str = "(none)";
 
 /// Longest terminal command template kept verbatim in the summary (characters).
 const MAX_COMMAND_CHARS: usize = 500;
+/// Longest Write File path template kept verbatim in the summary (characters).
+const MAX_PATH_CHARS: usize = 500;
+
+/// Where a Write File object's relative paths land (`relativepathmode`), or `Anywhere` when the
+/// path is not confined to one of the workflow's own folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritePlace {
+    /// Relative path, resolved inside the workflow's data folder.
+    WorkflowData,
+    /// Relative path, resolved inside the workflow's cache folder.
+    WorkflowCache,
+    /// Relative path, resolved inside the workflow's own (installed) folder.
+    WorkflowFolder,
+    /// An absolute or `~` path, a path with `..`, or one with a `{placeholder}` (decided by data
+    /// at run time and able to bring in `/` or `..`): it can name any file the user can write.
+    Anywhere,
+}
+
+/// How the file is combined with what is already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteKind {
+    Overwrite,
+    Append,
+    Prepend,
+}
+
+/// One Write File object (`alfred.workflow.output.writefile`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileWriteInfo {
+    /// The file name template as written in the workflow (cut at 500 characters).
+    pub path: String,
+    pub place: WritePlace,
+    pub kind: WriteKind,
+    /// The path contains a `{placeholder}`: part of it is decided at run time.
+    pub dynamic: bool,
+    /// The object may create missing folders on the way.
+    pub creates_folders: bool,
+}
+
+impl FileWriteInfo {
+    /// True when the target is not confined to the workflow's own folders.
+    pub fn is_outside(&self) -> bool {
+        self.place == WritePlace::Anywhere
+    }
+
+    /// A short phrase: `appends to ~/.zshenv`, `overwrites notes.txt (its data folder)`.
+    pub fn describe(&self) -> String {
+        let verb = match self.kind {
+            WriteKind::Overwrite => "overwrites",
+            WriteKind::Append => "appends to",
+            WriteKind::Prepend => "prepends to",
+        };
+        let place = match self.place {
+            WritePlace::WorkflowData => " (its data folder)",
+            WritePlace::WorkflowCache => " (its cache folder)",
+            WritePlace::WorkflowFolder => " (its own folder)",
+            WritePlace::Anywhere => "",
+        };
+        let dynamic = if self.dynamic { " (decided at run time)" } else { "" };
+        format!("{verb} {}{place}{dynamic}", self.path)
+    }
+}
 
 /// What a workflow can do on the user's machine, as declared in its object graph.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -46,6 +110,16 @@ pub struct TrustSummary {
     pub external_files: Vec<String>,
     /// External Trigger objects (what other workflows or a URL could start).
     pub external_triggers: usize,
+    /// Write File objects, in graph order: which files the workflow can create, overwrite,
+    /// append to or prepend to. A Write File object is a persistence primitive (a shell start-up
+    /// file, a LaunchAgent plist), so it is reported like a script even though it runs nothing.
+    pub file_writes: Vec<FileWriteInfo>,
+    /// Number of Copy to Clipboard objects: the workflow can replace what the user copied (for
+    /// example with a command that is pasted into a terminal later).
+    ///
+    /// Reveal in Finder (`action.revealfile`) is deliberately *not* listed: it only selects a
+    /// file in a Finder window and neither opens, runs nor changes anything.
+    pub copies_to_clipboard: usize,
 }
 
 impl TrustSummary {
@@ -53,6 +127,23 @@ impl TrustSummary {
     /// notification/clipboard/URL workflows).
     pub fn runs_code(&self) -> bool {
         self.scripts > 0 || !self.terminal_commands.is_empty()
+    }
+
+    /// True when the workflow can write files at all.
+    pub fn writes_files(&self) -> bool {
+        !self.file_writes.is_empty()
+    }
+
+    /// True when the workflow can do none of the things this summary reports: it runs nothing,
+    /// writes nothing, opens no URLs or files, has no triggers and does not touch the clipboard.
+    /// Only then may a UI say that it is harmless.
+    pub fn is_passive(&self) -> bool {
+        !self.runs_code()
+            && self.file_writes.is_empty()
+            && self.open_url_schemes.is_empty()
+            && self.external_files.is_empty()
+            && self.external_triggers == 0
+            && self.copies_to_clipboard == 0
     }
 }
 
@@ -84,6 +175,45 @@ fn is_external(path: &str) -> bool {
             || std::path::Path::new(p)
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir)))
+}
+
+/// Classify a Write File object the way the executor will resolve it (`exec.rs`).
+fn file_write(n: &Node) -> Option<FileWriteInfo> {
+    let raw = n.s("filename");
+    let t = raw.trim();
+    if t.is_empty() {
+        return None; // the executor stops with a warning; nothing is written
+    }
+    let dynamic = t.contains('{');
+    // A placeholder anywhere in the path can bring in `/` or `..` (a typed query, a variable), so
+    // a dynamic path cannot be shown to stay inside the workflow's folders.
+    let anywhere = dynamic
+        || t.starts_with('/')
+        || t.starts_with('~')
+        || std::path::Path::new(t)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    let place = if anywhere {
+        WritePlace::Anywhere
+    } else {
+        match n.i("relativepathmode") {
+            1 => WritePlace::WorkflowCache,
+            2 => WritePlace::WorkflowFolder,
+            _ => WritePlace::WorkflowData,
+        }
+    };
+    let kind = match n.i("type") {
+        1 => WriteKind::Append,
+        2 => WriteKind::Prepend,
+        _ => WriteKind::Overwrite,
+    };
+    Some(FileWriteInfo {
+        path: t.chars().take(MAX_PATH_CHARS).collect(),
+        place,
+        kind,
+        dynamic,
+        creates_folders: n.b("createintermediatefolders"),
+    })
 }
 
 fn interpreter_label(n: &Node) -> String {
@@ -158,6 +288,10 @@ impl Workflow {
                         }
                     }
                 }
+                "alfred.workflow.output.writefile" => {
+                    s.file_writes.extend(file_write(n));
+                }
+                "alfred.workflow.output.clipboard" => s.copies_to_clipboard += 1,
                 KIND_EXTERNAL_TRIGGER => s.external_triggers += 1,
                 _ => {}
             }
@@ -281,9 +415,113 @@ mod tests {
     }
 
     #[test]
+    fn write_file_is_reported_and_is_never_passive() {
+        let s = wf(json!([
+            {"uid": "W", "type": "alfred.workflow.output.writefile", "config": {"filename": "~/.zshenv", "type": 1, "filetext": "x"}},
+        ]))
+        .trust_summary();
+        assert!(!s.runs_code(), "it runs no code ...");
+        assert!(s.writes_files(), "... but it writes files");
+        assert!(!s.is_passive());
+        assert_eq!(s.file_writes.len(), 1);
+        let w = &s.file_writes[0];
+        assert_eq!(
+            (w.path.as_str(), w.place, w.kind, w.dynamic),
+            ("~/.zshenv", WritePlace::Anywhere, WriteKind::Append, false)
+        );
+        assert!(w.is_outside());
+        assert_eq!(w.describe(), "appends to ~/.zshenv");
+    }
+
+    #[test]
+    fn write_file_targets_are_classified_like_the_executor_resolves_them() {
+        let one = |cfg: serde_json::Value| {
+            let s = wf(json!([{"uid": "W", "type": "alfred.workflow.output.writefile", "config": cfg}])).trust_summary();
+            s.file_writes.into_iter().next()
+        };
+        // relative paths land in the workflow's own folders
+        let d = one(json!({"filename": "notes.txt", "relativepathmode": 0})).unwrap();
+        assert_eq!((d.place, d.kind), (WritePlace::WorkflowData, WriteKind::Overwrite));
+        assert_eq!(d.describe(), "overwrites notes.txt (its data folder)");
+        assert_eq!(
+            one(json!({"filename": "a.txt", "relativepathmode": 1})).unwrap().place,
+            WritePlace::WorkflowCache
+        );
+        let f = one(json!({"filename": "run.sh", "relativepathmode": 2, "type": 2, "createintermediatefolders": true})).unwrap();
+        assert_eq!((f.place, f.kind, f.creates_folders), (WritePlace::WorkflowFolder, WriteKind::Prepend, true));
+        // ... unless they climb out, are absolute, or are decided at run time
+        for (name, dynamic) in [
+            ("../../.zshrc", false),
+            ("/Library/LaunchAgents/x.plist", false),
+            ("~/Library/LaunchAgents/x.plist", false),
+            ("{query}", true),
+            ("sub/{query}.txt", true),
+            ("{var:dir}/x", true),
+        ] {
+            let w = one(json!({ "filename": name })).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(w.place, WritePlace::Anywhere, "{name}");
+            assert_eq!(w.dynamic, dynamic, "{name}");
+            assert!(w.is_outside());
+        }
+        assert!(one(json!({"filename": "sub/{query}.txt"})).unwrap().describe().contains("decided at run time"));
+        // no file name: the executor stops, nothing is written
+        assert!(one(json!({"filename": "  "})).is_none());
+        // long templates are cut
+        assert_eq!(one(json!({"filename": "x".repeat(900)})).unwrap().path.chars().count(), 500);
+    }
+
+    #[test]
+    fn clipboard_is_listed_and_reveal_in_finder_is_a_documented_non_capability() {
+        let s = wf(json!([
+            {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {}},
+            {"uid": "C2", "type": "alfred.workflow.output.clipboard", "config": {}},
+        ]))
+        .trust_summary();
+        assert_eq!(s.copies_to_clipboard, 2);
+        assert!(!s.is_passive());
+        let s = wf(json!([
+            {"uid": "R", "type": "alfred.workflow.action.revealfile", "config": {}},
+            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "a", "text": "b"}},
+            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {}},
+        ]))
+        .trust_summary();
+        assert!(s.is_passive(), "reveal, notification and Large Type change nothing");
+    }
+
+    #[test]
+    fn passive_means_none_of_the_reported_capabilities() {
+        assert!(TrustSummary::default().is_passive());
+        let with = |f: fn(&mut TrustSummary)| {
+            let mut t = TrustSummary::default();
+            f(&mut t);
+            t.is_passive()
+        };
+        assert!(!with(|t| t.scripts = 1));
+        assert!(!with(|t| t.terminal_commands.push("ls".into())));
+        assert!(!with(|t| t.open_url_schemes.push("https".into())));
+        assert!(!with(|t| t.external_files.push("~/x".into())));
+        assert!(!with(|t| t.external_triggers = 1));
+        assert!(!with(|t| t.copies_to_clipboard = 1));
+        assert!(!with(|t| t.file_writes.push(FileWriteInfo {
+            path: "a".into(),
+            place: WritePlace::WorkflowData,
+            kind: WriteKind::Overwrite,
+            dynamic: false,
+            creates_folders: false
+        })));
+    }
+
+    #[test]
     fn serializes_for_the_ui() {
         let v = serde_json::to_value(wf(json!([])).trust_summary()).unwrap();
-        for k in ["scripts", "open_url_schemes", "terminal_commands", "external_files"] {
+        for k in [
+            "scripts",
+            "open_url_schemes",
+            "terminal_commands",
+            "external_files",
+            "file_writes",
+            "copies_to_clipboard",
+        ] {
             assert!(v.get(k).is_some(), "{k} missing from {v}");
         }
     }

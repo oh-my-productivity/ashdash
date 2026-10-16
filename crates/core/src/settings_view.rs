@@ -477,44 +477,6 @@ pub fn remove_workflow(paths: &Paths, dir: &Path) -> Result<()> {
     std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))
 }
 
-/// What installing a `.alfredworkflow` would do, learned without installing it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PackagePreview {
-    pub name: String,
-    pub bundle_id: String,
-    pub version: String,
-    pub trust: TrustSummary,
-    /// A workflow with the same identity is installed and would be replaced.
-    pub replaces_installed: bool,
-}
-
-/// Unpack `package` into a private scratch folder (with the importer's limits), describe it and
-/// delete the scratch folder again. Nothing is installed.
-pub fn preview_package(paths: &Paths, package: &Path) -> Result<PackagePreview> {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    use std::os::unix::fs::DirBuilderExt;
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let scratch = std::env::temp_dir().join(format!("ashdash-preview-{}-{n}", std::process::id()));
-    std::fs::DirBuilder::new().mode(0o700).create(&scratch)?;
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(scratch.clone());
-    let dest = workflow::import_package(package, &scratch)?;
-    let wf = Workflow::load(&dest)?;
-    let replaces_installed = dest.file_name().is_some_and(|n| paths.workflows_dir().join(n).exists());
-    Ok(PackagePreview {
-        trust: wf.trust_summary(),
-        name: wf.name,
-        bundle_id: wf.bundle_id,
-        version: wf.version,
-        replaces_installed,
-    })
-}
-
 /// The configuration sheet of `wf` with each entry's current value (`Engine::workflow_settings`
 /// and the preferences window share this).
 pub fn workflow_settings_of(wf: &Workflow, paths: &Paths) -> Vec<crate::engine::WorkflowSetting> {

@@ -316,8 +316,20 @@ impl Engine {
             .collect()
     }
 
+    /// Install a package without asking. UIs that confirm with the user must use
+    /// [`Engine::stage_workflow`] and [`Engine::install_staged`] instead.
     pub fn import_workflow(&self, package: &Path) -> Result<PathBuf> {
-        let dest = workflow::import_package(package, &self.paths.workflows_dir())?;
+        self.install_staged(self.stage_workflow(package)?)
+    }
+
+    /// Open a package once for inspection (see `workflow::stage_package`); nothing is installed.
+    pub fn stage_workflow(&self, package: &Path) -> Result<workflow::StagedPackage> {
+        workflow::stage_package(&self.paths, package)
+    }
+
+    /// Install exactly the tree a [`StagedPackage`](workflow::StagedPackage) described.
+    pub fn install_staged(&self, staged: workflow::StagedPackage) -> Result<PathBuf> {
+        let dest = staged.install()?;
         // The new workflow must be usable as soon as this returns.
         self.reload_content();
         Ok(dest)

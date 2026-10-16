@@ -254,32 +254,42 @@ fn preview_describes_a_package_without_installing_it() {
         "connections": {"K": [{"destinationuid": "S", "modifiers": 0}, {"destinationuid": "U", "modifiers": 0}]}
     });
     let pkg = package(&env, "risky.alfredworkflow", &doc);
-    let before = common::snapshot(&env.paths.data);
-    let pv = sv::preview_package(&env.paths, &pkg).unwrap();
+    let before = common::snapshot(&env.paths.workflows_dir());
+    let staged = env.engine().stage_workflow(&pkg).unwrap();
+    let pv = staged.preview().clone();
     assert_eq!(
         (pv.name.as_str(), pv.bundle_id.as_str(), pv.version.as_str()),
         ("Risky", "risky.b", "2.0")
     );
     assert_eq!(pv.trust.scripts, 1);
     assert_eq!(pv.trust.open_url_schemes, vec!["https"]);
-    assert!(!pv.replaces_installed);
+    assert!(!pv.replaces_installed());
     assert_eq!(
-        common::snapshot(&env.paths.data),
+        common::snapshot(&env.paths.workflows_dir()),
         before,
-        "preview leaves no trace in the data folder"
+        "staging leaves the workflows folder alone"
+    );
+    drop(staged);
+    assert!(
+        common::snapshot(&env.paths.data)
+            .iter()
+            .all(|p| !p.contains(".import-")),
+        "a cancelled staging leaves nothing behind"
     );
 
     // once installed, a second preview says it would replace it
     env.engine().import_workflow(&pkg).unwrap();
-    assert!(sv::preview_package(&env.paths, &pkg).unwrap().replaces_installed);
+    let again = env.engine().stage_workflow(&pkg).unwrap();
+    assert!(again.preview().replaces_installed());
+    drop(again);
 
     // garbage and traversal are rejected like an import
     let bad = env.root.join("bad.alfredworkflow");
     std::fs::write(&bad, b"not a zip").unwrap();
-    assert!(sv::preview_package(&env.paths, &bad).is_err());
+    assert!(env.engine().stage_workflow(&bad).is_err());
     let evil = env.root.join("evil.alfredworkflow");
     write_zip(&evil, &[Entry::File("../escape.txt", b"x".to_vec())]);
-    assert!(sv::preview_package(&env.paths, &evil).is_err());
+    assert!(env.engine().stage_workflow(&evil).is_err());
     assert!(!env.root.join("escape.txt").exists());
 }
 

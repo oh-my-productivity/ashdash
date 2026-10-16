@@ -22,6 +22,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::script::safe_key;
 use super::{TrustSummary, Workflow};
+use crate::config::Paths;
 
 /// Most entries (files, directories, links) an archive may contain.
 pub const MAX_ENTRIES: usize = 2_000;
@@ -35,6 +36,7 @@ const MAX_LINK_TARGET: usize = 4096;
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A staging directory that deletes itself unless [`Staging::keep`] is called.
+#[derive(Debug)]
 struct Staging {
     path: PathBuf,
     armed: bool,
@@ -73,27 +75,18 @@ impl Drop for Staging {
     }
 }
 
-/// Install a `.alfredworkflow` package (a zip archive) under `dest_root`.
+/// Staging directories older than this are leftovers of a crashed run and are removed when the
+/// next package is staged.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Install a `.alfredworkflow` package (a zip archive) under `dest_root`, without asking.
+///
+/// For trusted callers (tests, scripts). Anything that shows the user a confirmation must use
+/// [`stage_package`] and install the [`StagedPackage`] it returns, so that what was confirmed is
+/// what is installed.
 pub fn import_package(package: &Path, dest_root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dest_root)?;
-    let file = std::fs::File::open(package).with_context(|| format!("opening {}", package.display()))?;
-    let mut zip = zip::ZipArchive::new(file).context("not a valid workflow archive")?;
-    let mut staging = Staging::create(dest_root)?;
-    extract_limited(&mut zip, &staging.path)?;
-
-    let wf = Workflow::load(&staging.path).context("archive has no readable info.plist")?;
-    let base: &str = if wf.bundle_id.is_empty() {
-        &wf.name
-    } else {
-        &wf.bundle_id
-    };
-    if base.is_empty() {
-        bail!("workflow has neither a bundle id nor a name");
-    }
-    let dest = dest_root.join(format!("user.workflow.{}", safe_key(base)));
-    install(&staging.path, &dest, dest_root)?;
-    staging.keep();
-    Ok(dest)
+    stage_in(package, dest_root, dest_root, None)?.install()
 }
 
 /// What a package declares about itself and what it can do, read without installing it.
@@ -106,18 +99,116 @@ pub struct PackagePreview {
     pub description: String,
     pub version: String,
     pub trust: TrustSummary,
+    /// The installed workflow this package would replace (same destination folder), if any.
+    pub replaces: Option<InstalledWorkflow>,
+    /// Values saved for this workflow's identity by an earlier install exist and stay in force:
+    /// the new package reads them as its own configuration (they may hold tokens or passwords).
+    /// Only known when the package was staged with [`stage_package`] (which has the data folder).
+    pub saved_settings: bool,
 }
 
-/// Open a `.alfredworkflow` package just far enough to describe it: it is extracted into a
-/// private staging directory under the same limits as [`import_package`], parsed, and removed
-/// again. Nothing is installed and nothing runs, so a UI can ask before calling the importer.
-pub fn preview_package(package: &Path) -> Result<PackagePreview> {
-    let parent = std::env::temp_dir();
+impl PackagePreview {
+    pub fn replaces_installed(&self) -> bool {
+        self.replaces.is_some()
+    }
+}
+
+/// An installed workflow that a package would replace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledWorkflow {
+    pub name: String,
+    pub version: String,
+}
+
+/// A package that has been extracted once into a private staging directory and described. The
+/// bytes of the original file are never read again: [`StagedPackage::install`] moves exactly the
+/// tree that [`StagedPackage::preview`] described into place, so the file can change, vanish or
+/// be swapped after the user was asked without affecting what gets installed. Dropping it
+/// without installing deletes the staging directory.
+#[derive(Debug)]
+pub struct StagedPackage {
+    preview: PackagePreview,
+    staging: Staging,
+    dest: PathBuf,
+    dest_root: PathBuf,
+}
+
+impl StagedPackage {
+    /// What the user is asked about.
+    pub fn preview(&self) -> &PackagePreview {
+        &self.preview
+    }
+
+    /// The folder the workflow will be installed to.
+    pub fn destination(&self) -> &Path {
+        &self.dest
+    }
+
+    /// Move the staged tree into the workflows folder (replacing the installed version, which
+    /// is restored if the swap fails).
+    pub fn install(mut self) -> Result<PathBuf> {
+        if !self.staging.path.is_dir() {
+            bail!("the staged copy of the workflow is gone (it expired or was removed): open the file again");
+        }
+        install(&self.staging.path, &self.dest, &self.dest_root)?;
+        self.staging.keep();
+        Ok(self.dest.clone())
+    }
+}
+
+/// Open a `.alfredworkflow` package once: extract it into a private (0700) staging directory
+/// under the data folder, with the importer's limits, parse and describe it. Nothing is
+/// installed and nothing runs. Install the result with [`StagedPackage::install`] after
+/// confirming; drop it to cancel.
+pub fn stage_package(paths: &Paths, package: &Path) -> Result<StagedPackage> {
+    let root = paths.data.join(STAGING_DIR);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&root)
+        .context("creating the import staging folder")?;
+    sweep_stale(&root);
+    let dest_root = paths.workflows_dir();
+    std::fs::create_dir_all(&dest_root)?;
+    stage_in(package, &root, &dest_root, Some(paths))
+}
+
+/// Name of the staging folder inside the data folder.
+const STAGING_DIR: &str = "import-staging";
+
+fn sweep_stale(root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_STAGING);
+        if old && e.file_name().to_string_lossy().starts_with(".import-") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+fn stage_in(package: &Path, staging_root: &Path, dest_root: &Path, paths: Option<&Paths>) -> Result<StagedPackage> {
     let file = std::fs::File::open(package).with_context(|| format!("opening {}", package.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("not a valid workflow archive")?;
-    let staging = Staging::create(&parent)?; // dropped (and deleted) on every path out
+    let staging = Staging::create(staging_root)?; // dropped (and deleted) on every error path
     extract_limited(&mut zip, &staging.path)?;
-    let wf = Workflow::load(&staging.path).context("archive has no readable info.plist")?;
+
+    let mut wf = Workflow::load(&staging.path).context("archive has no readable info.plist")?;
+    let base: &str = if wf.bundle_id.is_empty() {
+        &wf.name
+    } else {
+        &wf.bundle_id
+    };
+    if base.is_empty() {
+        bail!("workflow has neither a bundle id nor a name");
+    }
+    let dest_name = format!("user.workflow.{}", safe_key(base));
+    let dest = dest_root.join(&dest_name);
+
     let text = |key: &str| -> String {
         plist::Value::from_file(staging.path.join("info.plist"))
             .ok()
@@ -125,13 +216,37 @@ pub fn preview_package(package: &Path) -> Result<PackagePreview> {
             .and_then(|d| d.get(key).and_then(|v| v.as_string().map(str::to_owned)))
             .unwrap_or_default()
     };
-    Ok(PackagePreview {
+    let replaces = match std::fs::symlink_metadata(&dest) {
+        Ok(_) => Some(match Workflow::load(&dest) {
+            Ok(old) => InstalledWorkflow {
+                name: old.name,
+                version: old.version,
+            },
+            Err(_) => InstalledWorkflow {
+                name: dest_name.clone(),
+                version: String::new(),
+            },
+        }),
+        Err(_) => None,
+    };
+    // The saved-values file is named after the installed folder for id-less workflows.
+    wf.id = dest_name;
+    let saved_settings = paths.is_some_and(|p| wf.user_values_file(p).is_file());
+    let preview = PackagePreview {
         name: wf.name.clone(),
         bundle_id: wf.bundle_id.clone(),
         author: text("createdby"),
         description: text("description"),
         version: wf.version.clone(),
         trust: wf.trust_summary(),
+        replaces,
+        saved_settings,
+    };
+    Ok(StagedPackage {
+        preview,
+        staging,
+        dest,
+        dest_root: dest_root.to_path_buf(),
     })
 }
 
@@ -306,6 +421,7 @@ fn check_link(rel: &Path, target: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Paths;
 
     #[test]
     fn links_must_stay_inside() {
@@ -363,39 +479,39 @@ mod tests {
     }
 
     #[test]
-    fn preview_describes_a_package_without_installing_it() {
+    fn staging_describes_a_package_without_installing_it() {
         let root = std::env::temp_dir().join(format!("oa-preview-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let pkg = root.join("sample.alfredworkflow");
         sample_package(&pkg);
-        let before: Vec<_> = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".import-"))
-            .map(|e| e.file_name())
-            .collect();
+        let paths = Paths::under(&root);
 
-        let p = preview_package(&pkg).unwrap();
+        let staged = stage_package(&paths, &pkg).unwrap();
+        let p = staged.preview();
         assert_eq!(p.name, "Preview Sample");
         assert_eq!(p.bundle_id, "test.preview.sample");
         assert_eq!(p.author, "Ann Author");
         assert_eq!(p.description, "Does things");
         assert_eq!(p.trust.scripts, 1);
         assert_eq!(p.trust.open_url_schemes, ["https"]);
+        assert!(p.replaces.is_none() && !p.saved_settings);
+        assert!(!paths.workflows_dir().join("user.workflow.test.preview.sample").exists());
 
-        // the staging directory is gone again (compare to what other tests may have left)
-        let after: Vec<_> = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".import-"))
-            .map(|e| e.file_name())
-            .collect();
-        assert!(after.iter().all(|n| before.contains(n)), "{after:?}");
+        // dropping it deletes the staged copy
+        let staging_root = paths.data.join(STAGING_DIR);
+        assert_eq!(std::fs::read_dir(&staging_root).unwrap().count(), 1);
+        drop(staged);
+        assert_eq!(std::fs::read_dir(&staging_root).unwrap().count(), 0);
 
-        assert!(preview_package(&root.join("missing.alfredworkflow")).is_err());
+        assert!(stage_package(&paths, &root.join("missing.alfredworkflow")).is_err());
         std::fs::write(root.join("junk.alfredworkflow"), b"not a zip").unwrap();
-        assert!(preview_package(&root.join("junk.alfredworkflow")).is_err());
+        assert!(stage_package(&paths, &root.join("junk.alfredworkflow")).is_err());
+        assert_eq!(
+            std::fs::read_dir(&staging_root).unwrap().count(),
+            0,
+            "failed attempts leave nothing behind"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
