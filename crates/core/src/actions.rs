@@ -1645,6 +1645,8 @@ mod tests {
     fn trash_refuses_a_symlink_that_points_at_a_protected_place() {
         let t = Tree::new("trash-evil-link");
         let home = dirs::home_dir().unwrap();
+        // A throw-away HOME has no ~/Library, and a dangling link is trashed by design: make it.
+        std::fs::create_dir_all(home.join("Library")).unwrap();
         let os = FakeOs::default();
         // a harmless-looking name for: the home folder, its parent, a system folder, /, ~/Library
         let mut victims = vec![
