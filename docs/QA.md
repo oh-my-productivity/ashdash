@@ -15,8 +15,8 @@ see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live 
 | `cargo test -p ashdash-core --test scripts_security` | script argument passing, `{query}` escaping, env, graph limits, process lifecycle, `open` helper guards | <1 s |
 | `cargo test -p ashdash-core --test import_staging` | the staged import: the installed bytes equal the previewed bytes even if the package file is swapped meanwhile; replacement and saved-settings notices; Write File and clipboard in the trust summary | <1 s |
 | `cargo test -p ashdash-core --test clipboard_privacy` | concealed/transient/ignored-app copies never reach rows, usage or disk (SEC-19) | <1 s |
-| `cargo test -p ashdash-core --test prefs_core` | the core half of the preferences window: settings view, live `apply_config`, workflow enable/remove/settings, watcher classification | ~2 s |
-| `cargo test -p ashdash-core --test ui_glue_api` | engine APIs used by the actions panel and the import prompt (`actions_for`, buffer, staged install) | <1 s |
+| `cargo test -p ashdash-core --test prefs_core` | the core half of the preferences window: live `apply_config` (providers, web searches and their URL check, restart-required keys, usage switch, clipboard settings), the file watcher, workflow list/enable/remove, package preview, themes, snippet library | ~2 s |
+| `cargo test -p ashdash-core --test ui_glue_api` | engine behaviour behind the launcher glue: "open launcher" outcomes, a Script Filter's running text, Open With listing, Quick Look through the `Os` handle (fake OS) | <1 s |
 | `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON | ~3 s |
 | `cargo test -p ashdash-core --test compat_packages -- --nocapture` | imports every `*.alfredworkflow` bundled in an installed `/Applications/Reference.app` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes) when the reference launcher is not installed | ~1 s |
 
