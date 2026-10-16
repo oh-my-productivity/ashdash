@@ -59,6 +59,51 @@ fn apply_config_applies_web_searches_and_result_count() {
     assert!(titles(&engine, "zork hello").iter().any(|t| t.contains("Zork")));
 }
 
+fn search(keyword: &str, url: &str, fallback: bool) -> ashdash_core::websearch::WebSearch {
+    ashdash_core::websearch::WebSearch {
+        keyword: keyword.into(),
+        title: keyword.into(),
+        url: url.into(),
+        fallback,
+    }
+}
+
+#[test]
+fn web_searches_with_non_web_urls_are_skipped_and_reported() {
+    let env = Env::new("apply-bad-url", &[]);
+    // at start-up (the hand-edited file) ...
+    let mut cfg = env.config();
+    cfg.web_searches = vec![
+        search("ok", "https://example.test/?q={query}", false),
+        search("evil", "file:///Applications/Foo.app/{query}", true),
+    ];
+    let engine = ashdash_core::Engine::new(env.paths.clone(), cfg);
+    let all = |e: &ashdash_core::Engine, q: &str| e.query(q).into_iter().map(|i| i.id).collect::<Vec<_>>();
+    assert!(
+        all(&engine, "evil x").iter().all(|id| !id.starts_with("web:evil")),
+        "{:?}",
+        all(&engine, "evil x")
+    );
+    assert!(!all(&engine, "zzz").contains(&"fallback:evil".to_string()));
+    assert!(all(&engine, "ok x").iter().any(|id| id.starts_with("web:ok")));
+
+    // ... and when applied live (`ashdash config set`, prefs, a hand edit)
+    let mut c = engine.config_now();
+    c.web_searches = vec![
+        search("ssh", "ssh://host/{query}", false),
+        search("fine", "http://example.test/{query}", false),
+    ];
+    let report = engine.apply_config(c);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("ssh"));
+    assert!(all(&engine, "ssh x").iter().all(|id| !id.starts_with("web:ssh")));
+    assert!(all(&engine, "fine x").iter().any(|id| id.starts_with("web:fine")));
+    assert!(
+        engine.apply_config(engine.config_now().clone()).warnings.len() == 1,
+        "still reported"
+    );
+}
+
 #[test]
 fn apply_config_reports_what_needs_a_restart_and_keeps_the_rest_live() {
     let env = Env::new("apply-restart", &[]);

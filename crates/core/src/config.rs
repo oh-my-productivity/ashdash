@@ -53,6 +53,11 @@ impl Paths {
     pub fn workflow_config_dir(&self) -> PathBuf {
         self.data.join("workflow-config")
     }
+    /// Advisory lock serialising read-modify-write cycles of `config.json`
+    /// (see [`Config::edit_locked`]).
+    pub fn config_lock_file(&self) -> PathBuf {
+        self.data.join("run").join("config.lock")
+    }
     pub fn icon_cache(&self) -> PathBuf {
         self.cache.join("icons")
     }
@@ -356,6 +361,31 @@ impl Config {
         Ok(serde_json::from_value(migrate(raw))?)
     }
 
+    /// Read-modify-write of `config.json` under an exclusive advisory `flock` on
+    /// `run/config.lock`, so the preferences window, `ashdash config set` and a theme import
+    /// cannot overwrite each other's edit with a stale copy. The file is read strictly (an
+    /// unreadable file is an error, never replaced by defaults); `edit` runs on a copy and its
+    /// error leaves the file alone; nothing is written when `edit` changed nothing. Returns the
+    /// settings now on disk and `edit`'s result.
+    ///
+    /// Keys in `config.json` that this build does not know are not preserved by a save
+    /// (`Config` has no catch-all); a file from a *newer* config version is refused instead.
+    pub fn edit_locked<T>(
+        paths: &Paths,
+        edit: impl FnOnce(&mut Config) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(Config, T)> {
+        use anyhow::Context;
+        let _lock = ConfigLock::acquire(paths).context("locking config.json")?;
+        let old = Config::load_strict(paths)?;
+        let mut new = old.clone();
+        let out = edit(&mut new)?;
+        if serde_json::to_value(&old)? == serde_json::to_value(&new)? {
+            return Ok((old, out));
+        }
+        new.save(paths).context("saving config.json")?;
+        Ok((new, out))
+    }
+
     /// Writes the current schema version. Refuses to overwrite a file written by a
     /// newer build, which would silently drop settings this build does not know.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
@@ -402,6 +432,34 @@ fn migrate(mut raw: serde_json::Value) -> serde_json::Value {
         obj.insert("version".into(), v.into());
     }
     raw
+}
+
+/// Holds the exclusive `flock` on [`Paths::config_lock_file`] until dropped (or the process ends).
+pub struct ConfigLock(std::fs::File);
+
+impl ConfigLock {
+    /// Wait for the lock. Other holders are short read-modify-write cycles.
+    pub fn acquire(paths: &Paths) -> std::io::Result<ConfigLock> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let file = paths.config_lock_file();
+        if let Some(dir) = file.parent() {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&file)?;
+        f.lock()?;
+        Ok(ConfigLock(f))
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -454,6 +512,93 @@ mod tests {
     }
 
     use serde_json::json;
+
+    fn tmp_paths(tag: &str) -> Paths {
+        let root = std::env::temp_dir().join(format!("oa-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Paths::under(&root)
+    }
+
+    #[test]
+    fn concurrent_locked_edits_do_not_lose_updates() {
+        let paths = tmp_paths("lock-threads");
+        let start = Config::default().max_results;
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let paths = paths.clone();
+                std::thread::spawn(move || {
+                    Config::edit_locked(&paths, |c| {
+                        let n = c.max_results;
+                        // widen the race window between read and write
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                        c.max_results = n + 1;
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(Config::load_strict(&paths).unwrap().max_results, start + 12);
+        assert_eq!(mode(&paths.config_lock_file()), 0o600);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn edit_locked_writes_nothing_on_error_or_no_change() {
+        let paths = tmp_paths("lock-nowrite");
+        assert!(Config::edit_locked(&paths, |_| Ok(())).is_ok());
+        assert!(!paths.config_file().exists(), "unchanged settings are not written");
+        let r: anyhow::Result<(Config, ())> = Config::edit_locked(&paths, |c| {
+            c.max_results = 3;
+            anyhow::bail!("refused")
+        });
+        assert!(r.is_err());
+        assert!(!paths.config_file().exists());
+        // an unreadable file is an error, never replaced by defaults
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), b"{ nope").unwrap();
+        assert!(
+            Config::edit_locked(&paths, |c| {
+                c.max_results = 4;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(paths.config_file()).unwrap(), b"{ nope");
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    /// The lock is a real `flock`: another process cannot take it while we hold it.
+    #[test]
+    fn the_lock_excludes_other_processes() {
+        if let Ok(dir) = std::env::var("OA_CFG_LOCK_CHILD") {
+            let paths = Paths::under(Path::new(&dir));
+            let f = std::fs::File::open(paths.config_lock_file()).unwrap();
+            let blocked = matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+            std::process::exit(if blocked { 0 } else { 7 });
+        }
+        let paths = tmp_paths("lock-proc");
+        let guard = ConfigLock::acquire(&paths).unwrap();
+        let root = paths.data.parent().unwrap().to_path_buf();
+        let run = || {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::tests::the_lock_excludes_other_processes",
+                    "--nocapture",
+                ])
+                .env("OA_CFG_LOCK_CHILD", &root)
+                .status()
+                .unwrap()
+        };
+        assert!(run().success(), "child could take the lock while it was held");
+        drop(guard);
+        assert_eq!(run().code(), Some(7), "child could not take a released lock");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn mode(p: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;

@@ -37,8 +37,9 @@ impl Backend for EngineHost {
 
 impl UrlHost for EngineHost {
     fn external_trigger(&self, bundle: &str, name: &str) -> Option<String> {
+        // The folders in force now, not those of start-up (live reload can change them).
         let mut roots = vec![self.engine.paths.workflows_dir()];
-        roots.extend(self.engine.config.workflow_dirs.iter().cloned());
+        roots.extend(self.engine.config_now().workflow_dirs.iter().cloned());
         workflow::load_all(&roots)
             .into_iter()
             .find(|w| {
@@ -98,5 +99,63 @@ pub fn start(engine: &Arc<Engine>, primary: Option<ipc::Primary>) -> Started {
     Started {
         _server: server,
         automation: Automation::new(inbox, hotkeys, Some(dispatcher)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ashdash_core::{Config, Paths};
+
+    struct NoOs;
+    impl ashdash_core::actions::Os for NoOs {
+        fn run(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<()> {
+            panic!("nothing may run")
+        }
+        fn output(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn spawn(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
+            panic!("nothing may run")
+        }
+    }
+
+    /// `ashdash://trigger` consent looks workflows up in the folders in force now.
+    #[test]
+    fn external_trigger_lookup_follows_workflow_dirs_changes() {
+        let root = std::env::temp_dir().join(format!("oa-auto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let extra = root.join("extra");
+        std::fs::create_dir_all(extra.join("wf")).unwrap();
+        std::fs::write(
+            extra.join("wf").join("info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+            <key>name</key><string>Late</string><key>bundleid</key><string>late.b</string>
+            <key>objects</key><array><dict><key>uid</key><string>T</string>
+            <key>type</key><string>alfred.workflow.trigger.external</string>
+            <key>config</key><dict><key>triggerid</key><string>go</string></dict></dict></array>
+            <key>connections</key><dict/></dict></plist>"#,
+        )
+        .unwrap();
+        let config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        let engine = Arc::new(Engine::with_env(
+            Paths::under(&root),
+            config,
+            Box::new(NoOs),
+            root.join("home"),
+        ));
+        let host = EngineHost {
+            engine: Arc::clone(&engine),
+        };
+        assert_eq!(host.external_trigger("late.b", "go"), None);
+        let mut c = engine.config_now();
+        c.workflow_dirs = vec![extra];
+        engine.apply_config(c);
+        assert_eq!(host.external_trigger("late.b", "go").as_deref(), Some("Late"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

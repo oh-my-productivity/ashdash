@@ -28,7 +28,7 @@
 //! take hundreds of milliseconds and the Carbon callback runs on the main
 //! thread.
 //!
-//! Firing goes through `Engine::run_node(bundle, node_uid, arg, vars)`, which starts the
+//! Firing goes through `Engine::run_node(workflow_id, node_uid, arg, vars)`, which starts the
 //! workflow at the hotkey node and records nothing in `usage.json`.
 
 use std::collections::{BTreeMap, HashMap};
@@ -307,7 +307,19 @@ pub fn spec_from_node(wf: &Workflow, uid: &str, config: &serde_json::Value) -> R
 /// has a key assigned but cannot be used.
 pub fn collect(workflows: &[Workflow]) -> (Vec<HotkeySpec>, Vec<String>) {
     let (mut specs, mut warnings) = (Vec::new(), Vec::new());
+    let mut seen_ids = std::collections::HashSet::new();
     for wf in workflows.iter().filter(|w| !w.disabled) {
+        // Hotkeys fire by workflow id (directory name); two enabled copies with the
+        // same directory name in different roots cannot be told apart.
+        if !seen_ids.insert(wf.id.as_str()) {
+            if wf.nodes.iter().any(|n| n.kind == KIND_HOTKEY) {
+                warnings.push(format!(
+                    "workflow '{}': another enabled workflow folder is also named '{}'; its hotkeys are ignored",
+                    wf.name, wf.id
+                ));
+            }
+            continue;
+        }
         for node in wf.nodes.iter().filter(|n| n.kind == KIND_HOTKEY) {
             match spec_from_node(wf, &node.uid, &node.config) {
                 Ok(Some(s)) => specs.push(s),
@@ -459,6 +471,25 @@ impl WorkflowHotkeys {
         }
     }
 
+    /// Replace the folders searched for workflows (the managed folder is always kept first).
+    /// Takes effect at the next [`reload`](Self::reload).
+    pub fn set_extra_dirs(&mut self, paths: &Paths, extra_dirs: &[PathBuf]) {
+        let mut roots = vec![paths.workflows_dir()];
+        roots.extend(extra_dirs.iter().cloned());
+        self.roots = roots;
+    }
+
+    /// The launcher's own hotkey as registered right now; workflow hotkeys may not take it.
+    pub fn set_launcher_hotkey(&mut self, main_hotkey: Option<HotKey>) {
+        self.reserved = main_hotkey.into_iter().collect();
+    }
+
+    /// The folders searched and the reserved launcher hotkeys (for tests and diagnostics).
+    #[cfg(test)]
+    pub fn context(&self) -> (&[PathBuf], &[HotKey]) {
+        (&self.roots, &self.reserved)
+    }
+
     /// Re-read the workflows and replace all registrations.
     pub fn reload(&mut self, manager: Option<&GlobalHotKeyManager>) {
         if manager.is_none() && self.own_manager.is_none() {
@@ -538,7 +569,7 @@ impl HotkeyHost for AppHost {
     }
 
     fn run_node(&self, spec: &HotkeySpec, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
-        self.engine.run_node(&spec.bundle_id, &spec.node_uid, arg, vars)
+        self.engine.run_node(&spec.workflow_id, &spec.node_uid, arg, vars)
     }
 
     fn show_launcher(&self, query: Option<String>) {
@@ -751,6 +782,72 @@ mod tests {
         assert_eq!(specs[0].node_uid, "H1");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bad") && warnings[0].contains("52"));
+    }
+
+    #[test]
+    fn collect_keys_specs_by_workflow_id_not_bundle_id() {
+        let mk = |dir: &str, bundle: &str| {
+            let doc = json!({"name": dir, "bundleid": bundle, "objects": [
+                hk("H1", json!({"hotkey": 1, "hotmod": NS_COMMAND}))]});
+            Workflow::from_json(std::path::Path::new("/nonexistent"), dir, &doc).unwrap()
+        };
+        // empty bundle id and a shared bundle id: both still carry their own directory id
+        let (specs, warnings) = collect(&[mk("a", ""), mk("b", "shared"), mk("c", "shared")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let ids: Vec<_> = specs.iter().map(|s| s.workflow_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // the same directory name in two roots is ambiguous: the second copy is refused loudly
+        let (specs, warnings) = collect(&[mk("dup", "x"), mk("dup", "y")]);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].bundle_id, "x");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dup"));
+    }
+
+    struct NoHost;
+    impl HotkeyHost for NoHost {
+        fn frontmost_bundle(&self) -> Option<String> {
+            None
+        }
+        fn read_argument(&self, _: ArgSource) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn run_node(&self, _: &HotkeySpec, _: &str, _: BTreeMap<String, String>) -> Outcome {
+            Outcome::Done
+        }
+        fn show_launcher(&self, _: Option<String>) {}
+        fn report(&self, _: Outcome) {}
+    }
+
+    #[test]
+    fn folders_and_launcher_hotkey_follow_live_changes() {
+        let paths = Paths::under(&std::env::temp_dir().join("oa-hk-ctx"));
+        let old = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::Space);
+        let mut w = WorkflowHotkeys::new(Arc::new(NoHost), &paths, &[PathBuf::from("/old")], Some(old));
+        assert_eq!(w.context().0, [paths.workflows_dir(), PathBuf::from("/old")]);
+
+        // folders added, removed
+        w.set_extra_dirs(&paths, &[PathBuf::from("/new1"), PathBuf::from("/new2")]);
+        assert_eq!(
+            w.context().0,
+            [paths.workflows_dir(), PathBuf::from("/new1"), PathBuf::from("/new2")]
+        );
+        w.set_extra_dirs(&paths, &[]);
+        assert_eq!(w.context().0, [paths.workflows_dir()]);
+
+        // the launcher moved to Cmd+J: that key is now off limits, the old one is free
+        let new = HotKey::new(Some(Modifiers::SUPER), Code::KeyJ);
+        w.set_launcher_hotkey(Some(new));
+        let (plan, warnings) = plan_registrations(
+            vec![
+                spec("takes-new", Code::KeyJ, Modifiers::SUPER),
+                spec("takes-old", Code::Space, Modifiers::ALT | Modifiers::SHIFT),
+            ],
+            w.context().1,
+        );
+        let names: Vec<_> = plan.iter().map(|(_, s)| s.workflow_name.as_str()).collect();
+        assert_eq!(names, ["takes-old"]);
+        assert!(warnings[0].contains("launcher hotkey"));
     }
 
     fn spec(name: &str, key: Code, mods: Modifiers) -> HotkeySpec {

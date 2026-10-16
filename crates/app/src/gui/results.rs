@@ -143,12 +143,7 @@ impl LauncherApp {
         if !self.query.is_empty() {
             return None;
         }
-        let raw = &self.engine.config.hotkey;
-        let shown = keynames::display_hotkey(raw).unwrap_or_else(|| raw.clone());
-        Some(format!(
-            "Hotkey {shown} is unavailable ({}). Change \"hotkey\" in config.json.",
-            short_error(err)
-        ))
+        Some(hotkey_hint(&self.engine, err))
     }
 
     pub(super) fn draw_hint_row(&self, ui: &mut egui::Ui, t: &Theme, text: &str) {
@@ -199,6 +194,17 @@ impl LauncherApp {
     }
 }
 
+/// The notice for a launcher hotkey that could not be registered. Names the hotkey in force
+/// *now* (a live reload may have changed it), not the one from start-up.
+fn hotkey_hint(engine: &ashdash_core::Engine, err: &str) -> String {
+    let raw = engine.config_now().hotkey;
+    let shown = keynames::display_hotkey(&raw).unwrap_or(raw);
+    format!(
+        "Hotkey {shown} is unavailable ({}). Change \"hotkey\" in config.json.",
+        short_error(err)
+    )
+}
+
 /// First sentence-ish part of a library error (some append "please report this to ...").
 fn short_error(e: &str) -> &str {
     e.split(", if you").next().unwrap_or(e).trim()
@@ -206,7 +212,46 @@ fn short_error(e: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::short_error;
+    use super::{hotkey_hint, short_error};
+
+    struct NoOs;
+    impl ashdash_core::actions::Os for NoOs {
+        fn run(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<()> {
+            panic!("nothing may run")
+        }
+        fn output(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn spawn(&self, _: &ashdash_core::actions::Cmd) -> anyhow::Result<Box<dyn ashdash_core::actions::Process>> {
+            panic!("nothing may run")
+        }
+    }
+
+    #[test]
+    fn the_hotkey_hint_names_the_hotkey_now_in_force() {
+        let root = std::env::temp_dir().join(format!("oa-hint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let cfg = ashdash_core::Config {
+            app_dirs: vec![],
+            hotkey: "ctrl+alt+KeyJ".into(),
+            ..Default::default()
+        };
+        let e = ashdash_core::Engine::with_env(
+            ashdash_core::Paths::under(&root),
+            cfg.clone(),
+            Box::new(NoOs),
+            root.join("home"),
+        );
+        let first = hotkey_hint(&e, "taken");
+        let mut later = cfg;
+        later.hotkey = "ctrl+alt+KeyK".into();
+        e.apply_config(later);
+        let second = hotkey_hint(&e, "taken");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_ne!(first, second, "the hint kept showing the start-up hotkey");
+        assert!(second.contains('K') && !second.contains('J'), "{second}");
+    }
 
     #[test]
     fn trims_library_boilerplate() {

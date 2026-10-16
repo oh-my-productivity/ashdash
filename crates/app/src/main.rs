@@ -217,10 +217,10 @@ fn config_command(paths: &Paths, args: &[String]) -> Result<()> {
             if args.len() > 3 {
                 bail!("{USAGE}\n(quote values that contain spaces)");
             }
-            // Strict load: never overwrite a settings file we could not read.
-            let mut config = Config::load_strict(paths)?;
-            settings_view::set(&mut config, key, value)?;
-            config.save(paths).context("saving the settings")?;
+            // Strict load under the config lock: never overwrite a settings file we could not
+            // read, and never lose an edit made at the same time by the preferences window.
+            let (config, ()) = Config::edit_locked(paths, |config| settings_view::set(config, key, value))
+                .context("saving the settings")?;
             println!("{key} = {}", settings_view::get(&config, key)?);
             Ok(())
         }

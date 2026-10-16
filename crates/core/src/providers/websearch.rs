@@ -2,9 +2,19 @@
 
 use super::{Placement, Provider, ProviderOutput, QueryCtx, strip_keyword};
 use crate::item::{Action, Icon, Item};
+use crate::websearch::WebSearch;
 
 /// `<keyword> <terms>` opens the search directly. Exclusive once terms exist.
-pub struct WebKeywordProvider;
+pub struct WebKeywordProvider {
+    searches: Vec<WebSearch>,
+}
+
+impl WebKeywordProvider {
+    /// `searches` must already have passed `websearch::checked`.
+    pub fn new(searches: Vec<WebSearch>) -> Self {
+        WebKeywordProvider { searches }
+    }
+}
 
 impl Provider for WebKeywordProvider {
     fn id(&self) -> &'static str {
@@ -12,7 +22,7 @@ impl Provider for WebKeywordProvider {
     }
 
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput {
-        for ws in &ctx.engine_state.config.web_searches {
+        for ws in &self.searches {
             if let Some(rest) = strip_keyword(ctx.query, &ws.keyword)
                 && !rest.is_empty()
             {
@@ -25,7 +35,16 @@ impl Provider for WebKeywordProvider {
 
 /// Searches flagged `fallback` close the list. This is a registry provider
 /// with [`Placement::Trailing`]: the engine appends its output after ranking.
-pub struct FallbackProvider;
+pub struct FallbackProvider {
+    searches: Vec<WebSearch>,
+}
+
+impl FallbackProvider {
+    /// `searches` must already have passed `websearch::checked`.
+    pub fn new(searches: Vec<WebSearch>) -> Self {
+        FallbackProvider { searches }
+    }
+}
 
 impl Provider for FallbackProvider {
     fn id(&self) -> &'static str {
@@ -38,10 +57,8 @@ impl Provider for FallbackProvider {
 
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput {
         let q = ctx.query.trim();
-        let items = ctx
-            .engine_state
-            .config
-            .web_searches
+        let items = self
+            .searches
             .iter()
             .filter(|w| w.fallback)
             .enumerate()

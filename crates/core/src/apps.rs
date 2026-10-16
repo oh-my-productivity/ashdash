@@ -41,19 +41,21 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<AppEntry> {
 
 /// Locate the `.icns` file of an app bundle from its Info.plist.
 fn icns_path(app: &Path) -> Option<PathBuf> {
-    let resources = app.join("Contents/Resources");
     let info = plist::Value::from_file(app.join("Contents/Info.plist")).ok()?;
     let name = info.as_dictionary()?.get("CFBundleIconFile")?.as_string()?.to_string();
     // SEC-17: `CFBundleIconFile` is a plain file name inside Resources; anything with a
     // separator, `..` or an absolute path (and any symlink) is refused.
-    let mut rel = PathBuf::from(&name);
-    if rel.extension().is_none() {
-        rel.set_extension("icns");
+    // The bundle is the confinement root and `Contents/Resources/<name>` the relative path, so
+    // `Contents` and `Resources` themselves are checked: a `Resources` that is a symlink to
+    // some other folder must not make that folder's images resolvable.
+    let mut file = PathBuf::from(&name);
+    if file.extension().is_none() {
+        file.set_extension("icns");
     }
     if name.contains(['/', '\\', '\0']) {
         return None;
     }
-    crate::confine::confined_file(&resources, &rel)
+    crate::confine::confined_file(app, &Path::new("Contents/Resources").join(file))
 }
 
 /// Convert the app's icon to a small PNG (cached) using the system `sips`
@@ -83,7 +85,7 @@ pub fn app_icon_png(app: &Path, cache_dir: &Path) -> Option<PathBuf> {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let status = Command::new("sips")
+    let status = Command::new(crate::actions::system_program(std::ffi::OsStr::new("sips")))
         .args(["-s", "format", "png", "-Z", "96"])
         .arg(&icns)
         .arg("--out")
@@ -183,6 +185,20 @@ mod tests {
         // ...while a normal icon, with or without extension, resolves
         std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
         assert_eq!(icns_path(&app), Some(app.join("Contents/Resources/icon.icns")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_resources_folder_does_not_expose_other_images() {
+        let root = std::env::temp_dir().join(format!("oa-apps-resym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("photo.icns"), b"x").unwrap();
+        let app = fake_app(&root, "photo");
+        std::fs::remove_dir_all(app.join("Contents/Resources")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, app.join("Contents/Resources")).unwrap();
+        assert_eq!(icns_path(&app), None, "Resources is a link to another folder");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

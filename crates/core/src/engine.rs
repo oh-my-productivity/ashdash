@@ -51,6 +51,8 @@ pub struct Engine {
     os: Arc<dyn Os>,
     /// Background reload bookkeeping (see [`Engine::reload`]).
     reload_gate: Arc<Mutex<ReloadGate>>,
+    /// Same bookkeeping for the workflow/snippet-only refresh started by [`Engine::apply_config`].
+    content_gate: Arc<Mutex<ContentGate>>,
     /// Serialises writes of per-workflow settings files.
     settings_lock: Mutex<()>,
     /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
@@ -68,6 +70,9 @@ struct Live {
 pub struct ApplyReport {
     /// Setting names that only take effect after a restart.
     pub restart_required: Vec<&'static str>,
+    /// Parts of the new settings that were left out because they are not allowed (a web
+    /// search with a non-web URL, say); everything else was applied.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Default)]
@@ -75,6 +80,15 @@ struct ReloadGate {
     running: bool,
     /// Another reload was requested while one was running.
     again: bool,
+}
+
+/// Bookkeeping of the background workflow/snippet refresh: the roots of the *latest* request
+/// win, so a refresh queued behind a running one scans the newest folder list.
+#[derive(Default)]
+struct ContentGate {
+    running: bool,
+    again: bool,
+    roots: Vec<PathBuf>,
 }
 
 /// Everything a reload needs, owned so it can run on a background thread.
@@ -179,6 +193,7 @@ impl Engine {
             os: Arc::clone(&deps.os),
             deps,
             reload_gate: Arc::default(),
+            content_gate: Arc::default(),
             settings_lock: Mutex::new(()),
             clip_env: Box::new(clipboard::command::SystemEnv::default()),
         };
@@ -229,9 +244,47 @@ impl Engine {
         }
     }
 
-    /// Whether a background [`Engine::reload`] is still working.
+    /// Whether a background [`Engine::reload`] or content refresh is still working.
     pub fn reload_pending(&self) -> bool {
-        self.reload_gate.lock().unwrap().running
+        self.reload_gate.lock().unwrap().running || self.content_gate.lock().unwrap().running
+    }
+
+    /// Like [`Engine::reload_content`] but on a background thread: returns at once, requests
+    /// made while a refresh runs are merged into one extra pass over the newest folder list, and
+    /// [`Engine::reload_pending`] reports it. Queries keep using the old workflows meanwhile.
+    pub fn reload_content_background(&self) {
+        let job = self.reload_job();
+        {
+            let mut gate = self.content_gate.lock().unwrap();
+            gate.roots = job.workflow_roots.clone();
+            if gate.running {
+                gate.again = true;
+                return;
+            }
+            gate.running = true;
+        }
+        let gate = Arc::clone(&self.content_gate);
+        let worker_job = job;
+        let spawned = std::thread::Builder::new()
+            .name("ashdash-reload-content".into())
+            .spawn(move || {
+                let mut job = worker_job;
+                loop {
+                    job.run_content();
+                    let mut g = gate.lock().unwrap();
+                    if g.again {
+                        g.again = false;
+                        job.workflow_roots = g.roots.clone();
+                        continue;
+                    }
+                    g.running = false;
+                    break;
+                }
+            });
+        if spawned.is_err() {
+            self.content_gate.lock().unwrap().running = false;
+            self.reload_content();
+        }
     }
 
     /// Re-scan applications, workflows and snippets and return when done
@@ -278,13 +331,16 @@ impl Engine {
         if new.app_dirs != old.app_dirs {
             report.restart_required.push("app_dirs");
         }
-        let providers = providers::registry_for(&new, &self.deps);
+        let (providers, warnings) = providers::registry_checked(&new, &self.deps);
+        report.warnings = warnings;
         new.clipboard.apply(&mut self.clipboard.lock().unwrap());
         self.usage.lock().unwrap().set_enabled(new.learn_usage);
         let workflows_moved = new.workflow_dirs != old.workflow_dirs;
         *self.live.write().unwrap() = Some(Arc::new(Live { config: new, providers }));
         if workflows_moved {
-            self.reload_content();
+            // The folder scan can be slow and this runs on the window thread: refresh in the
+            // background (see `reload_pending`); queries use the old workflows until it lands.
+            self.reload_content_background();
         }
         report
     }
@@ -546,11 +602,18 @@ impl Engine {
     /// Start an enabled workflow at one of its objects (a hotkey, say): `arg` and `vars` are
     /// what that object would have produced. Unlike [`Engine::execute`] this records nothing
     /// in the usage table.
-    pub fn run_node(&self, bundle_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
+    ///
+    /// `workflow_id` is the workflow's directory identity (`Workflow::id`), not its bundle
+    /// id: bundle ids may be empty or shared by copies in several roots.
+    ///
+    /// Callers must derive `node_uid` from an installed workflow's own objects (as the
+    /// hotkey registry does); any object kind is accepted, so this must never be reachable
+    /// with a uid taken from outside input (URL scheme, IPC, AppleScript).
+    pub fn run_node(&self, workflow_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
         let effects = {
             let wfs = self.workflows.read().unwrap();
-            let Some(wf) = wfs.iter().find(|w| w.bundle_id == bundle_id && !w.disabled) else {
-                return Outcome::Error(format!("no enabled workflow with bundle id '{bundle_id}'"));
+            let Some(wf) = wfs.iter().find(|w| w.id == workflow_id && !w.disabled) else {
+                return Outcome::Error(format!("no enabled workflow '{workflow_id}'"));
             };
             if !wf.has_node(node_uid) {
                 return Outcome::Error(format!("workflow '{}' has no object '{node_uid}'", wf.name));
@@ -679,10 +742,15 @@ fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// A command for a macOS system tool, by absolute path (see `actions::system_program`).
+fn sys_command(name: &str) -> Command {
+    Command::new(actions::system_program(std::ffi::OsStr::new(name)))
+}
+
 pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
     let s = p.to_string_lossy();
     no_dash(&s, "path")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = with {
         no_dash(app, "application")?;
         c.arg("-a").arg(app);
@@ -692,12 +760,12 @@ pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
 
 pub fn reveal(p: &Path) -> Result<()> {
     no_dash(&p.to_string_lossy(), "path")?;
-    run_status(Command::new("open").arg("-R").arg(p), "reveal")
+    run_status(sys_command("open").arg("-R").arg(p), "reveal")
 }
 
 pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
     no_dash(url, "URL")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = browser {
         no_dash(app, "browser")?;
         c.arg("-a").arg(app);
@@ -706,7 +774,7 @@ pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    let mut child = sys_command("pbcopy").stdin(Stdio::piped()).spawn()?;
     child.stdin.take().expect("piped stdin").write_all(text.as_bytes())?;
     if !child.wait()?.success() {
         bail!("pbcopy failed");
@@ -717,7 +785,7 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
 /// `osascript -e <line>... -- <arg>...`. The `--` is what makes the arguments data: without it a
 /// first argument beginning with `-e` is parsed as one more script fragment (SEC-01).
 fn osascript_command(lines: &[&str], args: &[&str]) -> Command {
-    let mut c = Command::new("osascript");
+    let mut c = sys_command("osascript");
     for l in lines {
         c.arg("-e").arg(l);
     }
@@ -1476,6 +1544,42 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn apply_config_with_new_workflow_dirs_does_not_scan_on_the_calling_thread() {
+        let (e, root) = engine("apply-bg");
+        let extra = root.join("extra-workflows");
+        std::fs::create_dir_all(extra.join("copy")).unwrap();
+        let doc = json!({"name": "Extra", "bundleid": "extra.b", "objects": [], "connections": {}});
+        json_to_plist(&doc)
+            .to_file_xml(extra.join("copy").join("info.plist"))
+            .unwrap();
+        let e = Arc::new(e);
+        // Hold the workflow list so a synchronous scan could never finish its swap.
+        let guard = e.workflows.write().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&e);
+        std::thread::spawn(move || {
+            let mut c = worker.config_now();
+            c.workflow_dirs = vec![extra];
+            worker.apply_config(c);
+            let _ = tx.send(());
+        });
+        let returned = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(guard);
+        assert!(returned, "apply_config waited for the workflow rescan");
+        assert!(e.reload_pending() || e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        wait_until("the background refresh", || !e.reload_pending());
+        assert!(e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        // removing the folder drops its workflows again
+        let mut c = e.config_now();
+        c.workflow_dirs.clear();
+        e.apply_config(c);
+        wait_until("the second refresh", || {
+            !e.reload_pending() && !e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra")
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
