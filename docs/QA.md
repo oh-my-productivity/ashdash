@@ -82,6 +82,8 @@ The manual checklist below is scripted as far as a VM allows. Everything runs **
 | `qa/pkg-install.sh` | fresh clone: `build-app.sh` + `make-dmg.sh`, quarantined DMG, copy to /Applications, Gatekeeper switched on, the refusal dialog, "Open Anyway", `xattr -dr`, first launch with no TCC rows for the app, login item, `ashdash://prefs`, the first Automation / Accessibility prompts |
 | `qa/checklist.sh [section...]` | sections 3.1-3.9, 3.11, the Wave 4/5 behaviours and the "known unverified" items; one `result id PASS/FAIL/BLOCKED/NEEDS-OWNER evidence` line per check, a tsv in `$QA_ART/results.tsv` |
 | `qa/soak.sh [seconds] [interval]` | show, type, hide every 30 s for 2 h; footprint, RSS, CPU time, threads and open files every 5 minutes; crash reports; hotkey check at the end |
+| `qa/prep.sh` | grants, `build-app.sh`, install to /Applications (no quarantine): the starting point of `checklist.sh` and `soak.sh` in a fresh clone |
+| `qa/verify-tab.sh`, `qa/repro-placeholder.sh`, `qa/sleep.sh` | single-purpose re-checks: Tab on an application row, the Wave 5 "placeholder with results" screenshot (40 trials), `pmset displaysleepnow` / `sleepnow` and the hotkey |
 | `qa/report.py` | merges result files into the tables of `docs/qa-runs/<run>.md` |
 | `qa/lib.sh`, `qa/qa-tool.swift`, `qa/ocr.swift`, `qa/fixtures.py` | helpers: dialogs read through the accessibility tree, window listing, held keys with the auto-repeat flag, pasteboard with the nspasteboard.org marker types, a seeded data folder (workflows, snippets, files) |
 
