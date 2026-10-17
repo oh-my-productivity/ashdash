@@ -71,7 +71,9 @@ click_button CoreServicesUIAgent Done; sleep 2
 [ -z "$(running)" ] && result PKG-08 PASS "after 'Done' the app is not running" || result PKG-08 FAIL "app still running after Done"
 
 # Finder's File > Open is what the right-click > Open menu item does on macOS 15 (the Control-click bypass was removed in 15.0)
-wd 20 osascript -e 'tell application "Finder" to select (POSIX file "/Applications/Ashdash.app" as alias)' >/dev/null
+wd 20 osascript -e 'tell application "Finder" to select (POSIX file "/Applications/Ashdash.app" as alias)' >/dev/null &
+fpid=$!
+consent Allow 6 >/dev/null; wait "$fpid" 2>/dev/null
 wd 20 osascript -e 'tell application "System Events" to tell process "Finder" to click menu item "Open" of menu "File" of menu bar 1' >/dev/null
 d=$(wait_dialog "Not Opened|Open Anyway" 15)
 [ -n "$d" ] && result PKG-09 PASS "Finder File > Open (same command as right-click > Open) is refused with the same dialog: $d" || result PKG-09 FAIL "no dialog from Finder > Open"
@@ -125,6 +127,7 @@ else
   result PKG-12 FAIL "no confirm dialog after Open Anyway; app running: ${p:-no}"
 fi
 stop_app
+click_button CoreServicesUIAgent Done; click_button CoreServicesUIAgent Done; click_button CoreServicesUIAgent "Open Anyway" 2>/dev/null; stop_app
 
 # ---- 5. the documented terminal route: xattr -dr -------------------------------------------------------------------------------------
 quarantine "$APP"
