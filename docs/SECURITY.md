@@ -723,3 +723,6 @@ The ids `SEC-R5-nn` are the item numbers of that review.
 - **SEC-R5-08 (item 10)** `load_all` no longer sweeps. `workflow::sweep_interrupted_installs(own_root)` is called by the engine's content reload for the app's own workflows folder only (first root, built by
   `Engine::reload_job`) and by `stage_package` (as before); roots from `workflow_dirs` (a synced reference launcher folder, a read-only share) are only read. Amends 9e, which said the sweep ran on every `load_all` of a folder.
   Test: `only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs` (tests/prefs_core.rs: a writable and a read-only extra root keep their stale leftovers, the own folder's lost workflow is put back).
+- **SEC-R5-09 (item 8)** `Theme::load` (the `theme` setting, `<data>/themes/`, the daemon applying a theme, `ashdash://theme?name=`) reads up to `MAX_INSTALLED_THEME_BYTES` = 8 MiB; `Theme::load_for_install`
+  (`ashdash theme <file>` on the command line) and the Finder/`import_theme` paths (`read_limited(.., MAX_THEME_BYTES)`) keep 2 MiB. The probe (SEC-50, SEC-R5-02) bounds nesting and the number of values, so the larger allowance
+  adds memory (at most 8 MiB read, then the parsed tree) but no new way to exhaust the stack. Test: `an_installed_theme_may_be_bigger_than_one_offered_for_installation`. Upgrade note: `CHANGELOG.md`, `docs/release-notes/v0.1.0.md`.

@@ -11,8 +11,13 @@ use anyhow::{Context, Result, bail};
 
 pub type Rgba = [u8; 4];
 
-/// Themes are small property lists; anything bigger is refused before it is parsed.
+/// Themes are small property lists; a file offered for **installation** (Finder, `ashdash theme`,
+/// the preferences window) that is bigger is refused before it is parsed.
 pub const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
+/// What [`Theme::load`] accepts: a theme already installed (or chosen in the settings) may be
+/// larger than a new one is allowed to be - versions up to 0.1.0 read these with a bigger
+/// allowance - because the parse is bounded in nesting and in values anyway ([`parse_plist`]).
+pub const MAX_INSTALLED_THEME_BYTES: u64 = 8 * 1024 * 1024;
 /// Deepest array/dictionary nesting accepted in a property list (the workflow parser's cap).
 pub const MAX_PLIST_DEPTH: usize = 64;
 /// Most values (keys included) a property list may expand to. A binary plist can refer to one
@@ -266,8 +271,19 @@ impl Theme {
         Ok(out)
     }
 
+    /// Load a theme that is already on this machine (the `theme` setting, `<data>/themes/`):
+    /// up to [`MAX_INSTALLED_THEME_BYTES`].
     pub fn load(path: &Path) -> Result<Theme> {
-        let bytes = read_limited(path, MAX_THEME_BYTES).with_context(|| format!("reading {}", path.display()))?;
+        Theme::load_limited(path, MAX_INSTALLED_THEME_BYTES)
+    }
+
+    /// Load a theme someone offers for installation: up to [`MAX_THEME_BYTES`].
+    pub fn load_for_install(path: &Path) -> Result<Theme> {
+        Theme::load_limited(path, MAX_THEME_BYTES)
+    }
+
+    fn load_limited(path: &Path, max: u64) -> Result<Theme> {
+        let bytes = read_limited(path, max).with_context(|| format!("reading {}", path.display()))?;
         Theme::from_bytes(&bytes).with_context(|| format!("reading {}", path.display()))
     }
 }
@@ -472,12 +488,43 @@ mod tests {
         }
     }
 
+    /// A valid theme padded with a long string to `size` bytes.
+    fn padded_theme(size: usize) -> Vec<u8> {
+        let head = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>name</key><string>Big</string><key>pad</key><string>"#;
+        let tail = "</string></dict></dict></plist>";
+        let mut v = head.as_bytes().to_vec();
+        v.resize(size - tail.len(), b'x');
+        v.extend_from_slice(tail.as_bytes());
+        v
+    }
+
+    #[test]
+    fn an_installed_theme_may_be_bigger_than_one_offered_for_installation() {
+        // Review wave4b item 8: the 2 MiB install cap also applied to themes already installed,
+        // so a larger one stopped loading after the upgrade.
+        let three_mib = temp_file("3mib", &padded_theme(3 * 1024 * 1024));
+        assert_eq!(Theme::load(&three_mib).unwrap().name, "Big");
+        let err = Theme::load_for_install(&three_mib).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        let at_cap = temp_file("8mib", &padded_theme(MAX_INSTALLED_THEME_BYTES as usize));
+        assert_eq!(Theme::load(&at_cap).unwrap().name, "Big");
+        let over = temp_file("9mib", &padded_theme(MAX_INSTALLED_THEME_BYTES as usize + 1));
+        let err = Theme::load(&over).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        // small themes load either way
+        let small = temp_file("small2", &padded_theme(1000));
+        assert!(Theme::load_for_install(&small).is_ok() && Theme::load(&small).is_ok());
+        for f in [three_mib, at_cap, over, small] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
     #[test]
     fn a_theme_is_read_once_from_bytes_and_files_over_the_cap_are_refused() {
         let ok = nested_theme(2);
         assert!(Theme::from_bytes(ok.as_bytes()).is_ok());
         let big = temp_file("big", &vec![b' '; (MAX_THEME_BYTES + 1) as usize]);
-        let err = Theme::load(&big).unwrap_err();
+        let err = Theme::load_for_install(&big).unwrap_err();
         assert!(format!("{err:#}").contains("large"), "{err:#}");
         assert!(read_limited(&big, MAX_THEME_BYTES).is_err());
         let _ = std::fs::remove_file(big);
