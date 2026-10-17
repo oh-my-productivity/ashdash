@@ -349,7 +349,7 @@ hostile-input boundary from day one:
    per-workflow, user-visible allow setting (default: ask once, remember per bundle id). At most one question per bundle id is on
    screen (further links for it are dropped, W4-R2); only "Allow" and "Don't Allow" are stored, a timeout or dismissed dialog is
    not (the next link asks again); `url-trust.json` is re-read when its modification time or size changes, and `set` merges over the
-   current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten. Residual: different
+   current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten (a file that does not parse keeps the last good decisions in memory and is moved to `url-trust.json.bad` before the next write, SEC-R5-03). Residual: different
    bundle ids can each have their own dialog open (bounded by the 6-per-10-s limiter and the number of installed workflows with an External Trigger).
 3. The argument is data: pass it through argv/stdin, never as `{query}` source substitution, and never
    through the mode-0 path. Cap its length (e.g. 4 KiB) before it reaches the engine (SEC-08/09).
@@ -698,3 +698,8 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   `shared_references_cannot_make_the_parse_do_exponential_work` (the 147-byte plist is built in the test; returns an error in well under a second; a 5 s watchdog fails the test instead of hanging it),
   `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); the reference launcher's bundled templates are loaded by
   `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
+- **SEC-R5-03 (item 3)** `TrustStore` (`urlscheme.rs`): a `url-trust.json` that is there but does not parse (not UTF-8, not JSON, not an object; a half-saved hand edit) is no longer read as an
+  empty file. `refresh` keeps the last good in-memory map (a remembered "deny" still denies), prints a warning to stderr once per change of the file, and `TrustStore::warning()` returns it.
+  `set` moves the damaged file aside to `url-trust.json.bad` (`.bad.1`, `.bad.2`... if a copy is already there, so an earlier one is never replaced) before writing the in-memory map plus the new entry.
+  A file that does not exist is still an empty map (deleting it forgets everything, as documented). Tests: `a_half_saved_consent_file_keeps_the_remembered_decisions_and_is_not_overwritten`,
+  `a_consent_file_that_is_damaged_at_start_is_kept_until_the_first_answer`. Residual: an edit that keeps both modification time and length is not noticed; the warning is on stderr only (no on-screen message).
