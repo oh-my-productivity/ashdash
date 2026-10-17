@@ -132,27 +132,37 @@ impl LauncherApp {
                 self.show(ctx);
             }
         }
+        // what the previous frame showed: a selection that differs from the one remembered is the
+        // user's own move (see `SelectionTrack`)
+        self.glue.track.begin_frame(self.generation, self.selected, &self.items);
         while let Ok(r) = self.res_rx.try_recv() {
             // answers for an older query, or while a panel shows its own list, are stale
             if r.generation != self.generation || self.panel_open() {
                 continue;
             }
             let previous = self.items.get(self.selected).map(|i| i.id.clone());
-            self.items = r.items;
+            let old_selected = self.selected;
+            let old = std::mem::replace(&mut self.items, r.items);
+            let track = &mut self.glue.track;
             match r.kind {
                 Kind::Pending => {
-                    self.selected = 0;
+                    self.selected = track.replaced_with(&old, old_selected, 0);
                     self.scroll_to_selected = true;
                 }
                 Kind::Final => {
+                    // the result the user moved to stays highlighted; unmoved: the new top
                     let keep = self.glue.keep_selection.take();
-                    self.selected = reselect(keep.as_deref(), self.selected, &self.items);
+                    self.selected = track.replaced(&old, old_selected, &self.items, keep.as_deref(), old_selected);
                     self.scroll_to_selected = true;
                 }
                 // the same query again: stay on the same result, do not jump
-                Kind::Rerun => self.selected = reselect(previous.as_deref(), self.selected, &self.items),
+                Kind::Rerun => {
+                    let same = reselect(previous.as_deref(), old_selected, &self.items);
+                    self.selected = track.replaced_with(&old, old_selected, same);
+                }
             }
         }
+        self.announce_crash_report();
         while let Ok(msg) = self.glue.rx.try_recv() {
             self.apply_async(ctx, msg);
         }
@@ -161,6 +171,24 @@ impl LauncherApp {
         }
         while let Ok(outcome) = self.outcome_rx.try_recv() {
             self.present_outcome(ctx, outcome);
+        }
+    }
+}
+
+impl LauncherApp {
+    /// After a crash: the first time the launcher is shown, say so in the footer, once. The note
+    /// is a status message, so typing clears it; the report is marked seen when it is shown.
+    fn announce_crash_report(&mut self) {
+        if !self.visible || self.glue.crash_checked {
+            return;
+        }
+        self.glue.crash_checked = true;
+        let paths = &self.engine.paths;
+        if let Some(name) = crate::crash::unseen(paths) {
+            crate::crash::mark_seen(paths, &name);
+            if self.status.is_none() {
+                self.status = Some(crate::crash::footer_note().into());
+            }
         }
     }
 }

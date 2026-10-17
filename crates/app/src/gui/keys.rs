@@ -3,6 +3,7 @@
 use ashdash_core::Mods;
 use eframe::egui::{self, Key, Modifiers};
 
+use super::schedule::Target;
 use super::{LauncherApp, VISIBLE_ROWS, panel, query_id};
 
 struct Keys {
@@ -269,21 +270,37 @@ impl LauncherApp {
                 self.large_type = Some(item.large_type.clone().unwrap_or_else(|| item.title.clone()));
             }
         }
-        if let Some(n) = keys.number
-            && n < self.items.len().min(VISIBLE_ROWS)
-        {
-            self.activate_with(ctx, n, Mods::NONE, keys.number_fresh);
-            return;
+        if let Some(n) = keys.number {
+            // the row the user saw, even if an answer replaced the list in this very frame
+            match self.glue.track.number_target(n, &self.items) {
+                Target::Row(i) => {
+                    self.activate_with(ctx, i, Mods::NONE, keys.number_fresh);
+                    return;
+                }
+                Target::Changed => {
+                    self.status = Some(RESULTS_CHANGED.into());
+                    return;
+                }
+                Target::Nothing => {}
+            }
         }
         if let Some(mods) = keys.enter {
             if self.large_type.is_some() {
                 self.close_large_type(ctx);
             } else {
-                self.activate_with(ctx, self.selected, mods, keys.enter_fresh);
+                // the row that was highlighted in the frame the user saw
+                match self.glue.track.enter_target(self.selected, &self.items) {
+                    Target::Row(i) => self.activate_with(ctx, i, mods, keys.enter_fresh),
+                    Target::Changed => self.status = Some(RESULTS_CHANGED.into()),
+                    Target::Nothing => {}
+                }
             }
         }
     }
 }
+
+/// Shown when a key named a row that the arriving results took away.
+const RESULTS_CHANGED: &str = "The results changed under that key press. Check the highlighted row and press ↩ again.";
 
 #[cfg(test)]
 mod tests {

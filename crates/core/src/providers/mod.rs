@@ -235,17 +235,22 @@ pub(crate) fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-/// Order by score (high first), then title.
+/// Order by score (high first), then title ignoring case, then the exact title, then the id.
+/// The last two make the order a function of the candidates alone: a stable sort on score and
+/// case-folded title would leave two equal candidates (the same app name in two folders, `Terminal`
+/// and `terminal`) in whatever order the providers and the index happened to produce them.
+/// A NaN score sorts last.
 pub(crate) fn sort_items(items: &mut [Item]) {
+    let key = |s: f64| if s.is_nan() { f64::NEG_INFINITY } else { s };
     items.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        key(b.score)
+            .total_cmp(&key(a.score))
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 
-/// Shared fixture for provider tests: a throwaway engine rooted in a temp dir.
 #[cfg(test)]
 pub(crate) mod testutil {
     use std::path::PathBuf;
@@ -298,5 +303,100 @@ mod registry_tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(ids.len(), sorted.len(), "duplicate provider id in {ids:?}");
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn permutations(items: &[Item]) -> Vec<Vec<Item>> {
+        if items.len() <= 1 {
+            return vec![items.to_vec()];
+        }
+        let mut out = Vec::new();
+        for i in 0..items.len() {
+            let mut rest = items.to_vec();
+            let head = rest.remove(i);
+            for mut p in permutations(&rest) {
+                p.insert(0, head.clone());
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    fn ids(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.id.as_str()).collect()
+    }
+
+    /// Equal scores must not leave the order to the order the providers happened to answer in
+    /// (docs/PRODUCT.md section 2): title, then exact title, then id decide.
+    #[test]
+    fn equal_scores_sort_the_same_whatever_the_input_order() {
+        let items = vec![
+            Item::new("app:/Applications/Terminal.app", "Terminal").score(90.0),
+            Item::new("app:/Users/me/Applications/Terminal.app", "Terminal").score(90.0),
+            Item::new("app:/Applications/terminal.app", "terminal").score(90.0),
+            Item::new("app:/Applications/Tidy.app", "Tidy").score(90.0),
+            Item::new("win:1", "Aardvark").score(90.0),
+            Item::new("calc:best", "Best").score(100.0),
+            Item::new("app:/Applications/Worst.app", "Worst").score(10.0),
+        ];
+        let mut first: Vec<Item> = items.clone();
+        sort_items(&mut first);
+        assert_eq!(first[0].id, "calc:best", "the higher score still wins");
+        assert_eq!(first[6].id, "app:/Applications/Worst.app");
+        // 5040 orders of the same candidates
+        for mut p in permutations(&items) {
+            sort_items(&mut p);
+            assert_eq!(ids(&p), ids(&first), "input order changed the result");
+        }
+    }
+
+    #[test]
+    fn a_nan_score_sorts_last_and_does_not_break_the_order() {
+        let items = vec![
+            Item::new("a", "A").score(f64::NAN),
+            Item::new("b", "B").score(5.0),
+            Item::new("c", "C").score(7.0),
+            Item::new("d", "D").score(f64::NAN),
+        ];
+        for mut p in permutations(&items) {
+            sort_items(&mut p);
+            assert_eq!(ids(&p), ["c", "b", "a", "d"]);
+        }
+    }
+
+    /// End to end: the same app in two folders, the folders listed in either order.
+    #[test]
+    fn the_engine_orders_equal_candidates_the_same_whatever_the_folder_order() {
+        use crate::config::{Config, Paths};
+        use crate::engine::Engine;
+
+        let root = std::env::temp_dir().join(format!("oa-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (a, b) = (root.join("a"), root.join("b"));
+        for d in [&a, &b] {
+            std::fs::create_dir_all(d.join("Notes.app")).unwrap();
+            std::fs::create_dir_all(d.join("Notebook.app")).unwrap();
+        }
+        let run = |tag: &str, dirs: Vec<std::path::PathBuf>| {
+            let config = Config {
+                app_dirs: dirs,
+                providers_disabled: vec!["files".into(), "bookmarks".into(), "clipboard".into()],
+                ..Config::default()
+            };
+            let e = Engine::new(Paths::under(&root.join(tag)), config);
+            e.query("notes").into_iter().map(|i| i.id).collect::<Vec<_>>()
+        };
+        let forward = run("fwd", vec![a.clone(), b.clone()]);
+        let reverse = run("rev", vec![b, a]);
+        assert!(
+            forward.iter().filter(|id| id.contains("Notes.app")).count() >= 2,
+            "both copies are found: {forward:?}"
+        );
+        assert_eq!(forward, reverse);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -31,9 +31,9 @@ The same keystrokes do the same thing, so muscle memory is safe.
 
 | Bar | Today | Status |
 |---|---|---|
-| The same query on the same data gives the same order (deterministic tie-break) | | not measured |
-| Once you have moved the selection, results that arrive later never change which item is highlighted | A Script Filter rerun keeps the item by id (`crates/app/src/gui/workers.rs:153`), but the final answer that replaces pending results keeps the *index* (`workers.rs:147-150`), so a slower provider can put a different item under the cursor. Read from the code, not seen on screen | not met |
-| Return runs the item highlighted in the frame you saw | | not tested |
+| The same query on the same data gives the same order (deterministic tie-break) | Engine merge sorts by score, title (case-folded), exact title, id; a NaN score sorts last. `providers::order_tests` shuffles equal-score candidates through all 5,040 input orders and through two folder orders. Providers that cut their own list before the merge (bookmarks general limit, exclusive workflow lists) are not checked | partly |
+| Once you have moved the selection, results that arrive later never change which item is highlighted | The final answer keeps the item you moved to by id; if you did not move, the new top is selected; if the item is gone, the top (`SelectionTrack` in `gui/schedule.rs`, used by `gui/workers.rs`; tests `final_answer_*`, `the_pending_rows_*`). Logic is unit-tested; not seen on screen | partly |
+| Return runs the item highlighted in the frame you saw | Return and Cmd+1..9 resolve against the list drawn before the frame in which a result list replaced it; a row that is gone runs nothing and the footer says so (tests `return_*`, `cmd_number_*`, `several_replacements_*`). A mouse click is not covered. Not seen on screen | partly |
 | Learned order never ranks a result above an exact keyword or exact name match; learning can be turned off | `learn_usage` opt-out and "Forget" exist; the ranking rule is not checked | partly |
 
 ## 3. Reliability
@@ -45,7 +45,7 @@ It is there every time you press the hotkey.
 | Hotkey and window survive sleep/wake, display connect/disconnect, Spaces, full-screen apps and an app update | on the QA list, never run | not tested |
 | 7-day soak with use every few minutes: no crash, footprint drift < 10 % | 60 s idle runs and 20 show/hide cycles only | not run |
 | No outside input (packages, themes, plists, URLs, clipboard, script output) can abort the process | Every class found so far is fixed with tests: plist depth and value count, calculator recursion, multibyte URLs (`docs/SECURITY.md`, `crates/core/tests/fuzz.rs`). This bar is never "done" | partly |
-| After a crash you can find out why | no panic hook, no crash log | not met |
+| After a crash you can find out why | Panic hook in the launcher and the preferences window writes `<data>/crashes/crash-<UTC>.txt` (version, process, thread, message, location, backtrace; last 10 kept), a one-time footer note on the next launch, and `ashdash paths` names it (`crates/app/src/crash.rs`, 7 tests). Crashes that are not panics (killed process, native crash) leave nothing there; no real panic of the running app was provoked | partly |
 
 ## 4. Flow
 
@@ -93,7 +93,7 @@ Your setup lives in your dotfiles and comes back on a new machine in one command
 | Bar | Today | Status |
 |---|---|---|
 | Settings are text files that diff cleanly; unknown keys survive a save | `config.json`, `ashdash config set`; unknown keys kept since W4-FIX; stable key order not checked | partly |
-| Paths are portable: `~` works wherever a path is accepted | expanded only in `file_search.*` (`docs/SETTINGS.md`), not in `workflow_dirs`, `app_dirs` or `theme` | not met |
+| Paths are portable: `~` works wherever a path is accepted | expanded in `file_search.*`, `workflow_dirs`, `app_dirs` and `theme` when loaded; a save keeps the `~` the file has (`config::tests::tilde_*`, `a_save_keeps_the_tilde_the_user_wrote`, `engine::tests::tilde_paths_in_the_settings_file_are_used_as_home_paths`). `~user` is not expanded | met |
 | One command exports, and one applies, the whole setup (config, workflow list, snippets, themes) | | not met |
 
 ## 9. Developer context
@@ -129,11 +129,11 @@ You own the tool and your data.
 ## What this changes in the plan
 
 Add to the v0.1.0 release candidate (small):
-- Predictability: keep the selection by result id when the final answer replaces pending results (`workers.rs:147-150`), with a test.
+- Predictability: keep the selection by result id when the final answer replaces pending results (`workers.rs:147-150`), with a test. **Done on `wp/w5-fix`.**
 - Reliability:
-  - a panic hook that writes a crash report to the data folder and names it on the next launch;
+  - a panic hook that writes a crash report to the data folder and names it on the next launch (**done on `wp/w5-fix`**);
   - sleep/wake, display change, full-screen and a 24 h soak in the VM QA run (`docs/QA.md`).
-- Config as code: expand `~` in `workflow_dirs`, `app_dirs` and `theme`.
+- Config as code: expand `~` in `workflow_dirs`, `app_dirs` and `theme` (**done on `wp/w5-fix`**).
 
 v0.2 headline:
 - Developer pack (section 9) as built-in providers under the speed bars.

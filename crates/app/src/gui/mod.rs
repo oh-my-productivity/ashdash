@@ -397,6 +397,7 @@ impl eframe::App for LauncherApp {
         }
 
         self.handle_keys(&ctx);
+        self.glue.track.end_frame();
         if !self.visible {
             return;
         }

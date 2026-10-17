@@ -130,12 +130,24 @@ Remember `reference://` belongs to the reference launcher; Ashdash never registe
   to write while the file is unreadable.
 * A `version` newer than this build knows: saving is refused so that nothing is lost.
 * Keys this build does not know are dropped the next time Ashdash (preferences, `config set`) saves the file.
-* `~` works only inside `file_search.*`; use absolute paths in `app_dirs`, `workflow_dirs` and `theme`.
+* `~` and `~/...` work in `app_dirs`, `workflow_dirs`, `theme` and `file_search.*`; `~user/...` does not. Saving keeps the `~` you wrote, `ashdash config get` shows the expanded path.
 
 ## macOS refuses to open the app
 
 Ad-hoc signed builds are not trusted by Gatekeeper: right-click > Open, or
 `xattr -dr com.apple.quarantine /Applications/Ashdash.app` ([RELEASING.md](RELEASING.md)). Notarization is not done yet.
+
+## Ashdash quit unexpectedly
+
+When the launcher or the preferences window panics, Ashdash writes a report to
+`~/Library/Application Support/ashdash/crashes/crash-<UTC time>.txt` (the newest 10 are kept; `ashdash paths` prints the folder and
+the newest file). The next time you open the launcher, its footer says "Ashdash quit unexpectedly · report in crashes/" once.
+
+A report holds: Ashdash's version, which process it was (`launcher` or `prefs-window`), the thread, the panic message and its source
+location, and a backtrace. It does not contain what you typed in the launcher, clipboard content, file contents or your settings,
+and it is never sent anywhere. The panic message is text written by the code that panicked, so read the file before you attach it
+to an issue. A panic on a background thread also writes a report even if Ashdash kept running. A crash that is not a panic (the
+system killing the process, a crash inside macOS libraries) leaves no report here; look in Console.app > Crash Reports.
 
 ## Start over
 
@@ -152,5 +164,5 @@ Move things back one at a time to find the one that matters. `usage.json` (what 
 
 Open an issue (templates under `.github/ISSUE_TEMPLATE/`) with: Ashdash version and commit (`git rev-parse --short HEAD`),
 macOS version and architecture, whether you run the bundle or `cargo run`, exact steps, expected and actual result, and the
-stderr output. Do not attach screenshots of your whole desktop, clipboard history or `usage.json`. Security problems: see `docs/SECURITY.md`. No private
+stderr output, and the newest `crashes/` report if Ashdash quit. Do not attach screenshots of your whole desktop, clipboard history or `usage.json`. Security problems: see `docs/SECURITY.md`. No private
 reporting channel has been set up yet (open item for the maintainers); until then do not publish exploit details in an issue.

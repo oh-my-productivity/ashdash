@@ -1697,6 +1697,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// `~/...` in `app_dirs` and `workflow_dirs` is this user's home folder when the settings are
+    /// used (docs/SETTINGS.md), not a folder literally named `~`.
+    #[test]
+    fn tilde_paths_in_the_settings_file_are_used_as_home_paths() {
+        let root = std::env::temp_dir().join(format!("oa-eng-tilde-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("Apps").join("Zedword.app")).unwrap();
+        std::fs::create_dir_all(home.join("dotfiles/workflows/copy")).unwrap();
+        let doc = json!({"name": "Dotfile Flow", "bundleid": "dot.flow", "objects": [], "connections": {}});
+        json_to_plist(&doc)
+            .to_file_xml(home.join("dotfiles/workflows/copy/info.plist"))
+            .unwrap();
+        let paths = Paths::under(&root);
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            json!({"app_dirs": ["~/Apps"], "workflow_dirs": ["~/dotfiles/workflows"]}).to_string(),
+        )
+        .unwrap();
+        let config = Config::load_in(&paths, &home);
+        let e = Engine::new(paths, config);
+        assert_eq!(e.query("zedword").first().map(|i| i.title.as_str()), Some("Zedword"));
+        wait_until("the workflow scan", || {
+            e.workflow_summaries().iter().any(|(n, _, _)| n == "Dotfile Flow")
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn start_up_remembers_what_was_wrong_with_the_configuration() {
         let (e0, root) = engine("startup-ok");

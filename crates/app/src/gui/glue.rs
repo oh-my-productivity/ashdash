@@ -12,6 +12,7 @@ use eframe::egui;
 
 use super::importprompt::ImportPrompt;
 use super::panel::{PanelStack, UiAction, is_workflow_package, ui_action};
+use super::schedule::SelectionTrack;
 use super::{LauncherApp, mac, trace};
 
 /// Results of work done off the UI thread.
@@ -42,6 +43,11 @@ pub(super) struct Glue {
     pub large_scroll: f32,
     /// The query was replaced by code: put the text cursor at its end before the next draw.
     pub cursor_to_end: bool,
+    /// Moves of the selection and replaced lists, for "the highlighted result stays" and
+    /// "Return runs what you saw".
+    pub track: SelectionTrack,
+    /// The start-up crash-report check has run (once, at the first showing).
+    pub crash_checked: bool,
 }
 
 impl Glue {
@@ -59,6 +65,8 @@ impl Glue {
             theme_epoch: crate::mac::opendocs::theme_epoch(),
             large_scroll: 0.0,
             cursor_to_end: false,
+            track: SelectionTrack::default(),
+            crash_checked: false,
         }
     }
 
@@ -71,6 +79,7 @@ impl Glue {
         self.loading = false;
         self.token += 1; // late answers for the old showing are ignored
         self.large_scroll = 0.0;
+        self.track.reset();
     }
 }
 

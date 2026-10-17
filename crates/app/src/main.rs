@@ -1,5 +1,6 @@
 mod automation;
 mod clipboard_watch;
+mod crash;
 mod events;
 mod gui;
 mod hotkeys;
@@ -87,6 +88,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let paths = Paths::system();
+    // A panic in the launcher or the preferences window leaves a report in <data>/crashes/.
+    match args.first().map(String::as_str) {
+        None => crash::install(&paths, "launcher"),
+        Some("prefs-window") => crash::install(&paths, "prefs-window"),
+        Some(_) => {}
+    }
     let config = Config::load(&paths);
 
     match args.first().map(String::as_str) {
@@ -105,6 +112,11 @@ fn main() -> Result<()> {
             println!("workflows: {}", paths.workflows_dir().display());
             println!("snippets:  {}", paths.snippets_file().display());
             println!("cache:     {}", paths.cache.display());
+            println!("crashes:   {}", crash::crashes_dir(&paths).display());
+            if let Some(name) = crash::latest(&paths) {
+                let new = if crash::unseen(&paths).is_some() { "  (new)" } else { "" };
+                println!("last crash: {name}{new}");
+            }
             Ok(())
         }
         Some("config") => config_command(&paths, &args[1..]),
