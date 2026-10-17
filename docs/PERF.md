@@ -3,6 +3,8 @@
 Measured for the v0.1.0 release candidate on 2026-10-16, branch `wp/w4-rel` (base `main`, Waves 0-3), release profile (`cargo bench` = optimized).
 Nothing in the product was tuned for these numbers.
 
+> **Update 2026-10-17:** the rows below that say the GUI process was "not measured" are superseded by the section **GUI process** at the end of this file (start-up, idle RSS/CPU, memory after use, hotkey latency of the real release binary).
+
 ## Machine and conditions
 
 * Apple M3 Pro, 12 cores, 36 GB RAM, macOS 26.5.2, rustc 1.95.0.
