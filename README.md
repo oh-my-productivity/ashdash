@@ -31,6 +31,7 @@ Not yet: contacts, dictionary, system-wide snippet expansion, a workflow editor.
 
 | | |
 |---|---|
+| [docs/PRODUCT.md](docs/PRODUCT.md) | product values, measurable bars, where the product stands, what wins in a conflict |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | install, first run, permissions, hotkeys, every keyword |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | every `config.json` key with type, default, example |
 | [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | workflow compatibility per object type, trust model |
