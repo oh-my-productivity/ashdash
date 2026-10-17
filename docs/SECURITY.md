@@ -645,7 +645,7 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   still be rewritten (disclosed in the prompt as "Can modify its own files").
 - **SEC-R4-04 (review 4)** File Filter's `mdfind` goes through `Os::output_bounded` with the file-search budget from `config.file_search` (time limit
   `mdfind_timeout_ms`, output limit `mdfind_max_bytes`), additionally capped at 200 hits x 1 KiB (about 200 KB), so a types-only predicate (an empty argument) is
-  killed after a few hundred kilobytes instead of printing for seconds. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
+  killed after a few hundred kilobytes instead of printing for seconds. *Wording corrected (W4-R3, SEC-R5-06):* it is **bounded**, not cheap - see below. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
   dropped. `WorkflowProvider` takes the engine's `Os` (`registry_for` wires it); `Workflow::keyword_results` (no `Os` argument) keeps the real OS and the default budget for callers outside the engine.
   Residual: the search still runs on the single query worker, bounded by the budget (default 4 s) rather than gone.
 - **SEC-R4-09 (review 9)** `load_all` skips folders whose name starts with `.` (so `.import-*` staging, copy and previous-version folders are never loaded as a second
@@ -712,3 +712,6 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   `urls_and_app_names_are_passed_to_open_unchanged` (exec.rs). Not run: a real `open -a` with these forms. Residual: a literal that contains a colon before its first slash (`notes:2024/x`) is taken for a URL.
 - **SEC-R5-05 (item 5)** `note_app` expands `~` and normalises `..` lexically before the "is it under the workflow folder" test, so `~/Library/Application Support/ashdash/workflows/<own folder>/payload.app` is
   called shipped, and `<own folder>/../<other>/payload.app` is not. Test: `a_tilde_path_into_the_workflows_own_folder_is_shipped`.
+- **SEC-R5-06 (item 6)** Wording only. The File Filter `mdfind` is *bounded by the budget* (4 s by default, `mdfind_timeout_ms`, and 200 hits / about 200 KB of output), not "cheap": `mdfind` spends about 2.3 s
+  starting up before it prints, so a types-only predicate (empty argument) still holds the single query worker for that long on a cold run (one run on one machine, `docs/reviews/wave4b.md`; not re-measured here), and
+  a slow or hung `mdfind` for up to the timeout. The output cap shortens neither. No code change; lowering `mdfind_timeout_ms` shortens the worst case at the cost of missed results on a slow index.
