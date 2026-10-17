@@ -229,12 +229,18 @@ window exists; opening it again brings it forward. Every change is checked, writ
 running launcher within about a second ([SETTINGS.md](SETTINGS.md)). If a change could not be applied (bad hotkey, broken
 file, a web search URL that is not allowed) the window shows why and the launcher keeps the previous setting.
 
+The window has a sidebar (Cmd+1 ... Cmd+6 switch pages; Cmd+K jumps to the "Go to a setting..." field, which filters the page list by name
+and opens the first match on Return). A strip at the bottom always shows the settings reload (CONFIG), the number of PROBLEMS and whether the
+launcher is running. It follows the system light/dark appearance.
+
 | Page | What you can do |
 |---|---|
-| **General** | Record a new launcher shortcut (system shortcuts such as Cmd+Space are flagged), Launch at login (needs the app bundle), pick a theme or import an `.alfredappearance`, results per search, **Learning**: "Rank results by what I pick" and "Forget what I picked..." |
-| **Features** | Switch features (providers) on and off; file search folders and exclusions and hidden files; bookmark sources; clipboard retention, largest image, and apps never to record; web searches (add, edit, remove; the URL is validated); snippets (add, edit, delete, import `.alfredsnippets`) |
-| **Workflows** | List with enable/disable and Remove for workflows in Ashdash's own folder (workflows from `workflow_dirs` are listed read-only), import with the prompt above, "Configure..." for a workflow's settings sheet, "What can it do?" for its trust summary |
-| **About** | Version, licence, data and settings locations with Reveal in Finder buttons |
+| **General** (Cmd+1) | Record a new launcher shortcut (system shortcuts such as Cmd+Space are flagged), pick a theme or import an `.alfredappearance`, results per search, Launch at login (needs the app bundle), **Learning**: "Rank results by what I pick" and "Forget what I picked..."; a RELOAD card and the launcher's warnings |
+| **Search** (Cmd+2) | Switch features (providers) on and off; file search folders and exclusions and hidden files; bookmark sources; web searches (add, edit, remove; the URL is validated) |
+| **Clipboard** (Cmd+3) | Clipboard retention, largest image, and apps never to record |
+| **Snippets** (Cmd+4) | Add, edit, delete and import `.alfredsnippets` |
+| **Workflows** (Cmd+5) | List with enable/disable and Remove for workflows in Ashdash's own folder (workflows from `workflow_dirs` are listed read-only), import with the prompt above, "Configure..." for a workflow's settings sheet, "What can it do?" for its trust summary |
+| **About** (Cmd+6) | Version, licence, data and settings locations with Reveal in Finder buttons |
 
 You can drop `.alfredworkflow`, `.alfredappearance` and `.alfredsnippets` files on the window. "Forget what I picked..." clears
 `usage.json` (through the running launcher if there is one). Turning learning **off** only stops recording and ranking;

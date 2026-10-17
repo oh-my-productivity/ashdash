@@ -29,8 +29,15 @@ impl Msg {
 
     pub fn show(&self, ui: &mut egui::Ui) {
         let p = Palette::of(ui);
-        let (glyph, color) = if self.error { ("⚠", p.error) } else { ("✓", p.ok) };
-        ui.add(egui::Label::new(RichText::new(format!("{glyph} {}", self.text)).color(color)).wrap());
+        ui.horizontal_wrapped(|ui| {
+            let (color, text) = if self.error {
+                super::kit::warn_triangle(ui, p.error);
+                (p.error, self.text.clone())
+            } else {
+                (p.ok_text, format!("✓ {}", self.text))
+            };
+            ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+        });
     }
 }
 
@@ -51,7 +58,7 @@ pub fn error_text(ui: &egui::Ui, text: &str) -> RichText {
 }
 
 pub fn warn_text(ui: &egui::Ui, text: &str) -> RichText {
-    RichText::new(text).color(Palette::of(ui).warn)
+    RichText::new(text).color(Palette::of(ui).warn_text)
 }
 
 /// A titled group of free-form content (a card under a small-caps title).

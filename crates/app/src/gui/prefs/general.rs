@@ -226,7 +226,7 @@ impl PrefsApp {
             ui.horizontal_wrapped(|ui| {
                 egui::ComboBox::from_id_salt("prefs-theme")
                     .selected_text(label)
-                    .width(200.0)
+                    .width(180.0)
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(current.is_none(), "Default").clicked() {
                             choice = Some(None);
@@ -257,8 +257,8 @@ impl PrefsApp {
             ui.horizontal_wrapped(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.general.theme_input)
-                        .hint_text("or paste the path of an .alfredappearance file")
-                        .desired_width(200.0),
+                        .hint_text("or paste a file path")
+                        .desired_width((ui.available_width() - 80.0).max(120.0)),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Import").clicked() || enter) && !self.general.theme_input.trim().is_empty() {

@@ -77,11 +77,13 @@ impl PrefsApp {
         let list = self.workflows.list.clone();
         show_msg(ui, &self.workflows.msg);
         ui.add_space(style::m::GAP);
-        kit::rows(ui, |ui| {
-            for w in &list {
-                self.workflow_row(ui, w);
-            }
-        });
+        if !list.is_empty() {
+            kit::rows(ui, |ui| {
+                for w in &list {
+                    self.workflow_row(ui, w);
+                }
+            });
+        }
     }
 
     // ---------------------------------------------------------------- import
@@ -92,7 +94,7 @@ impl PrefsApp {
                 self.import_prompt(ui);
                 return;
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Choose workflow file…").clicked() {
                     self.choose_file(
                         Purpose::Workflow,
@@ -102,8 +104,8 @@ impl PrefsApp {
                 }
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.workflows.import_input)
-                        .hint_text("or paste the path of a .alfredworkflow file")
-                        .desired_width(320.0),
+                        .hint_text("or paste a file path")
+                        .desired_width(160.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Review").clicked() || enter) && !self.workflows.import_input.trim().is_empty() {

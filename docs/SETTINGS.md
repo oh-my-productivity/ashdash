@@ -170,7 +170,7 @@ on real profiles.
   form per workflow, with "Use default" per entry) or by hand. They are keyed by bundle id and stay when a workflow is
   removed or replaced by an import with the same bundle id (the new package reads them; the import prompt says so).
 * **Snippets**: `snippets.json` (a flat list of `{"name","keyword","text"}`) and one file per collection in the `snippets/` folder;
-  edit them in Preferences > Features > Snippets, or import `.alfredsnippets` packages by opening them. See
+  edit them in Preferences > Snippets, or import `.alfredsnippets` packages by opening them. See
   [USER_GUIDE.md](USER_GUIDE.md#5-what-to-type).
 * **Usage learning** (`usage.json`): switch it off with `learn_usage`; clear it with "Forget what I picked..." in Preferences >
   General (or delete the file). Turning learning off does not delete what was recorded.

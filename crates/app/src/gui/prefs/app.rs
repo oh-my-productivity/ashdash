@@ -267,7 +267,7 @@ impl PrefsApp {
             .exact_size(m::STATUS_H)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(p.panel))
+            .frame(Frame::new().fill(p.status_bg))
             .show(ui, |ui| {
                 let y = ui.max_rect().min.y;
                 ui.painter().hline(
@@ -285,7 +285,7 @@ impl PrefsApp {
             .exact_size(m::SIDEBAR_W)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(p.panel))
+            .frame(Frame::new().fill(p.sidebar))
             .show(ui, |ui| self.sidebar(ui));
 
         egui::CentralPanel::default()
@@ -312,7 +312,7 @@ impl PrefsApp {
                             }
                         }
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                            ui.add_space(m::GAP_L);
+                            ui.add_space(m::GAP);
                             match self.nav {
                                 Nav::General => self.general_page(ui, alive),
                                 Nav::Search | Nav::Clipboard | Nav::Snippets => {
@@ -341,12 +341,14 @@ impl PrefsApp {
         let id = search_id();
         Frame::new().inner_margin(style::margin(12.0, 0.0)).show(ui, |ui| {
             let resp = kit::search_field(ui, &mut self.nav_query, id);
-            if resp.has_focus() {
+            // Return and Esc make a single-line edit lose focus in the same frame
+            if resp.has_focus() || resp.lost_focus() {
                 let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
-                if enter && let Some(first) = nav::filter(&self.nav_query).first().copied() {
-                    self.nav_query.clear();
-                    resp.surrender_focus();
-                    self.go(first);
+                if enter && resp.lost_focus() {
+                    if let Some(first) = nav::filter(&self.nav_query).first().copied() {
+                        self.nav_query.clear();
+                        self.go(first);
+                    }
                 } else if esc {
                     self.nav_query.clear();
                     resp.surrender_focus();
@@ -420,6 +422,71 @@ mod tests {
             }
         }
         assert_eq!(app.workflows.list_len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn frame_with(ctx: &egui::Context, app: &mut PrefsApp, events: Vec<egui::Event>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(m::WINDOW[0], m::WINDOW[1]),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| app.draw(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn cmd_digits_move_between_pages_and_cmd_k_focuses_the_search_field() {
+        let (paths, root) = temp("keys");
+        let ctx = egui::Context::default();
+        let mut app = PrefsApp::new(ctx.clone(), paths);
+        frame(&ctx, &mut app);
+        assert_eq!(app.nav, Nav::General);
+        frame_with(&ctx, &mut app, vec![key_event(Key::Num5, Modifiers::COMMAND)]);
+        assert_eq!(app.nav, Nav::Workflows);
+        frame_with(&ctx, &mut app, vec![key_event(Key::Num2, Modifiers::COMMAND)]);
+        assert_eq!(app.nav, Nav::Search);
+        // a bare digit or Cmd+Shift+digit does nothing
+        frame_with(&ctx, &mut app, vec![key_event(Key::Num3, Modifiers::NONE)]);
+        frame_with(
+            &ctx,
+            &mut app,
+            vec![key_event(Key::Num3, Modifiers::COMMAND | Modifiers::SHIFT)],
+        );
+        assert_eq!(app.nav, Nav::Search);
+        frame_with(&ctx, &mut app, vec![key_event(Key::K, Modifiers::COMMAND)]);
+        frame(&ctx, &mut app);
+        assert!(ctx.memory(|mem| mem.has_focus(search_id())));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_search_field_filters_the_sidebar_and_return_opens_the_first_match() {
+        let (paths, root) = temp("filter");
+        let ctx = egui::Context::default();
+        let mut app = PrefsApp::new(ctx.clone(), paths);
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![key_event(Key::K, Modifiers::COMMAND)]);
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("snip".into())]);
+        assert_eq!(app.nav_query, "snip");
+        assert_eq!(nav::filter(&app.nav_query), vec![Nav::Snippets]);
+        frame_with(&ctx, &mut app, vec![key_event(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(app.nav, Nav::Snippets);
+        assert!(app.nav_query.is_empty(), "the field is cleared after opening");
         let _ = std::fs::remove_dir_all(root);
     }
 

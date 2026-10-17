@@ -9,72 +9,95 @@ use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Margin, Rich
 
 // ------------------------------------------------------------------ colours
 
-/// One complete colour set. All text/background pairs the window uses are checked against
-/// WCAG AA by the tests at the bottom of this file.
+/// One complete colour set. Values follow `docs/design/settings-v4/SPEC.md` (sampled from the
+/// V4 images by script, then rounded; `adj` entries were moved to pass AA). All text/background
+/// pairs the window uses are checked against WCAG AA by the tests at the bottom of this file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub dark: bool,
-    /// Content background.
+    /// Content area and cards.
     pub bg: Color32,
-    /// Sidebar, cards and the status strip.
-    pub panel: Color32,
-    /// Fill of buttons, inputs and the stepper.
-    pub control: Color32,
+    pub sidebar: Color32,
+    pub status_bg: Color32,
+    /// Fill of inputs (search, text edits, recorder idle, stepper value, toggle off).
+    pub field: Color32,
+    /// Fill of buttons and dropdowns.
+    pub button: Color32,
     /// Fill of a control under the pointer.
-    pub control_hover: Color32,
-    /// Grid lines and separators.
+    pub hover: Color32,
+    /// Sidebar row under the pointer, and the active one.
+    pub nav_hover: Color32,
+    /// Grid lines and separators (decorative).
     pub hairline: Color32,
-    /// Outline of buttons and inputs.
+    /// Outline of controls (non-text contrast, at least 3:1).
     pub border: Color32,
     /// Primary text.
     pub text: Color32,
-    /// Secondary text: config keys, hints, units.
+    /// Secondary text: hints, units, inactive nav, status values.
     pub dim: Color32,
-    /// The signal colour as a fill (toggle on, active-item bar, recorder outline).
+    /// The grey monospace config key under a label.
+    pub key: Color32,
+    /// The signal colour as a fill (toggle on, active-item bar, recorder outline, focus ring).
     pub accent: Color32,
-    /// The signal colour as text on `bg`/`panel`.
+    /// The signal colour as text.
     pub accent_text: Color32,
     /// Toggle thumb.
     pub thumb: Color32,
+    /// Status lights and outlines.
     pub ok: Color32,
     pub warn: Color32,
+    /// Same hues as text (darker in the light theme to reach 4.5:1; SPEC.md lists only the light colours).
+    pub ok_text: Color32,
+    pub warn_text: Color32,
     pub error: Color32,
 }
 
 pub const DARK: Palette = Palette {
     dark: true,
-    bg: rgb(0x14, 0x14, 0x14),
-    panel: rgb(0x1b, 0x1b, 0x1b),
-    control: rgb(0x22, 0x22, 0x22),
-    control_hover: rgb(0x2b, 0x2b, 0x2b),
-    hairline: rgb(0x2c, 0x2c, 0x2c),
-    border: rgb(0x44, 0x44, 0x44),
-    text: rgb(0xed, 0xed, 0xed),
+    bg: rgb(0x1c, 0x1c, 0x1c),
+    sidebar: rgb(0x1a, 0x1a, 0x1a),
+    status_bg: rgb(0x1c, 0x1c, 0x1c),
+    field: rgb(0x28, 0x28, 0x28),
+    button: rgb(0x30, 0x30, 0x30),
+    hover: rgb(0x38, 0x38, 0x38),
+    nav_hover: rgb(0x23, 0x23, 0x23),
+    hairline: rgb(0x2a, 0x2a, 0x2a),
+    border: rgb(0x6a, 0x6a, 0x6a),
+    text: rgb(0xf0, 0xf0, 0xf0),
     dim: rgb(0x9a, 0x9a, 0x9a),
+    key: rgb(0x8a, 0x8a, 0x8a),
     accent: rgb(0xff, 0x5f, 0x1f),
-    accent_text: rgb(0xff, 0x7a, 0x45),
+    accent_text: rgb(0xff, 0x5f, 0x1f),
     thumb: rgb(0xff, 0xff, 0xff),
-    ok: rgb(0x4c, 0xc3, 0x8a),
-    warn: rgb(0xf5, 0xa6, 0x23),
+    ok: rgb(0x1f, 0xbf, 0x63),
+    warn: rgb(0xe8, 0x96, 0x2e),
+    ok_text: rgb(0x1f, 0xbf, 0x63),
+    warn_text: rgb(0xe8, 0x96, 0x2e),
     error: rgb(0xff, 0x6b, 0x6b),
 };
 
 pub const LIGHT: Palette = Palette {
     dark: false,
-    bg: rgb(0xf6, 0xf6, 0xf4),
-    panel: rgb(0xec, 0xec, 0xe8),
-    control: rgb(0xff, 0xff, 0xff),
-    control_hover: rgb(0xf0, 0xf0, 0xec),
-    hairline: rgb(0xd6, 0xd6, 0xd0),
-    border: rgb(0xa8, 0xa8, 0xa0),
-    text: rgb(0x17, 0x17, 0x17),
-    dim: rgb(0x5a, 0x5a, 0x5a),
-    accent: rgb(0xe0, 0x4a, 0x0c),
-    accent_text: rgb(0xb3, 0x3c, 0x08),
+    bg: rgb(0xf7, 0xf6, 0xf4),
+    sidebar: rgb(0xea, 0xe8, 0xe4),
+    status_bg: rgb(0xf2, 0xf1, 0xed),
+    field: rgb(0xff, 0xff, 0xff),
+    button: rgb(0xff, 0xff, 0xff),
+    hover: rgb(0xf0, 0xee, 0xea),
+    nav_hover: rgb(0xe3, 0xe1, 0xdc),
+    hairline: rgb(0xde, 0xdd, 0xd9),
+    border: rgb(0x8c, 0x8c, 0x8c),
+    text: rgb(0x11, 0x11, 0x11),
+    dim: rgb(0x5f, 0x5f, 0x5f),
+    key: rgb(0x6b, 0x6b, 0x6b),
+    accent: rgb(0xe5, 0x47, 0x0a),
+    accent_text: rgb(0xb5, 0x3a, 0x04),
     thumb: rgb(0xff, 0xff, 0xff),
-    ok: rgb(0x1d, 0x7a, 0x4b),
-    warn: rgb(0x8a, 0x58, 0x00),
-    error: rgb(0xb3, 0x26, 0x1e),
+    ok: rgb(0x1a, 0x94, 0x55),
+    warn: rgb(0xb8, 0x6a, 0x00),
+    ok_text: rgb(0x15, 0x7a, 0x47),
+    warn_text: rgb(0x8a, 0x52, 0x00),
+    error: rgb(0xc6, 0x28, 0x28),
 };
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
@@ -98,48 +121,55 @@ pub mod m {
     pub const WINDOW: [f32; 2] = [760.0, 560.0];
     pub const WINDOW_MIN: [f32; 2] = [640.0, 480.0];
 
-    pub const SIDEBAR_W: f32 = 188.0;
-    pub const NAV_ITEM_H: f32 = 32.0;
+    pub const SIDEBAR_W: f32 = 160.0;
+    pub const NAV_ITEM_H: f32 = 34.0;
     /// Width of the orange bar on the active nav item.
     pub const NAV_BAR_W: f32 = 3.0;
     pub const SEARCH_H: f32 = 28.0;
 
-    pub const PAGE_PAD_X: f32 = 24.0;
-    pub const HEADER_PAD_Y: f32 = 16.0;
+    pub const PAGE_PAD_X: f32 = 20.0;
+    pub const HEADER_PAD_Y: f32 = 14.0;
 
     /// Width of the label cell of a setting row; the control cell takes the rest.
-    pub const LABEL_COL_W: f32 = 200.0;
+    pub const LABEL_COL_W: f32 = 172.0;
     pub const ROW_PAD: f32 = 14.0;
-    pub const ROW_MIN_H: f32 = 56.0;
+    pub const ROW_MIN_H: f32 = 60.0;
 
-    pub const CONTROL_H: f32 = 30.0;
-    pub const STEPPER_BTN_W: f32 = 32.0;
-    pub const STEPPER_VALUE_W: f32 = 64.0;
-    pub const TOGGLE_W: f32 = 36.0;
+    pub const CONTROL_H: f32 = 28.0;
+    pub const STEPPER_H: f32 = 32.0;
+    pub const STEPPER_BTN_W: f32 = 36.0;
+    pub const STEPPER_VALUE_W: f32 = 100.0;
+    pub const RECORDER_H: f32 = 48.0;
+    pub const TOGGLE_W: f32 = 38.0;
     pub const TOGGLE_H: f32 = 20.0;
-    pub const STATUS_H: f32 = 30.0;
+    /// SPEC.md says 48; 36 keeps more of the 560 pt window for content.
+    pub const STATUS_H: f32 = 36.0;
     pub const STATUS_LIGHT: f32 = 8.0;
 
     /// Corner radius of controls, cards and rows.
-    pub const RADIUS: u8 = 3;
+    pub const RADIUS: u8 = 4;
     /// Hairlines, control outlines.
     pub const STROKE: f32 = 1.0;
-    /// Recorder outline and focus ring.
+    /// Recorder outline while recording, and the row error outline.
+    pub const STROKE_MID: f32 = 1.5;
+    /// Focus ring.
     pub const STROKE_STRONG: f32 = 2.0;
     pub const GAP: f32 = 8.0;
     pub const GAP_L: f32 = 16.0;
 
     // type scale
-    pub const TITLE: f32 = 22.0;
+    pub const TITLE: f32 = 17.0;
     pub const TITLE_SPACING: f32 = 3.0;
-    pub const LABEL: f32 = 11.5;
-    pub const LABEL_SPACING: f32 = 1.4;
-    pub const KEY: f32 = 11.5;
-    pub const BODY: f32 = 13.5;
+    pub const LABEL: f32 = 11.0;
+    pub const LABEL_SPACING: f32 = 1.5;
+    pub const SUBTITLE: f32 = 10.0;
+    pub const SUBTITLE_SPACING: f32 = 1.2;
+    pub const KEY: f32 = 11.0;
+    pub const BODY: f32 = 13.0;
     pub const SMALL: f32 = 11.5;
-    pub const STATUS: f32 = 10.5;
+    pub const STATUS: f32 = 10.0;
     pub const STATUS_SPACING: f32 = 1.4;
-    pub const BIG_NUMBER: f32 = 17.0;
+    pub const BIG_NUMBER: f32 = 20.0;
 }
 
 // ------------------------------------------------------------------ fonts
@@ -185,7 +215,7 @@ pub fn caps_dim(p: &Palette, text: &str, size: f32, spacing: f32) -> RichText {
 
 /// A config key or other machine text: grey monospace.
 pub fn key(p: &Palette, text: &str) -> RichText {
-    RichText::new(text).font(mono_font(m::KEY)).color(p.dim)
+    RichText::new(text).font(mono_font(m::KEY)).color(p.key)
 }
 
 /// Monospace in the primary colour (numbers, shortcuts).
@@ -207,9 +237,9 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals_of(Theme::Light, visuals(&LIGHT));
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = vec2(m::GAP, m::GAP - 2.0);
-        style.spacing.button_padding = vec2(14.0, 6.0);
+        style.spacing.button_padding = vec2(12.0, 6.0);
         style.spacing.interact_size = vec2(32.0, m::CONTROL_H);
-        style.spacing.combo_width = 220.0;
+        style.spacing.combo_width = 190.0;
         style.spacing.icon_width = 18.0;
         style.spacing.icon_width_inner = 10.0;
         style.spacing.text_edit_width = 220.0;
@@ -232,7 +262,7 @@ fn text_styles() -> std::collections::BTreeMap<egui::TextStyle, FontId> {
         (Body, FontId::proportional(m::BODY)),
         (Button, FontId::proportional(m::BODY)),
         (Small, FontId::proportional(m::SMALL)),
-        (Monospace, mono_font(12.5)),
+        (Monospace, mono_font(12.0)),
     ]
     .into_iter()
     .collect()
@@ -246,17 +276,17 @@ fn visuals(p: &Palette) -> egui::Visuals {
         egui::Visuals::light()
     };
     v.panel_fill = p.bg;
-    v.window_fill = p.panel;
+    v.window_fill = p.bg;
     v.window_stroke = Stroke::new(m::STROKE, p.border);
     v.window_corner_radius = r;
     v.menu_corner_radius = r;
     v.window_shadow = egui::Shadow::NONE;
     v.popup_shadow = egui::Shadow::NONE;
-    v.extreme_bg_color = p.control; // text edit background
-    v.faint_bg_color = p.panel;
-    v.code_bg_color = p.panel;
+    v.extreme_bg_color = p.field; // text edit background
+    v.faint_bg_color = p.sidebar;
+    v.code_bg_color = p.sidebar;
     v.hyperlink_color = p.accent_text;
-    v.warn_fg_color = p.warn;
+    v.warn_fg_color = p.warn_text;
     v.error_fg_color = p.error;
     v.weak_text_color = Some(p.dim);
     v.selection.bg_fill = with_alpha(p.accent, if p.dark { 90 } else { 70 });
@@ -266,24 +296,24 @@ fn visuals(p: &Palette) -> egui::Visuals {
     v.slider_trailing_fill = true;
 
     let w = &mut v.widgets;
-    w.noninteractive.bg_fill = p.panel;
-    w.noninteractive.weak_bg_fill = p.panel;
+    w.noninteractive.bg_fill = p.bg;
+    w.noninteractive.weak_bg_fill = p.bg;
     w.noninteractive.bg_stroke = Stroke::new(m::STROKE, p.hairline);
     w.noninteractive.fg_stroke = Stroke::new(m::STROKE, p.text);
-    w.inactive.bg_fill = p.control;
-    w.inactive.weak_bg_fill = p.control;
+    w.inactive.bg_fill = p.button;
+    w.inactive.weak_bg_fill = p.button;
     w.inactive.bg_stroke = Stroke::new(m::STROKE, p.border);
     w.inactive.fg_stroke = Stroke::new(m::STROKE, p.text);
-    w.hovered.bg_fill = p.control_hover;
-    w.hovered.weak_bg_fill = p.control_hover;
+    w.hovered.bg_fill = p.hover;
+    w.hovered.weak_bg_fill = p.hover;
     w.hovered.bg_stroke = Stroke::new(m::STROKE, p.dim);
     w.hovered.fg_stroke = Stroke::new(m::STROKE, p.text);
-    w.active.bg_fill = p.control_hover;
-    w.active.weak_bg_fill = p.control_hover;
+    w.active.bg_fill = p.hover;
+    w.active.weak_bg_fill = p.hover;
     w.active.bg_stroke = Stroke::new(m::STROKE, p.accent);
     w.active.fg_stroke = Stroke::new(m::STROKE, p.text);
-    w.open.bg_fill = p.control;
-    w.open.weak_bg_fill = p.control;
+    w.open.bg_fill = p.button;
+    w.open.weak_bg_fill = p.button;
     w.open.bg_stroke = Stroke::new(m::STROKE, p.border);
     w.open.fg_stroke = Stroke::new(m::STROKE, p.text);
     for wv in [
@@ -339,18 +369,36 @@ mod tests {
     /// (name, foreground, background) of every text pair the window draws.
     fn text_pairs(p: &Palette) -> Vec<(&'static str, Color32, Color32)> {
         let mut v = Vec::new();
-        for (bn, bg) in [("bg", p.bg), ("panel", p.panel), ("control", p.control)] {
-            let _ = bn;
+        for bg in [p.bg, p.sidebar, p.status_bg, p.field, p.button] {
             v.push(("text", p.text, bg));
             v.push(("dim", p.dim, bg));
+        }
+        // config keys are only drawn on the content area, never on the sidebar
+        v.push(("key", p.key, p.bg));
+        for bg in [p.bg, p.sidebar] {
             v.push(("accent_text", p.accent_text, bg));
-            v.push(("ok", p.ok, bg));
-            v.push(("warn", p.warn, bg));
             v.push(("error", p.error, bg));
         }
-        v.push(("text on hover", p.text, p.control_hover));
-        v.push(("dim on hover", p.dim, p.control_hover));
+        v.push(("error on field", p.error, p.field));
+        for bg in [p.bg, p.field, p.status_bg] {
+            v.push(("ok_text", p.ok_text, bg));
+            v.push(("warn_text", p.warn_text, bg));
+        }
+        v.push(("text on hover", p.text, p.hover));
+        v.push(("dim on nav hover", p.dim, p.nav_hover));
+        v.push(("text on nav hover", p.text, p.nav_hover));
         v
+    }
+
+    /// Pairs that are not text: need 3:1 (WCAG 1.4.11).
+    fn graphic_pairs(p: &Palette) -> Vec<(&'static str, Color32, Color32)> {
+        vec![
+            ("accent on bg", p.accent, p.bg),
+            ("accent on sidebar", p.accent, p.sidebar),
+            ("control outline on bg", p.border, p.bg),
+            ("ok light on status", p.ok, p.status_bg),
+            ("warn light on status", p.warn, p.status_bg),
+        ]
     }
 
     #[test]
@@ -368,10 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn the_accent_fill_is_visible_against_both_backgrounds() {
+    fn graphic_elements_meet_three_to_one_in_both_themes() {
         for p in [DARK, LIGHT] {
-            assert!(contrast(p.accent, p.bg) >= 3.0, "accent on bg");
-            assert!(contrast(p.accent, p.panel) >= 3.0, "accent on panel");
+            for (name, fg, bg) in graphic_pairs(&p) {
+                let c = contrast(fg, bg);
+                assert!(c >= 3.0, "{} {name}: {c:.2}", if p.dark { "dark" } else { "light" });
+            }
         }
     }
 

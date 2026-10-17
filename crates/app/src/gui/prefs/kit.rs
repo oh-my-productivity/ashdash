@@ -42,14 +42,14 @@ pub fn nav_item(ui: &mut Ui, nav: Nav, active: bool) -> Response {
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if active {
-            painter.rect_filled(rect, 0.0, p.control);
+            painter.rect_filled(rect, 0.0, p.nav_hover);
             painter.rect_filled(
                 Rect::from_min_size(rect.min, vec2(m::NAV_BAR_W, rect.height())),
                 0.0,
                 p.accent,
             );
         } else if resp.hovered() {
-            painter.rect_filled(rect, 0.0, p.control_hover);
+            painter.rect_filled(rect, 0.0, p.nav_hover);
         }
         let name_color = if active { p.text } else { p.dim };
         let mut name = style::caps(nav.title(), name_color);
@@ -84,9 +84,14 @@ pub fn search_field(ui: &mut Ui, text: &mut String, id: egui::Id) -> Response {
         [width, m::SEARCH_H],
         egui::TextEdit::singleline(text)
             .id(id)
-            .hint_text(RichText::new("Go to a setting…").color(p.dim))
-            .margin(egui::Margin::symmetric(8, 4))
-            .font(egui::FontId::proportional(m::SMALL + 1.0)),
+            .hint_text(RichText::new("Go to a setting…").size(m::SMALL).color(p.dim))
+            .margin(egui::Margin {
+                left: 8,
+                right: 30,
+                top: 4,
+                bottom: 4,
+            })
+            .font(egui::FontId::proportional(m::SMALL)),
     );
     if text.is_empty() {
         ui.painter().text(
@@ -112,7 +117,7 @@ pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str, right: Option<&str>
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(style::title(&p, title));
-            ui.label(style::caps_dim(&p, subtitle, m::LABEL, m::LABEL_SPACING));
+            ui.label(style::caps_dim(&p, subtitle, m::SUBTITLE, m::SUBTITLE_SPACING));
         });
         if let Some(right) = right {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -172,6 +177,8 @@ pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control:
                 Frame::new().inner_margin(style::margin(pad, pad)).show(ui, |ui| {
                     ui.set_width(right_w - 2.0 * pad);
                     ui.spacing_mut().item_spacing = vec2(m::GAP, m::GAP);
+                    // single-line controls sit level with the label, not centred in a taller line
+                    ui.spacing_mut().interact_size.y = m::TOGGLE_H;
                     out = Some(control(ui));
                 });
             });
@@ -195,7 +202,7 @@ pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control:
         painter.rect_stroke(
             rect.shrink(1.0),
             0.0,
-            Stroke::new(m::STROKE_STRONG, p.error),
+            Stroke::new(m::STROKE_MID, p.error),
             StrokeKind::Inside,
         );
     }
@@ -234,7 +241,7 @@ pub fn section_title(ui: &mut Ui, title: &str, key: Option<&str>) {
 pub fn card<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
     let p = Palette::of(ui);
     Frame::new()
-        .fill(p.panel)
+        .fill(p.bg)
         .stroke(Stroke::new(m::STROKE, p.hairline))
         .corner_radius(radius())
         .inner_margin(style::margin(m::ROW_PAD, m::ROW_PAD))
@@ -250,7 +257,7 @@ pub fn card<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn info_card(ui: &mut Ui, title: &str, tone: Tone, lines: &[String], right: impl FnOnce(&mut Ui)) {
     let p = Palette::of(ui);
     Frame::new()
-        .fill(p.panel)
+        .fill(p.bg)
         .stroke(Stroke::new(m::STROKE, tone.color(&p).unwrap_or(p.hairline)))
         .corner_radius(radius())
         .inner_margin(style::margin(m::ROW_PAD, 10.0))
@@ -289,6 +296,25 @@ impl Tone {
             Tone::Off => None,
         }
     }
+}
+
+/// A painted warning triangle with an exclamation mark (not a font glyph), 12 pt.
+pub fn warn_triangle(ui: &mut Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+    let c = rect.center();
+    let tri = vec![
+        pos2(c.x, rect.min.y + 1.0),
+        pos2(rect.max.x - 0.5, rect.max.y - 1.5),
+        pos2(rect.min.x + 0.5, rect.max.y - 1.5),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        tri,
+        Color32::TRANSPARENT,
+        Stroke::new(1.5, color),
+    ));
+    ui.painter()
+        .line_segment([pos2(c.x, c.y - 1.5), pos2(c.x, c.y + 1.5)], Stroke::new(1.5, color));
+    ui.painter().circle_filled(pos2(c.x, c.y + 3.8), 0.9, color);
 }
 
 /// A square status light (never colour alone: the text beside it says the same).
@@ -364,7 +390,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
         let (fill, stroke) = if value {
             (p.accent, p.accent)
         } else {
-            (p.control, if resp.hovered() { p.dim } else { p.border })
+            (p.field, if resp.hovered() { p.dim } else { p.border })
         };
         ui.painter().rect(
             rect,
@@ -396,12 +422,12 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
 pub fn stepper(ui: &mut Ui, value: &mut usize, range: RangeInclusive<usize>) -> Response {
     let p = Palette::of(ui);
     let (lo, hi) = (*range.start(), *range.end());
-    let size = vec2(2.0 * m::STEPPER_BTN_W + m::STEPPER_VALUE_W, m::CONTROL_H + 6.0);
+    let size = vec2(2.0 * m::STEPPER_BTN_W + m::STEPPER_VALUE_W, m::STEPPER_H);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect(
         rect,
         radius(),
-        p.control,
+        p.field,
         Stroke::new(m::STROKE, p.border),
         StrokeKind::Inside,
     );
@@ -417,13 +443,13 @@ pub fn stepper(ui: &mut Ui, value: &mut usize, range: RangeInclusive<usize>) -> 
         resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), name));
         let can = (delta < 0 && *value > lo) || (delta > 0 && *value < hi);
         if resp.hovered() && can {
-            ui.painter().rect_filled(r.shrink(1.0), 0.0, p.control_hover);
+            ui.painter().rect_filled(r.shrink(1.0), 0.0, p.hover);
         }
         ui.painter().text(
             r.center(),
             Align2::CENTER_CENTER,
             glyph,
-            style::mono_font(16.0),
+            style::mono_font(20.0),
             if can { p.text } else { p.dim.gamma_multiply(0.5) },
         );
         if resp.clicked() && can {
@@ -438,7 +464,7 @@ pub fn stepper(ui: &mut Ui, value: &mut usize, range: RangeInclusive<usize>) -> 
     ui.painter()
         .vline(mid.max.x, rect.y_range(), Stroke::new(m::STROKE, p.hairline));
     let mut resp = ui
-        .scope_builder(UiBuilder::new().max_rect(mid.shrink2(vec2(2.0, 4.0))), |ui| {
+        .scope_builder(UiBuilder::new().max_rect(mid.shrink2(vec2(2.0, 0.0))), |ui| {
             let vis = ui.visuals_mut();
             for w in [
                 &mut vis.widgets.inactive,
@@ -482,14 +508,14 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
 /// orange outline and the prompt. Click it to start recording.
 pub fn recorder_box(ui: &mut Ui, listening: bool, main: &str, sub: &str) -> Response {
     let p = Palette::of(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m::RECORDER_H), Sense::click());
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Launcher shortcut"));
     let (stroke, fill) = if listening {
-        (Stroke::new(m::STROKE_STRONG, p.accent), p.bg)
+        (Stroke::new(m::STROKE_MID, p.accent), p.bg)
     } else {
         (
             Stroke::new(m::STROKE, if resp.hovered() { p.dim } else { p.border }),
-            p.control,
+            p.field,
         )
     };
     ui.painter().rect(rect, radius(), fill, stroke, StrokeKind::Inside);

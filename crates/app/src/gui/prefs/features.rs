@@ -78,13 +78,15 @@ impl PrefsApp {
             for (id, label, what) in model::PROVIDER_INFO {
                 let mut on = model::provider_enabled(&self.cfg, id);
                 kit::row(ui, label, None, false, |ui| {
-                    if kit::toggle(ui, &mut on, label).changed() {
-                        self.features.providers_msg = self
-                            .edit(|c| model::set_provider_enabled(c, id, on))
-                            .err()
-                            .map(Msg::err);
-                    }
-                    hint(ui, what);
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut on, label).changed() {
+                            self.features.providers_msg = self
+                                .edit(|c| model::set_provider_enabled(c, id, on))
+                                .err()
+                                .map(Msg::err);
+                        }
+                        hint(ui, what);
+                    });
                 });
             }
         });
@@ -147,11 +149,13 @@ impl PrefsApp {
                 Some("file_search.include_icloud_drive"),
                 err,
                 |ui| {
-                    if kit::toggle(ui, &mut icloud, "Keep iCloud Drive searchable").changed() {
-                        self.features.files_msg =
-                            self.edit(|c| model::set_include_icloud(c, icloud)).err().map(Msg::err);
-                    }
-                    hint(ui, "Keep iCloud Drive searchable although ~/Library is excluded");
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut icloud, "Keep iCloud Drive searchable").changed() {
+                            self.features.files_msg =
+                                self.edit(|c| model::set_include_icloud(c, icloud)).err().map(Msg::err);
+                        }
+                        hint(ui, "Keep iCloud Drive searchable although ~/Library is excluded");
+                    });
                 },
             );
         });
@@ -180,13 +184,15 @@ impl PrefsApp {
                 Some("bookmarks.include_in_general_search"),
                 false,
                 |ui| {
-                    if kit::toggle(ui, &mut general, "Also show bookmarks in ordinary searches").changed() {
-                        self.features.bookmarks_msg = self
-                            .edit(|c| model::set_bookmarks_in_general_search(c, general))
-                            .err()
-                            .map(Msg::err);
-                    }
-                    hint(ui, "Also show bookmarks in ordinary searches");
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut general, "Also show bookmarks in ordinary searches").changed() {
+                            self.features.bookmarks_msg = self
+                                .edit(|c| model::set_bookmarks_in_general_search(c, general))
+                                .err()
+                                .map(Msg::err);
+                        }
+                        hint(ui, "Also show bookmarks in ordinary searches");
+                    });
                 },
             );
         });
@@ -334,13 +340,13 @@ impl PrefsApp {
                             ui.add(egui::TextEdit::singleline(&mut draft.keyword).desired_width(140.0));
                             ui.end_row();
                             ui.label("Name");
-                            ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(260.0));
+                            ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(220.0));
                             ui.end_row();
                             ui.label("URL");
                             ui.add(
                                 egui::TextEdit::singleline(&mut draft.url)
                                     .hint_text("https://example.com/search?q={query}")
-                                    .desired_width(420.0),
+                                    .desired_width(330.0),
                             );
                             ui.end_row();
                         });
@@ -483,7 +489,7 @@ impl PrefsApp {
                         .spacing([10.0, 6.0])
                         .show(ui, |ui| {
                             ui.label("Name");
-                            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(300.0));
+                            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(220.0));
                             ui.end_row();
                             ui.label("Keyword");
                             ui.add(
@@ -509,7 +515,7 @@ impl PrefsApp {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.features.new_collection)
                                         .hint_text("or a new collection name")
-                                        .desired_width(180.0),
+                                        .desired_width(130.0),
                                 );
                             });
                             ui.end_row();
@@ -556,7 +562,7 @@ impl PrefsApp {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.features.sn_input)
                         .hint_text("path of an .alfredsnippets file")
-                        .desired_width(300.0),
+                        .desired_width(220.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Import").clicked() || enter) && !self.features.sn_input.trim().is_empty() {
