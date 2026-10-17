@@ -15,6 +15,7 @@ pub enum Nav {
     Clipboard,
     Snippets,
     Workflows,
+    Permissions,
     About,
 }
 
@@ -27,12 +28,13 @@ pub enum FeaturesPart {
 }
 
 impl Nav {
-    pub const ALL: [Nav; 6] = [
+    pub const ALL: [Nav; 7] = [
         Nav::General,
         Nav::Search,
         Nav::Clipboard,
         Nav::Snippets,
         Nav::Workflows,
+        Nav::Permissions,
         Nav::About,
     ];
 
@@ -43,6 +45,7 @@ impl Nav {
             Nav::Clipboard => "Clipboard",
             Nav::Snippets => "Snippets",
             Nav::Workflows => "Workflows",
+            Nav::Permissions => "Permissions",
             Nav::About => "About",
         }
     }
@@ -55,6 +58,7 @@ impl Nav {
             Nav::Clipboard => "History limits · ignored apps",
             Nav::Snippets => "Snippets · collections · import",
             Nav::Workflows => "Import · installed · per-workflow settings",
+            Nav::Permissions => "Accessibility · automation · disk access",
             Nav::About => "Version · licence · folders",
         }
     }
@@ -65,6 +69,7 @@ impl Nav {
             Nav::General => Page::General,
             Nav::Search | Nav::Clipboard | Nav::Snippets => Page::Features,
             Nav::Workflows => Page::Workflows,
+            Nav::Permissions => Page::Permissions,
             Nav::About => Page::About,
         }
     }
@@ -136,6 +141,17 @@ mod tests {
     }
 
     #[test]
+    fn permissions_is_cmd_6_and_about_moved_to_cmd_7() {
+        assert_eq!(Nav::Permissions.shortcut_label(), "⌘6");
+        assert_eq!(Nav::About.shortcut_label(), "⌘7");
+        assert_eq!(
+            Nav::from_shortcut(Modifiers::COMMAND, Key::Num6),
+            Some(Nav::Permissions)
+        );
+        assert_eq!(Nav::from_shortcut(Modifiers::COMMAND, Key::Num7), Some(Nav::About));
+    }
+
+    #[test]
     fn only_a_plain_cmd_digit_selects() {
         assert_eq!(Nav::from_shortcut(Modifiers::NONE, Key::Num2), None);
         assert_eq!(Nav::from_shortcut(Modifiers::ALT, Key::Num2), None);
@@ -153,7 +169,11 @@ mod tests {
         assert_eq!(filter("  "), Nav::ALL.to_vec());
         assert_eq!(filter("CLIP"), vec![Nav::Clipboard]);
         assert_eq!(filter(" work "), vec![Nav::Workflows]);
-        assert_eq!(filter("s"), vec![Nav::Search, Nav::Snippets, Nav::Workflows]);
+        assert_eq!(
+            filter("s"),
+            vec![Nav::Search, Nav::Snippets, Nav::Workflows, Nav::Permissions]
+        );
+        assert_eq!(filter("perm"), vec![Nav::Permissions]);
         assert!(filter("zzz").is_empty());
     }
 

@@ -13,7 +13,7 @@
 //!   problems back in `run/reload-status.json` ([`status`]).
 //!
 //! Module map: [`hotkey`] (recorder + re-registration), [`reload`] (launcher side),
-//! [`app`] (the window), [`general`], [`features`], [`workflows`] (pages), [`single`],
+//! [`app`] (the window), [`general`], [`features`], [`workflows`], [`permissions`] (pages), [`single`],
 //! [`dialogs`], [`status`]; the look: [`style`] (all tokens), [`fonts`], [`kit`] (shared
 //! components), [`nav`] (sidebar entries), [`summary`] (status strip and cards).
 
@@ -25,6 +25,7 @@ mod general;
 pub mod hotkey;
 mod kit;
 mod nav;
+mod permissions;
 pub mod reload;
 mod single;
 pub mod status;

@@ -229,18 +229,20 @@ window exists; opening it again brings it forward. Every change is checked, writ
 running launcher within about a second ([SETTINGS.md](SETTINGS.md)). If a change could not be applied (bad hotkey, broken
 file, a web search URL that is not allowed) the window shows why and the launcher keeps the previous setting.
 
-The window has a sidebar (Cmd+1 ... Cmd+6 switch pages; Cmd+K jumps to the "Go to a setting..." field, which filters the page list by name
-and opens the first match on Return). A strip at the bottom always shows the settings reload (CONFIG), the number of PROBLEMS and whether the
-launcher is running. It follows the system light/dark appearance.
+The window has its own title bar (drag it to move the window), and a sidebar (Cmd+1 ... Cmd+7 switch pages; Cmd+K jumps to the
+"Go to a setting..." field, which filters the page list by name and opens the first match on Return). A strip at the bottom always shows
+the settings reload (CONFIG), the number of PROBLEMS and whether the launcher is running, plus DISK ACCESS when Safari bookmarks are on
+and Full Disk Access is not granted. It follows the system light/dark appearance.
 
 | Page | What you can do |
 |---|---|
-| **General** (Cmd+1) | Record a new launcher shortcut (system shortcuts such as Cmd+Space are flagged), pick a theme or import an `.alfredappearance`, results per search, Launch at login (needs the app bundle), **Learning**: "Rank results by what I pick" and "Forget what I picked..."; a RELOAD card and the launcher's warnings |
+| **General** (Cmd+1) | The launcher shortcut is one box: click it (or focus it and press Return or Space), then press the new combination; Esc cancels, Backspace goes back to the default, and a combination without Cmd, Option or Ctrl is refused with the reason (system shortcuts such as Cmd+Space are flagged). Theme: a dropdown and "Import theme..." (you can also drop an `.alfredappearance` file on the window or run `ashdash theme <file>`). Results per search, Launch at login (needs the app bundle), **Learning**: "Rank results by what I pick" and "Forget usage...". A RELOAD card, the launcher's warnings and, if Safari bookmarks are on without Full Disk Access, a card "Full Disk Access not granted" with "Fix..." (Return) that opens the Permissions page |
 | **Search** (Cmd+2) | Switch features (providers) on and off; file search folders and exclusions and hidden files; bookmark sources; web searches (add, edit, remove; the URL is validated) |
 | **Clipboard** (Cmd+3) | Clipboard retention, largest image, and apps never to record |
 | **Snippets** (Cmd+4) | Add, edit, delete and import `.alfredsnippets` |
 | **Workflows** (Cmd+5) | List with enable/disable and Remove for workflows in Ashdash's own folder (workflows from `workflow_dirs` are listed read-only), import with the prompt above, "Configure..." for a workflow's settings sheet, "What can it do?" for its trust summary |
-| **About** (Cmd+6) | Version, licence, data and settings locations with Reveal in Finder buttons |
+| **Permissions** (Cmd+6) | What macOS has granted Ashdash, each with a status light and word (Granted / Not granted / Asked on first use / Unknown), what it is for, and "Open System Settings" for the right pane: **Accessibility** (auto-paste and keystrokes), **Automation** (System Events, Finder, Terminal) and **Full Disk Access** (Safari bookmarks). "Re-check" (Cmd+R) probes again; the page also re-checks when you come back to the window. Looking at it never makes macOS show a prompt. The answers are for the program that shows the window: started from `Ashdash.app` that is Ashdash, started from a terminal macOS counts the terminal. After granting Full Disk Access, quit and reopen Ashdash |
+| **About** (Cmd+7) | Version, licence, data and settings locations with Reveal in Finder buttons |
 
 You can drop `.alfredworkflow`, `.alfredappearance` and `.alfredsnippets` files on the window. "Forget what I picked..." clears
 `usage.json` (through the running launcher if there is one). Turning learning **off** only stops recording and ranking;

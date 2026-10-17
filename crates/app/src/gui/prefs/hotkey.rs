@@ -125,7 +125,8 @@ impl Recorder {
     }
 
     /// Feed one key press. Returns the shortcut once a valid combination was typed; Escape
-    /// alone cancels; a key without a modifier is refused and recording continues.
+    /// alone cancels; Backspace alone answers with the default shortcut (the keyboard route to
+    /// "reset to default"); any other key without a modifier is refused and recording continues.
     pub fn feed(&mut self, press: &Press) -> Option<Captured> {
         if !self.is_listening() {
             return None;
@@ -135,6 +136,15 @@ impl Recorder {
         if press.code == "Escape" && !any_mod {
             self.cancel();
             return None;
+        }
+        if press.code == "Backspace" && !any_mod {
+            self.state = RecorderState::Idle;
+            let spec = ashdash_core::brand::DEFAULT_HOTKEY.to_string();
+            return Some(Captured {
+                display: display_hotkey(&spec).unwrap_or_else(|| spec.clone()),
+                conflict: None,
+                spec,
+            });
         }
         if !(m.ctrl || m.alt || m.cmd) {
             // Shift alone would swallow capital letters everywhere.
@@ -318,6 +328,23 @@ mod tests {
             r.feed(&press(false, false, false, true, "Escape")).unwrap().spec,
             "cmd+Escape"
         );
+    }
+
+    #[test]
+    fn a_bare_backspace_while_recording_answers_with_the_default_and_cmd_backspace_is_a_shortcut() {
+        let mut r = Recorder::default();
+        r.start();
+        let got = r.feed(&press(false, false, false, false, "Backspace")).unwrap();
+        assert_eq!(got.spec, ashdash_core::brand::DEFAULT_HOTKEY);
+        assert_eq!(got.display, "⌥⇧Space");
+        assert_eq!(r.state, RecorderState::Idle);
+        r.start();
+        assert_eq!(
+            r.feed(&press(false, false, false, true, "Backspace")).unwrap().spec,
+            "cmd+Backspace"
+        );
+        // not listening: nothing happens
+        assert_eq!(r.feed(&press(false, false, false, false, "Backspace")), None);
     }
 
     #[test]

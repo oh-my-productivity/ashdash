@@ -149,6 +149,19 @@ pub fn rows<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// `key` is `None` for settings that are not in `config.json` (say so in `note` inside the
 /// control). `error` outlines the row in the error colour.
 pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control: impl FnOnce(&mut Ui) -> R) -> R {
+    row_with_note(ui, label, key, None, error, control)
+}
+
+/// [`row`] with one more dim mono line under the key in the label cell (e.g. the keys that work
+/// while the shortcut recorder is listening). Keep it to one short line.
+pub fn row_with_note<R>(
+    ui: &mut Ui,
+    label: &str,
+    key: Option<&str>,
+    note: Option<&str>,
+    error: bool,
+    control: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let p = Palette::of(ui);
     let width = ui.available_width();
     let pad = m::ROW_PAD;
@@ -167,6 +180,9 @@ pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control:
                     ui.add(egui::Label::new(style::caps(label, p.text)));
                     if let Some(key) = key {
                         ui.add(egui::Label::new(style::key(&p, key)).wrap());
+                    }
+                    if let Some(note) = note {
+                        ui.add(egui::Label::new(style::mono_dim(&p, note, m::NOTE)).wrap());
                     }
                 });
             });
@@ -252,9 +268,9 @@ pub fn card<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
-/// A card with a small-caps title, a line of dim text, and room for a button on the right
-/// (the RELOAD and attention cards of the General page).
-pub fn info_card(ui: &mut Ui, title: &str, tone: Tone, lines: &[String], right: impl FnOnce(&mut Ui)) {
+/// A card with an optional small-caps title, lines of dim text, and room for a button on the right
+/// (the RELOAD and attention cards of the General page). The text wraps; the button keeps its size.
+pub fn info_card(ui: &mut Ui, title: Option<&str>, tone: Tone, lines: &[String], right: impl FnOnce(&mut Ui)) {
     let p = Palette::of(ui);
     Frame::new()
         .fill(p.bg)
@@ -263,17 +279,29 @@ pub fn info_card(ui: &mut Ui, title: &str, tone: Tone, lines: &[String], right: 
         .inner_margin(style::margin(m::ROW_PAD, 10.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                light(ui, tone);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.label(style::caps(title, p.text));
-                    for l in lines {
-                        ui.add(egui::Label::new(style::hint_text(&p, l)).wrap());
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Min), right);
-            });
+            egui::containers::Sides::new().shrink_left().show(
+                ui,
+                |ui| {
+                    ui.horizontal_top(|ui| {
+                        light(ui, tone);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            if let Some(title) = title {
+                                ui.label(style::caps(title, p.text));
+                            }
+                            for l in lines {
+                                let t = if title.is_some() {
+                                    style::hint_text(&p, l)
+                                } else {
+                                    RichText::new(l).size(m::SMALL).color(p.text)
+                                };
+                                ui.add(egui::Label::new(t).wrap());
+                            }
+                        });
+                    });
+                },
+                right,
+            );
         });
 }
 
@@ -334,40 +362,92 @@ pub fn light(ui: &mut Ui, tone: Tone) {
 }
 
 /// One cell of the bottom strip.
+#[derive(PartialEq)]
 pub struct StatusItem {
     pub label: &'static str,
     pub value: String,
     pub tone: Tone,
 }
 
-/// The bottom STATUS strip: "STATUS" then `■ LABEL value` cells separated by hairlines.
+/// How much of the strip fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripMode {
+    /// "STATUS" and every cell with its value.
+    Full,
+    /// Without the "STATUS" caption.
+    NoCaption,
+    /// Without the caption and without values: light and name, plus the warning triangle for
+    /// cells that need attention (the page's cards say what is wrong).
+    Compact,
+}
+
+/// Pick the richest mode whose width fits `avail`.
+pub fn strip_mode(full: f32, no_caption: f32, avail: f32) -> StripMode {
+    if full <= avail {
+        StripMode::Full
+    } else if no_caption <= avail {
+        StripMode::NoCaption
+    } else {
+        StripMode::Compact
+    }
+}
+
+/// The bottom STATUS strip: "STATUS" then `■ LABEL value` cells separated by hairlines. When the
+/// window is narrow the caption and then the values go (measured by laying the strip out
+/// invisibly in each mode), so nothing is cut off.
 pub fn status_strip(ui: &mut Ui, items: &[StatusItem]) {
+    let avail = ui.available_width();
+    let width_of = |ui: &mut Ui, mode: StripMode| -> f32 {
+        let mut probe = ui.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_size(pos2(0.0, -1.0e4), vec2(1.0e4, m::STATUS_H)))
+                .layout(Layout::left_to_right(Align::Center))
+                .invisible(),
+        );
+        draw_strip(&mut probe, items, mode);
+        probe.min_rect().width()
+    };
+    let full = width_of(ui, StripMode::Full);
+    let no_caption = width_of(ui, StripMode::NoCaption);
+    let mode = strip_mode(full, no_caption, avail);
+    ui.horizontal_centered(|ui| draw_strip(ui, items, mode));
+}
+
+fn draw_strip(ui: &mut Ui, items: &[StatusItem], mode: StripMode) {
     let p = Palette::of(ui);
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        ui.add_space(m::GAP_L);
+    ui.spacing_mut().item_spacing.x = 10.0;
+    ui.add_space(m::GAP_L);
+    if mode == StripMode::Full {
         ui.label(style::caps_dim(&p, "Status", m::STATUS, m::STATUS_SPACING));
-        for it in items {
-            ui.add_space(6.0);
-            let x = ui.cursor().min.x;
-            let r = ui.max_rect();
+    }
+    for (i, it) in items.iter().enumerate() {
+        ui.add_space(6.0);
+        let x = ui.cursor().min.x;
+        let r = ui.max_rect();
+        if mode == StripMode::Full || i > 0 {
             ui.painter()
                 .vline(x, (r.min.y + 6.0)..=(r.max.y - 6.0), Stroke::new(m::STROKE, p.hairline));
-            ui.add_space(8.0);
-            light(ui, it.tone);
-            ui.label(
-                RichText::new(it.label.to_uppercase())
-                    .font(style::medium_font(m::STATUS))
-                    .extra_letter_spacing(m::STATUS_SPACING)
-                    .color(p.text),
-            );
+        }
+        ui.add_space(8.0);
+        light(ui, it.tone);
+        ui.label(
+            RichText::new(it.label.to_uppercase())
+                .font(style::medium_font(m::STATUS))
+                .extra_letter_spacing(m::STATUS_SPACING)
+                .color(p.text),
+        );
+        if mode != StripMode::Compact {
             ui.label(
                 RichText::new(&it.value)
                     .font(style::mono_font(m::STATUS + 1.0))
                     .color(p.dim),
             );
         }
-    });
+        // the light is a colour: the triangle says "look at this" without it
+        if matches!(it.tone, Tone::Warn | Tone::Error) {
+            warn_triangle(ui, it.tone.color(&p).unwrap_or(p.warn));
+        }
+    }
 }
 
 // ------------------------------------------------------------------ controls
@@ -504,11 +584,24 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
     )
 }
 
-/// The shortcut recorder box: idle shows the current shortcut in mono, recording shows a 2 px
-/// orange outline and the prompt. Click it to start recording.
-pub fn recorder_box(ui: &mut Ui, listening: bool, main: &str, sub: &str) -> Response {
+/// What the recorder box shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecorderView<'a> {
+    /// The current shortcut, large and mono.
+    Idle { shortcut: &'a str },
+    /// Listening: an orange outline, the prompt, and the shortcut it replaces (`was`).
+    Recording { was: &'a str },
+}
+
+/// The shortcut recorder: **one box**. Idle it shows the current shortcut; Click / Return / Space
+/// on the focused box starts recording (the caller decides, from the response). While recording
+/// it has a 1.5 pt orange outline, "Press the new shortcut…" and "was ⌥⇧Space" right-aligned
+/// (on the second line when the box is too narrow for both).
+pub fn recorder_box(ui: &mut Ui, id: egui::Id, view: RecorderView<'_>) -> Response {
     let p = Palette::of(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m::RECORDER_H), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), m::RECORDER_H), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    let listening = matches!(view, RecorderView::Recording { .. });
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Launcher shortcut"));
     let (stroke, fill) = if listening {
         (Stroke::new(m::STROKE_MID, p.accent), p.bg)
@@ -519,37 +612,64 @@ pub fn recorder_box(ui: &mut Ui, listening: bool, main: &str, sub: &str) -> Resp
         )
     };
     ui.painter().rect(rect, radius(), fill, stroke, StrokeKind::Inside);
-    let painter = ui.painter();
-    if sub.is_empty() {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            main,
-            style::mono_font(22.0),
-            p.text,
-        );
-    } else {
-        painter.text(
-            pos2(rect.center().x, rect.center().y - 9.0),
-            Align2::CENTER_CENTER,
-            main,
-            if listening {
-                style::mono_font(m::BODY)
+    match view {
+        RecorderView::Idle { shortcut } => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                shortcut,
+                style::mono_font(m::RECORDER_TEXT),
+                p.text,
+            );
+        }
+        RecorderView::Recording { was } => {
+            let inner = rect.shrink2(vec2(m::GAP + 2.0, 0.0));
+            let painter = ui.painter();
+            let prompt = painter.layout_no_wrap("Press the new shortcut…".into(), style::mono_font(m::BODY), p.text);
+            let was_galley = painter.layout_no_wrap(format!("was {was}"), style::mono_font(m::KEY), p.dim);
+            let fits = prompt.size().x + was_galley.size().x + 2.0 * m::GAP <= inner.width();
+            let (y1, y2) = if fits {
+                (rect.center().y, rect.center().y)
             } else {
-                style::mono_font(22.0)
-            },
-            p.text,
-        );
-        painter.text(
-            pos2(rect.center().x, rect.center().y + 12.0),
-            Align2::CENTER_CENTER,
-            sub,
-            style::mono_font(m::KEY),
-            p.dim,
-        );
+                (rect.center().y - 9.0, rect.center().y + 10.0)
+            };
+            painter.galley(pos2(inner.min.x, y1 - prompt.size().y / 2.0), prompt, p.text);
+            painter.galley(
+                pos2(inner.max.x - was_galley.size().x, y2 - was_galley.size().y / 2.0),
+                was_galley,
+                p.dim,
+            );
+        }
     }
     focus_ring(ui, &resp, rect);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+// ------------------------------------------------------------------ own title bar
+
+/// The window's own title bar: the native title is hidden (the traffic lights stay), so this
+/// strip is what sits next to them. "Ashdash" centred, and the whole strip drags the window;
+/// a double click zooms it like a native title bar.
+pub fn title_bar(ui: &mut Ui, title: &str) {
+    let p = Palette::of(ui);
+    let rect = ui.max_rect();
+    let resp = ui.interact(rect, ui.id().with("titlebar-drag"), Sense::click_and_drag());
+    ui.painter()
+        .hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(m::STROKE, p.hairline));
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        title,
+        style::medium_font(m::BODY),
+        p.text,
+    );
+    let ctx = ui.ctx();
+    if resp.double_clicked() {
+        let zoomed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+    } else if resp.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
 }
 
 #[cfg(test)]
@@ -587,7 +707,14 @@ mod tests {
                         stepper(ui, &mut n, 1..=50);
                     });
                 });
-                recorder_box(ui, true, "Press the new shortcut…", "⌥⇧Space");
+                recorder_box(ui, egui::Id::new("rec"), RecorderView::Recording { was: "⌥⇧Space" });
+                recorder_box(
+                    ui,
+                    egui::Id::new("rec2"),
+                    RecorderView::Idle {
+                        shortcut: "⌥⇧Space"
+                    },
+                );
                 status_strip(
                     ui,
                     &[StatusItem {
@@ -596,13 +723,81 @@ mod tests {
                         tone: Tone::Ok,
                     }],
                 );
-                info_card(ui, "Reload", Tone::Warn, &["a".into()], |ui| {
+                info_card(ui, Some("Reload"), Tone::Warn, &["a".into()], |ui| {
                     primary_button(ui, "Fix…");
                 });
                 for nav in Nav::ALL {
                     nav_item(ui, nav, nav == Nav::General);
                 }
             });
+        }
+    }
+
+    #[test]
+    fn the_strip_drops_the_caption_and_then_healthy_values_before_it_would_clip() {
+        assert_eq!(strip_mode(600.0, 500.0, 700.0), StripMode::Full);
+        assert_eq!(strip_mode(600.0, 500.0, 550.0), StripMode::NoCaption);
+        assert_eq!(strip_mode(600.0, 500.0, 400.0), StripMode::Compact);
+    }
+
+    #[test]
+    fn the_longest_strip_fits_the_minimum_window_width() {
+        let items = vec![
+            StatusItem {
+                label: "Config",
+                value: "applied 13:44:36".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Problems",
+                value: "0".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Launcher",
+                value: "running".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Disk access",
+                value: "not granted".into(),
+                tone: Tone::Warn,
+            },
+        ];
+        let mut items = items;
+        items[0].value = "no report yet".into();
+        items[0].tone = Tone::Warn;
+        items[2].value = "no report yet".into();
+        for width in [m::WINDOW_MIN[0], m::WINDOW[0]] {
+            let mut used = 0.0;
+            run(|ui| {
+                ui.allocate_ui(vec2(width, m::STATUS_H), |ui| {
+                    status_strip(ui, &items);
+                    used = ui.min_rect().width();
+                });
+            });
+            assert!(used <= width + 0.5, "the strip needs {used} pt at {width}");
+        }
+    }
+
+    #[test]
+    fn the_single_line_row_labels_fit_the_label_column() {
+        let mut widths = Vec::new();
+        run(|ui| {
+            widths.clear();
+            for label in ["Launcher shortcut", "Results per search", "Launch at login", "Theme"] {
+                let g = egui::WidgetText::from(style::caps(label, Color32::WHITE)).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                );
+                widths.push((label, g.size().x));
+            }
+        });
+        let room = m::LABEL_COL_W - 2.0 * m::ROW_PAD;
+        for (label, w) in widths {
+            assert!(w <= room, "{label} needs {w} pt but the cell has {room}");
         }
     }
 
