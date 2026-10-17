@@ -14,16 +14,22 @@
 //!
 //! Module map: [`hotkey`] (recorder + re-registration), [`reload`] (launcher side),
 //! [`app`] (the window), [`general`], [`features`], [`workflows`] (pages), [`single`],
-//! [`dialogs`], [`status`].
+//! [`dialogs`], [`status`]; the look: [`style`] (all tokens), [`fonts`], [`kit`] (shared
+//! components), [`nav`] (sidebar entries), [`summary`] (status strip and cards).
 
 pub mod app;
 mod dialogs;
 mod features;
+mod fonts;
 mod general;
 pub mod hotkey;
+mod kit;
+mod nav;
 pub mod reload;
 mod single;
 pub mod status;
+mod style;
+mod summary;
 mod widgets;
 mod workflows;
 

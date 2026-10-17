@@ -11,7 +11,9 @@ use ashdash_core::{Config, Paths};
 use eframe::egui::{self, RichText};
 
 use super::app::{PrefsApp, Purpose, Task};
-use super::widgets::{ERROR, Msg, WARN, confirm_button, hint, section, show_msg};
+use super::kit;
+use super::style::{self, Palette};
+use super::widgets::{Msg, confirm_button, error_text, hint, section, show_msg, warn_text};
 use crate::prefs_model::{self as model, SettingControl};
 
 #[derive(Default)]
@@ -65,19 +67,20 @@ impl PrefsApp {
             self.workflows.refresh(&self.paths, &self.cfg);
         }
         self.import_section(ui);
-        section(ui, "Installed workflows", |ui| {
-            if self.workflows.list.is_empty() {
-                hint(
-                    ui,
-                    "No workflows installed. Import a .alfredworkflow file above, or point workflow_dirs at an existing folder of workflows.",
-                );
-            }
-            let list = self.workflows.list.clone();
+        kit::section_title(ui, "Installed workflows", Some("workflow_dirs"));
+        if self.workflows.list.is_empty() {
+            hint(
+                ui,
+                "No workflows installed. Import a .alfredworkflow file above, or point workflow_dirs at an existing folder of workflows.",
+            );
+        }
+        let list = self.workflows.list.clone();
+        show_msg(ui, &self.workflows.msg);
+        ui.add_space(style::m::GAP);
+        kit::rows(ui, |ui| {
             for w in &list {
                 self.workflow_row(ui, w);
-                ui.separator();
             }
-            show_msg(ui, &self.workflows.msg);
         });
     }
 
@@ -138,14 +141,14 @@ impl PrefsApp {
         };
         let (mut install, mut cancel) = (false, false);
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new(&text.title).strong().size(15.0));
+            ui.label(style::caps(&text.title, Palette::of(ui).text));
             for (i, l) in text.lines.iter().enumerate() {
                 if l.is_empty() {
                     ui.add_space(4.0);
                 } else if l.starts_with("Runs code") {
-                    ui.label(RichText::new(l).color(ERROR).strong());
+                    ui.label(error_text(ui, l).strong());
                 } else if l.starts_with("This replaces") || l.starts_with("Settings saved") {
-                    ui.label(RichText::new(l).color(WARN));
+                    ui.label(warn_text(ui, l));
                 } else if i + 1 == text.lines.len() {
                     hint(ui, l);
                 } else {
@@ -154,7 +157,7 @@ impl PrefsApp {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                install = ui.button("Install").clicked();
+                install = kit::primary_button(ui, "Install").clicked();
                 cancel = ui.button("Cancel").clicked();
             });
         });
@@ -184,70 +187,78 @@ impl PrefsApp {
     // ---------------------------------------------------------------- list
 
     fn workflow_row(&mut self, ui: &mut egui::Ui, w: &WorkflowInfo) {
-        ui.horizontal(|ui| {
-            if w.managed {
-                let mut on = !w.disabled;
-                if ui.checkbox(&mut on, "").on_hover_text("Enabled").changed() {
-                    self.workflows.msg = Some(match settings_view::set_workflow_enabled(&self.paths, &w.dir, on) {
-                        Ok(()) => Msg::ok(format!("{} {}.", w.name, if on { "enabled" } else { "disabled" })),
-                        Err(e) => Msg::err(format!("{e:#}")),
-                    });
-                    self.workflows.refresh(&self.paths, &self.cfg);
+        let mut sub = vec![w.bundle_id.clone()];
+        if !w.version.is_empty() {
+            sub.push(format!("v{}", w.version));
+        }
+        if !w.managed {
+            sub.push(format!(
+                "from {} (managed there)",
+                w.dir.parent().map(|p| p.display().to_string()).unwrap_or_default()
+            ));
+        }
+        let key = sub.join(" · ");
+        kit::row(ui, &w.name, Some(&key), false, |ui| {
+            ui.horizontal(|ui| {
+                if w.managed {
+                    let mut on = !w.disabled;
+                    if kit::toggle(ui, &mut on, &format!("{} enabled", w.name))
+                        .on_hover_text("Enabled")
+                        .changed()
+                    {
+                        self.workflows.msg = Some(match settings_view::set_workflow_enabled(&self.paths, &w.dir, on) {
+                            Ok(()) => Msg::ok(format!("{} {}.", w.name, if on { "enabled" } else { "disabled" })),
+                            Err(e) => Msg::err(format!("{e:#}")),
+                        });
+                        self.workflows.refresh(&self.paths, &self.cfg);
+                    }
+                } else {
+                    ui.add_enabled_ui(false, |ui| kit::toggle(ui, &mut !w.disabled, &w.name));
                 }
-            } else {
-                ui.add_enabled(false, egui::Checkbox::new(&mut !w.disabled, ""));
-            }
-            ui.vertical(|ui| {
-                ui.label(RichText::new(&w.name).strong());
-                let mut sub = vec![w.bundle_id.clone()];
-                if !w.version.is_empty() {
-                    sub.push(format!("v{}", w.version));
-                }
-                if !w.managed {
-                    sub.push(format!(
-                        "from {} (managed there)",
-                        w.dir.parent().map(|p| p.display().to_string()).unwrap_or_default()
-                    ));
-                }
-                ui.label(RichText::new(sub.join("  ·  ")).weak().small());
+                ui.label(style::hint_text(
+                    &Palette::of(ui),
+                    if w.disabled { "off" } else { "on" },
+                ));
             });
-        });
-        ui.horizontal(|ui| {
-            ui.add_space(26.0);
-            if w.settings > 0 && ui.small_button("Configure…").clicked() {
-                self.open_workflow_settings(w);
-            }
-            if ui.small_button("What can it do?").clicked() {
-                let same = self.workflows.details.as_deref() == Some(w.id.as_str());
-                self.workflows.details = (!same).then(|| w.id.clone());
-            }
-            if w.managed {
-                let armed = self.workflows.confirm_remove.as_deref() == Some(w.id.as_str());
-                let mut flag = armed;
-                if confirm_button(ui, &mut flag, "Remove…", "Yes, remove it") {
-                    self.workflows.msg = Some(match settings_view::remove_workflow(&self.paths, &w.dir) {
-                        Ok(()) => Msg::ok(format!("Removed {}.", w.name)),
-                        Err(e) => Msg::err(format!("{e:#}")),
-                    });
-                    self.workflows.confirm_remove = None;
-                    self.workflows.refresh(&self.paths, &self.cfg);
-                } else {
-                    self.workflows.confirm_remove = flag.then(|| w.id.clone());
+            ui.horizontal_wrapped(|ui| {
+                if w.settings > 0 && ui.button("Configure…").clicked() {
+                    self.open_workflow_settings(w);
+                }
+                if ui.button("What can it do?").clicked() {
+                    let same = self.workflows.details.as_deref() == Some(w.id.as_str());
+                    self.workflows.details = (!same).then(|| w.id.clone());
+                }
+                if w.managed {
+                    let armed = self.workflows.confirm_remove.as_deref() == Some(w.id.as_str());
+                    let mut flag = armed;
+                    if confirm_button(ui, &mut flag, "Remove…", "Yes, remove it") {
+                        self.workflows.msg = Some(match settings_view::remove_workflow(&self.paths, &w.dir) {
+                            Ok(()) => Msg::ok(format!("Removed {}.", w.name)),
+                            Err(e) => Msg::err(format!("{e:#}")),
+                        });
+                        self.workflows.confirm_remove = None;
+                        self.workflows.refresh(&self.paths, &self.cfg);
+                    } else {
+                        self.workflows.confirm_remove = flag.then(|| w.id.clone());
+                    }
+                }
+            });
+            if self.workflows.details.as_deref() == Some(w.id.as_str()) {
+                for (i, l) in model::trust_lines(&w.trust).iter().enumerate() {
+                    ui.add(
+                        egui::Label::new(if i == 0 {
+                            RichText::new(l).strong()
+                        } else {
+                            RichText::new(format!("• {l}"))
+                        })
+                        .wrap(),
+                    );
                 }
             }
-        });
-        if self.workflows.details.as_deref() == Some(w.id.as_str()) {
-            for (i, l) in model::trust_lines(&w.trust).iter().enumerate() {
-                ui.label(if i == 0 {
-                    RichText::new(l).strong()
-                } else {
-                    RichText::new(format!("• {l}"))
-                });
+            if self.workflows.open_settings.as_deref() == Some(w.bundle_id.as_str()) && !w.bundle_id.is_empty() {
+                self.settings_form(ui, w);
             }
-        }
-        if self.workflows.open_settings.as_deref() == Some(w.bundle_id.as_str()) && !w.bundle_id.is_empty() {
-            self.settings_form(ui, w);
-        }
+        });
     }
 
     // ---------------------------------------------------------------- per-workflow settings
@@ -280,15 +291,15 @@ impl PrefsApp {
             let rows = self.workflows.settings.clone();
             for s in &rows {
                 let label = if s.label.is_empty() { &s.variable } else { &s.label };
-                ui.label(RichText::new(label).strong());
+                ui.label(style::caps(label, Palette::of(ui).text));
                 if !s.description.is_empty() {
-                    ui.label(RichText::new(&s.description).weak().small());
+                    hint(ui, &s.description);
                 }
                 let text = self.workflows.edits.entry(s.variable.clone()).or_default();
                 match model::setting_control(&s.kind) {
                     SettingControl::Checkbox => {
                         let mut on = text.trim() == "1" || text.trim() == "true";
-                        if ui.checkbox(&mut on, "").changed() {
+                        if kit::toggle(ui, &mut on, label).changed() {
                             *text = if on { "1".into() } else { "0".into() };
                             save = Some((s.variable.clone(), text.clone()));
                         }
@@ -304,7 +315,7 @@ impl PrefsApp {
                         }
                     }
                     SettingControl::Number | SettingControl::Text => {
-                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(360.0));
+                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(280.0));
                         if r.lost_focus() {
                             save = Some((s.variable.clone(), text.clone()));
                         }
@@ -362,36 +373,32 @@ impl PrefsApp {
     // ---------------------------------------------------------------- about
 
     pub(super) fn about_page(&mut self, ui: &mut egui::Ui) {
-        section(ui, "About Ashdash", |ui| {
-            egui::Grid::new("about-grid")
-                .num_columns(2)
-                .spacing([14.0, 6.0])
-                .show(ui, |ui| {
-                    for (k, v) in model::about_rows(&self.paths) {
-                        ui.label(RichText::new(k).strong());
-                        ui.label(RichText::new(v).monospace());
-                        ui.end_row();
-                    }
+        let p = Palette::of(ui);
+        kit::rows(ui, |ui| {
+            for (k, v) in model::about_rows(&self.paths) {
+                kit::row(ui, k, None, false, |ui| {
+                    ui.add(egui::Label::new(style::mono(&p, &v, style::m::KEY + 1.0)).wrap());
                 });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Show data folder in Finder").clicked() {
-                    let _ = ashdash_core::engine::reveal(&self.paths.data);
-                }
-                if ui.button("Show settings file in Finder").clicked() {
-                    let _ = ashdash_core::engine::reveal(&self.paths.config_file());
-                }
-            });
-            ui.add_space(8.0);
-            hint(
-                ui,
-                "Ashdash is open source software. It is not affiliated with the reference launcher or its publisher.",
-            );
-            hint(
-                ui,
-                "Settings are kept in config.json; `ashdash config keys` lists every setting.",
-            );
+            }
         });
+        ui.add_space(style::m::GAP_L);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Show data folder in Finder").clicked() {
+                let _ = ashdash_core::engine::reveal(&self.paths.data);
+            }
+            if ui.button("Show settings file in Finder").clicked() {
+                let _ = ashdash_core::engine::reveal(&self.paths.config_file());
+            }
+        });
+        ui.add_space(style::m::GAP);
+        hint(
+            ui,
+            "Ashdash is open source software. It is not affiliated with the reference launcher or its publisher.",
+        );
+        hint(
+            ui,
+            "Settings are kept in config.json; `ashdash config keys` lists every setting.",
+        );
     }
 }
 

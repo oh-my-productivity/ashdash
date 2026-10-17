@@ -1,8 +1,11 @@
-//! Small egui helpers shared by the preferences pages.
+//! Small helpers shared by the preferences pages, built on `kit` and `style`.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
-/// A one-line result shown next to the control that caused it.
+use super::style::{self, Palette};
+
+/// A one-line result shown next to the control that caused it. Errors carry a glyph and text,
+/// never colour alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Msg {
     pub text: String,
@@ -25,13 +28,16 @@ impl Msg {
     }
 
     pub fn show(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new(&self.text).color(if self.error { ERROR } else { GOOD }));
+        let p = Palette::of(ui);
+        let (glyph, color) = if self.error { ("⚠", p.error) } else { ("✓", p.ok) };
+        ui.add(egui::Label::new(RichText::new(format!("{glyph} {}", self.text)).color(color)).wrap());
     }
 }
 
-pub const ERROR: Color32 = Color32::from_rgb(0xd0, 0x40, 0x40);
-pub const WARN: Color32 = Color32::from_rgb(0xc8, 0x8a, 0x10);
-pub const GOOD: Color32 = Color32::from_rgb(0x2e, 0x9b, 0x4e);
+/// Is there an error message to show? (Outlines the row.)
+pub fn is_error(msg: &Option<Msg>) -> bool {
+    msg.as_ref().is_some_and(|m| m.error)
+}
 
 pub fn show_msg(ui: &mut egui::Ui, msg: &Option<Msg>) {
     if let Some(m) = msg {
@@ -39,16 +45,23 @@ pub fn show_msg(ui: &mut egui::Ui, msg: &Option<Msg>) {
     }
 }
 
-/// A titled group with a little space above.
+/// Error-coloured text without a glyph (for inline emphasis inside a block).
+pub fn error_text(ui: &egui::Ui, text: &str) -> RichText {
+    RichText::new(text).color(Palette::of(ui).error)
+}
+
+pub fn warn_text(ui: &egui::Ui, text: &str) -> RichText {
+    RichText::new(text).color(Palette::of(ui).warn)
+}
+
+/// A titled group of free-form content (a card under a small-caps title).
 pub fn section<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.add_space(14.0);
-    ui.label(RichText::new(title).strong().size(15.0));
-    ui.separator();
-    body(ui)
+    super::kit::section(ui, title, body)
 }
 
 pub fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).weak().small());
+    let p = Palette::of(ui);
+    ui.add(egui::Label::new(style::hint_text(&p, text)).wrap());
 }
 
 /// What the user did with a list row.
@@ -67,14 +80,19 @@ pub fn string_list(
     input: &mut String,
     hint_text: &str,
 ) -> (RowAction, Option<String>) {
+    let p = Palette::of(ui);
     let mut action = RowAction::None;
     ui.push_id(id, |ui| {
         for (i, item) in items.iter().enumerate() {
             ui.horizontal(|ui| {
-                if ui.small_button("×").on_hover_text("Remove").clicked() {
+                if ui
+                    .add(egui::Button::new(RichText::new("×").color(p.dim)).frame(false))
+                    .on_hover_text("Remove")
+                    .clicked()
+                {
                     action = RowAction::Remove(i);
                 }
-                ui.label(item);
+                ui.label(style::mono(&p, item, style::m::KEY + 1.0));
             });
         }
     });
@@ -97,8 +115,9 @@ pub fn string_list(
 pub fn confirm_button(ui: &mut egui::Ui, armed: &mut bool, label: &str, confirm_label: &str) -> bool {
     if *armed {
         let mut fire = false;
+        let p = Palette::of(ui);
         ui.horizontal(|ui| {
-            if ui.button(RichText::new(confirm_label).color(ERROR)).clicked() {
+            if ui.button(RichText::new(confirm_label).color(p.error)).clicked() {
                 fire = true;
             }
             if ui.button("Cancel").clicked() {

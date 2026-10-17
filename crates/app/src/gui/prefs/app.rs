@@ -7,12 +7,14 @@ use std::time::{Duration, Instant};
 use ashdash_core::workflow::StagedPackage;
 use ashdash_core::{Config, Paths};
 use anyhow::{Result, anyhow};
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Frame, Key, Modifiers};
 
+use super::kit::{self, Tone};
+use super::nav::{self, Nav};
 use super::status::{self, LauncherStatus};
-use super::widgets::{ERROR, WARN};
-use super::{features, general, workflows};
-use crate::prefs_model::{EditResult, Page, Store};
+use super::style::{self, Palette, m};
+use super::{features, fonts, general, summary, workflows};
+use crate::prefs_model::{EditResult, Store};
 
 pub const WINDOW_TITLE: &str = "Ashdash Preferences";
 const POLL_EVERY: Duration = Duration::from_millis(900);
@@ -51,7 +53,9 @@ pub struct PrefsApp {
     pub(super) cfg: Config,
     /// Set while `config.json` cannot be read; editing is refused then.
     pub(super) cfg_error: Option<String>,
-    page: Page,
+    nav: Nav,
+    /// Text of the "Go to a setting…" field (filters the sidebar).
+    nav_query: String,
     launcher: Option<LauncherStatus>,
     last_poll: Instant,
     pub(super) general: general::State,
@@ -66,8 +70,8 @@ pub struct PrefsApp {
 pub fn run(paths: Paths) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
         .with_title(WINDOW_TITLE)
-        .with_inner_size([820.0, 640.0])
-        .with_min_inner_size([640.0, 480.0])
+        .with_inner_size(m::WINDOW)
+        .with_min_inner_size(m::WINDOW_MIN)
         .with_drag_and_drop(true);
     let options = eframe::NativeOptions {
         viewport,
@@ -88,6 +92,8 @@ pub fn run(paths: Paths) -> Result<()> {
 
 impl PrefsApp {
     fn new(ctx: egui::Context, paths: Paths) -> PrefsApp {
+        fonts::install(&ctx);
+        style::install(&ctx);
         let store = Store::new(paths.clone());
         let (cfg, cfg_error) = match store.load() {
             Ok(c) => (c, None),
@@ -99,7 +105,8 @@ impl PrefsApp {
             store,
             cfg,
             cfg_error,
-            page: Page::General,
+            nav: Nav::General,
+            nav_query: String::new(),
             launcher: None,
             last_poll: Instant::now() - POLL_EVERY,
             general: general::State::default(),
@@ -126,7 +133,8 @@ impl PrefsApp {
 
     /// Reload what a page shows from disk (on page switch and when files changed).
     fn enter_page(&mut self) {
-        match self.page {
+        use crate::prefs_model::Page;
+        match self.nav.page() {
             Page::General => self.general.refresh(&self.paths),
             Page::Features => self.features.refresh(&self.paths, &self.cfg),
             Page::Workflows => self.workflows.refresh(&self.paths, &self.cfg),
@@ -173,18 +181,15 @@ impl PrefsApp {
             let path = f.path().to_path_buf();
             match drop_target(&path) {
                 Some(Purpose::Workflow) => {
-                    self.page = Page::Workflows;
-                    self.enter_page();
+                    self.go(Nav::Workflows);
                     self.start_preview(path);
                 }
                 Some(Purpose::Theme) => {
-                    self.page = Page::General;
-                    self.enter_page();
+                    self.go(Nav::General);
                     self.import_theme(&path);
                 }
                 Some(Purpose::Snippets) => {
-                    self.page = Page::Features;
-                    self.enter_page();
+                    self.go(Nav::Snippets);
                     self.import_snippets(&path);
                 }
                 None => {}
@@ -201,40 +206,6 @@ impl PrefsApp {
             ctx.request_repaint();
         });
     }
-
-    fn banners(&self, ui: &mut egui::Ui) {
-        if let Some(e) = &self.cfg_error {
-            ui.label(
-                RichText::new(format!(
-                    "Warning: {e}\nThe window shows defaults and will not change the file."
-                ))
-                .color(ERROR),
-            );
-        }
-        if let Some(st) = &self.launcher {
-            if !status::process_alive(st.pid) {
-                ui.label(
-                    RichText::new("Ashdash's launcher is not running: changes apply the next time it starts.")
-                        .color(WARN),
-                );
-            } else {
-                for p in &st.problems {
-                    ui.label(RichText::new(format!("Warning: {p}")).color(ERROR));
-                }
-                if !st.restart_required.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "Restart Ashdash for these to take effect: {}.",
-                            st.restart_required.join(", ")
-                        ))
-                        .color(WARN),
-                    );
-                }
-            }
-        } else {
-            ui.label(RichText::new("The launcher has not reported yet: changes apply when it is running.").color(WARN));
-        }
-    }
 }
 
 impl eframe::App for PrefsApp {
@@ -244,6 +215,39 @@ impl eframe::App for PrefsApp {
 }
 
 impl PrefsApp {
+    pub(super) fn launcher_status(&self) -> Option<&LauncherStatus> {
+        self.launcher.as_ref()
+    }
+
+    /// Show a sidebar entry (reloading what its page needs).
+    pub(super) fn go(&mut self, nav: Nav) {
+        if self.nav != nav {
+            self.nav = nav;
+            self.enter_page();
+        }
+    }
+
+    /// Cmd+1..6 move between pages, Cmd+K focuses the "Go to a setting…" field.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let events = ctx.input(|i| i.events.clone());
+        for ev in &events {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } = ev
+            {
+                if let Some(n) = Nav::from_shortcut(*modifiers, *key) {
+                    self.go(n);
+                } else if *key == Key::K && modifiers.matches_exact(Modifiers::COMMAND) {
+                    ctx.memory_mut(|mem| mem.request_focus(search_id()));
+                }
+            }
+        }
+    }
+
     /// One frame of the window.
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -254,38 +258,121 @@ impl PrefsApp {
         self.poll_disk();
         self.poll_tasks();
         self.handle_drops(&ctx);
+        self.handle_shortcuts(&ctx);
         ctx.request_repaint_after(POLL_EVERY);
+        let p = Palette::of(ui);
+        let alive = self.launcher.as_ref().is_some_and(|l| status::process_alive(l.pid));
 
-        egui::Panel::top("prefs-tabs").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                for p in Page::ALL {
-                    if ui
-                        .selectable_label(self.page == p, RichText::new(p.title()).size(15.0))
-                        .clicked()
-                        && self.page != p
-                    {
-                        self.page = p;
-                        self.enter_page();
-                    }
-                }
+        egui::Panel::bottom("prefs-status")
+            .exact_size(m::STATUS_H)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(p.panel))
+            .show(ui, |ui| {
+                let y = ui.max_rect().min.y;
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y + 0.5,
+                    egui::Stroke::new(m::STROKE, p.hairline),
+                );
+                kit::status_strip(
+                    ui,
+                    &summary::strip_items(self.cfg_error.as_deref(), self.launcher.as_ref(), alive),
+                );
             });
-            ui.add_space(4.0);
-        });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.banners(ui);
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_max_width(760.0);
-                match self.page {
-                    Page::General => self.general_page(ui),
-                    Page::Features => self.features_page(ui),
-                    Page::Workflows => self.workflows_page(ui),
-                    Page::About => self.about_page(ui),
-                }
+        egui::Panel::left("prefs-sidebar")
+            .exact_size(m::SIDEBAR_W)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(p.panel))
+            .show(ui, |ui| self.sidebar(ui));
+
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(p.bg))
+            .show(ui, |ui| {
+                Frame::new()
+                    .inner_margin(style::margin(m::PAGE_PAD_X, 0.0))
+                    .show(ui, |ui| {
+                        let right =
+                            matches!(self.nav, Nav::General | Nav::Search | Nav::Clipboard).then_some("config.json");
+                        kit::page_header(ui, self.nav.title(), self.nav.subtitle(), right);
+                        let line_y = ui.cursor().min.y;
+                        let full = ui.clip_rect().x_range();
+                        ui.painter()
+                            .hline(full, line_y, egui::Stroke::new(m::STROKE, p.hairline));
+                        if self.nav != Nav::General {
+                            // a damaged settings file must be seen on every page
+                            for a in summary::attention(self.cfg_error.as_deref(), None, false)
+                                .into_iter()
+                                .filter(|a| a.tone == Tone::Error)
+                            {
+                                ui.add_space(m::GAP);
+                                kit::info_card(ui, a.title, a.tone, &a.lines, |_| {});
+                            }
+                        }
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            ui.add_space(m::GAP_L);
+                            match self.nav {
+                                Nav::General => self.general_page(ui, alive),
+                                Nav::Search | Nav::Clipboard | Nav::Snippets => {
+                                    if let Some(part) = self.nav.features_part() {
+                                        self.features_page(ui, part);
+                                    }
+                                }
+                                Nav::Workflows => self.workflows_page(ui),
+                                Nav::About => self.about_page(ui),
+                            }
+                            ui.add_space(m::GAP_L);
+                        });
+                    });
             });
-        });
     }
+
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let p = Palette::of(ui);
+        let rect = ui.max_rect();
+        ui.painter().vline(
+            rect.max.x - 0.5,
+            rect.y_range(),
+            egui::Stroke::new(m::STROKE, p.hairline),
+        );
+        ui.add_space(m::GAP_L);
+        let id = search_id();
+        Frame::new().inner_margin(style::margin(12.0, 0.0)).show(ui, |ui| {
+            let resp = kit::search_field(ui, &mut self.nav_query, id);
+            if resp.has_focus() {
+                let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                if enter && let Some(first) = nav::filter(&self.nav_query).first().copied() {
+                    self.nav_query.clear();
+                    resp.surrender_focus();
+                    self.go(first);
+                } else if esc {
+                    self.nav_query.clear();
+                    resp.surrender_focus();
+                }
+            }
+        });
+        ui.add_space(m::GAP_L);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let shown = nav::filter(&self.nav_query);
+        for n in &shown {
+            if kit::nav_item(ui, *n, *n == self.nav).clicked() {
+                self.go(*n);
+            }
+        }
+        if shown.is_empty() {
+            ui.add_space(m::GAP);
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.label(style::hint_text(&p, "No page with that name"));
+            });
+        }
+    }
+}
+
+fn search_id() -> egui::Id {
+    egui::Id::new("prefs-go-to-a-setting")
 }
 
 #[cfg(test)]
@@ -301,7 +388,10 @@ mod tests {
 
     fn frame(ctx: &egui::Context, app: &mut PrefsApp) {
         let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 640.0))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(m::WINDOW[0], m::WINDOW[1]),
+            )),
             ..Default::default()
         };
         let mut out = ctx.run_ui(raw, |ui| app.draw(ui));
@@ -322,8 +412,8 @@ mod tests {
         std::fs::write(paths.snippets_file(), r#"[{"name":"Sig","keyword":"sig","text":"hi"}]"#).unwrap();
         let ctx = egui::Context::default();
         let mut app = PrefsApp::new(ctx.clone(), paths);
-        for page in Page::ALL {
-            app.page = page;
+        for nav in Nav::ALL {
+            app.nav = nav;
             app.enter_page();
             for _ in 0..3 {
                 frame(&ctx, &mut app);
@@ -342,8 +432,8 @@ mod tests {
         let mut app = PrefsApp::new(ctx.clone(), paths.clone());
         assert!(app.cfg_error.is_some());
         assert!(app.edit(|c| crate::prefs_model::set_max_results(c, 10)).is_err());
-        for page in Page::ALL {
-            app.page = page;
+        for nav in Nav::ALL {
+            app.nav = nav;
             app.enter_page();
             frame(&ctx, &mut app);
         }

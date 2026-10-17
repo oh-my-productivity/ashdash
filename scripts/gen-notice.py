@@ -51,6 +51,15 @@ The launcher window embeds the default fonts of the egui crate family
 The licence texts are part of the epaint_default_fonts source package
 (crates.io, directory `fonts/`). A binary distribution must keep this notice.
 
+The preferences window additionally embeds three static font files
+(crates/app/resources/fonts/, sources and checksums in SOURCES.md), both families
+under the SIL Open Font License 1.1; the licence texts are shipped next to the files:
+
+  * Inter Regular and Inter Medium 4.1
+    (Copyright (c) 2016 The Inter Project Authors, https://github.com/rsms/inter)
+  * Geist Mono Regular 1.8.1
+    (Copyright 2024 The Geist Project Authors, https://github.com/vercel/geist-font)
+
 Rust crates
 -----------
 Format: name version - SPDX licence expression - source

@@ -32,8 +32,10 @@ pub enum Page {
 }
 
 impl Page {
+    #[cfg(test)]
     pub const ALL: [Page; 4] = [Page::General, Page::Features, Page::Workflows, Page::About];
 
+    #[cfg(test)]
     pub fn title(self) -> &'static str {
         match self {
             Page::General => "General",
