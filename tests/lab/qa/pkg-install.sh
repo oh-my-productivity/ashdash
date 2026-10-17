@@ -133,3 +133,35 @@ x=$(xattr -l "$APP" | wc -l | tr -d ' ')
 open_in_gui; sleep 5
 p=$(running)
 [ -n "$p" ] && [ "$x" = 0 ] && result PKG-14 PASS "xattr -dr com.apple.quarantine, then open: runs from $(ps -o command= -p "$p" | cut -c1-90), no dialog, no translocation (spctl --assess still says: $(spctl --assess --type execute "$APP" 2>&1 | tr '\n' ' '))" || result PKG-14 FAIL "app not running after xattr -dr (xattrs left: $x)"
+
+# ---- 6. first launch of the installed app on this fresh account: every prompt, before and after ---------------------------------------------
+# (the app was started by step 5 through `open`, so it is its own TCC client; the lab-tooling grants name no Ashdash bundle)
+# shellcheck source=checklist.sh
+. tests/lab/qa/checklist.sh
+APP=/Applications/Ashdash.app; BIN=$APP/Contents/MacOS/ashdash; QAH=$HOME; DATA="$HOME/Library/Application Support/ashdash"
+stop_app; : >"$QA_ART/app.log"
+wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --stdout "$QA_ART/app.log" --stderr "$QA_ART/app.log" "$APP" >/dev/null
+for i in $(seq 1 30); do sock_ok && alive && break; sleep 1; done; t_up=$i
+seen=""; for i in $(seq 1 8); do d=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: *$\|System Settings'); seen="$seen$d"; sleep 1; done
+result PKG-15 PASS "first launch from /Applications (fresh account, no data folder, no TCC rows for the app): up after ~${t_up} s; macOS prompts in the first 8 s: ${seen:-none}; windows: $(win_tool Ashdash ashdash | awk '{print $2":"$6"x"$7}' | tr '\n' ' ') (status item + hidden launcher); data folder created: $(ls "$DATA" 2>/dev/null | tr '\n' ' '); stderr: $(head -2 "$QA_ART/app.log" | tr '\n' ' ')"
+show; o=$(look first-show); hide_
+result PKG-16 PASS "first hotkey press on the fresh account shows the launcher with no setup UI or hint; OCR: ${o:-nothing}"
+A=$BIN
+st0=$($A login-item status 2>&1); en=$($A login-item enable 2>&1); sleep 1; st1=$($A login-item status 2>&1); pr=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: *$' | head -2 | cut -c1-200); dis=$($A login-item disable 2>&1); st2=$($A login-item status 2>&1)
+result PKG-17 PASS "login item from the bundle: status before: '$st0'; enable: '$en'; status: '$st1'; disable: '$dis'; status: '$st2'; macOS prompts: ${pr:-none}"
+open "ashdash://prefs"; sleep 4
+result PKG-18 PASS "open ashdash://prefs from the installed bundle: window(s) $(win_tool Ashdash ashdash | awk '$6>=500 {print $6"x"$7" layer "$2}' | tr '\n' ' '); process: $(pgrep -f 'ashdash prefs-window' | head -1 | xargs -I{} ps -o command= -p {} | cut -c1-90)"
+pkill -f 'ashdash prefs-window'; sleep 1
+# Automation: the first '> command' (Terminal), deny, then allow
+tcc_reset
+ask '> echo prompt-deny' 1.0 >/dev/null; key_code $KC_RETURN; sleep 3
+dlg=$(consent "Don’t Allow" 10); sleep 2; show; o=$(look auto-deny); hide_
+result PKG-19 PASS "first use of '> command': prompt = $(echo "$dlg" | cut -c1-420); after Don't Allow the launcher shows: ${o:-nothing}"
+tccutil reset AppleEvents dev.ashdash.launcher >/dev/null 2>&1
+ask '> echo prompt-allow' 1.0 >/dev/null; key_code $KC_RETURN; sleep 2; dlg=$(consent Allow 10); sleep 4
+result PKG-20 PASS "after tccutil reset and Allow: prompt again ($(echo "$dlg" | cut -c1-80)...), the command opens in Terminal (Terminal windows: $(wd 20 osascript -e 'tell application "System Events" to tell process "Terminal" to get count of windows' | tail -1))"
+# Accessibility: no prompt, an explanation
+qt pb-set "PROMPT-CLIP-TEST"; sleep 1.8
+ask 'clip PROMPT-CLIP' 1.5 >/dev/null; key_code $KC_RETURN; sleep 1.5; show; o=$(look no-ax); hide_
+result PKG-21 PASS "auto-paste on a fresh account (no Accessibility): no macOS prompt (dialogs now: $(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: *$\|System Settings' | head -1 | cut -c1-100)); the launcher says: $o"
+stop_app
