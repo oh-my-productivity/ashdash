@@ -90,15 +90,16 @@ ITEMS = {
     "W5.4e": "Allow runs the trigger and is stored", "W5.4f": "Stored answer: no dialog", "W5.4g": "Don't Allow is stored",
     "W5.5": "Transient workflow copy not in history, plain copy is",
     "KU-AS": "AppleScript `search`", "KU-JXA1": "JXA, bundle id form", "KU-JXA2": "JXA, path form", "KU-STATUS": "Menu-bar item: Preferences...",
-    "KU-HELD": "Held Return in the import prompt never installs", "KU-HELD2": "Fresh Return installs", "SOAK": "2-hour soak",
+    "KU-HELD": "Held Return in the import prompt never installs", "KU-HELD2": "Fresh Return installs", "SOAK": "2-hour soak", "SOAK-PM": "pmset sleepnow / displaysleepnow in the VM", "SETUP": "Bundle installed, app running from /Applications",
+    "REPRO-PLACEHOLDER": "Wave 5 screenshot: placeholder shown while results for \"saf\" are listed",
 }
 SECTIONS = [
-    ("Packaged install on a fresh account (`tests/lab/qa/pkg-install.sh`)", r"PKG-"),
+    ("Setup", r"SETUP"), ("Packaged install on a fresh account (`tests/lab/qa/pkg-install.sh`)", r"PKG-"),
     ("3.1 Hotkey and window", r"3\.1\."), ("3.2 Typing and results", r"3\.2\."), ("3.3 Keyboard", r"3\.3\."), ("3.4 Focus loss", r"3\.4\."),
     ("3.5 Clipboard history and snippets", r"3\.5\."), ("3.6 Workflows", r"3\.6\."), ("3.7 Permissions", r"3\.7\."),
     ("3.8 Appearance and robustness", r"3\.8\."), ("3.9 Universal Actions panel and buffer", r"3\.9\."),
     ("3.11 Measurements that need the real process", r"3\.11\."), ("Wave 4/5 behaviours", r"W5\."),
-    ("Other items from STATUS.md 'Known unverified items'", r"KU-"), ("Soak", r"SOAK"),
+    ("Other items from STATUS.md 'Known unverified items'", r"KU-"), ("Soak", r"SOAK"), ("Wave 5 screenshot investigation", r"REPRO-"),
 ]
 
 
