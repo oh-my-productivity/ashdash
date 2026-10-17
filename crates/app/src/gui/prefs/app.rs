@@ -105,7 +105,13 @@ pub fn run(paths: Paths) -> Result<()> {
     eframe::run_native(
         WINDOW_TITLE,
         options,
-        Box::new(move |cc| Ok(Box::new(PrefsApp::new(cc.egui_ctx.clone(), paths, Arc::new(SystemProbes))))),
+        Box::new(move |cc| {
+            Ok(Box::new(PrefsApp::new(
+                cc.egui_ctx.clone(),
+                paths,
+                Arc::new(SystemProbes),
+            )))
+        }),
     )
     .map_err(|e| anyhow!("{e}"))
 }
@@ -469,7 +475,8 @@ fn search_id() -> egui::Id {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::permissions::{Fake, Grant};
+    use crate::mac::permissions::Grant;
+    use crate::mac::permissions::fake::Fake;
 
     fn test_app(ctx: &egui::Context, paths: Paths) -> PrefsApp {
         app_with(ctx, paths, Arc::new(Fake::all(Grant::Granted)))
@@ -623,8 +630,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-
-    fn viewport_commands(ctx: &egui::Context, app: &mut PrefsApp, events: Vec<egui::Event>) -> Vec<egui::ViewportCommand> {
+    fn viewport_commands(
+        ctx: &egui::Context,
+        app: &mut PrefsApp,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::ViewportCommand> {
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -691,7 +701,10 @@ mod tests {
         let mut rect = egui::Rect::NOTHING;
         let _ = ctx.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(m::WINDOW[0], m::WINDOW[1]))),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(m::WINDOW[0], m::WINDOW[1]),
+                )),
                 ..Default::default()
             },
             |ui| {
@@ -757,7 +770,10 @@ mod tests {
 
     fn frame_sized(ctx: &egui::Context, app: &mut PrefsApp, size: [f32; 2]) {
         let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size[0], size[1]),
+            )),
             ..Default::default()
         };
         let mut out = ctx.run_ui(raw, |ui| app.draw(ui));
@@ -885,7 +901,11 @@ mod tests {
         };
         viewport_commands(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
         viewport_commands(&ctx, &mut app, vec![b(true)]);
-        let cmds = viewport_commands(&ctx, &mut app, vec![egui::Event::PointerMoved(from + egui::vec2(12.0, 3.0))]);
+        let cmds = viewport_commands(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(from + egui::vec2(12.0, 3.0))],
+        );
         assert!(
             cmds.iter().any(|c| matches!(c, egui::ViewportCommand::StartDrag)),
             "{cmds:?}"
@@ -902,7 +922,10 @@ mod tests {
         let mut sidebar_top = f32::MAX;
         let _ = ctx.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(m::WINDOW[0], m::WINDOW[1]))),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(m::WINDOW[0], m::WINDOW[1]),
+                )),
                 ..Default::default()
             },
             |ui| {

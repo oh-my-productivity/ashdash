@@ -606,11 +606,8 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
     let p = Palette::of(ui);
     let rect = ui.max_rect();
     let resp = ui.interact(rect, ui.id().with("titlebar-drag"), Sense::click_and_drag());
-    ui.painter().hline(
-        rect.x_range(),
-        rect.max.y - 0.5,
-        Stroke::new(m::STROKE, p.hairline),
-    );
+    ui.painter()
+        .hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(m::STROKE, p.hairline));
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -663,7 +660,13 @@ mod tests {
                     });
                 });
                 recorder_box(ui, egui::Id::new("rec"), RecorderView::Recording { was: "⌥⇧Space" });
-                recorder_box(ui, egui::Id::new("rec2"), RecorderView::Idle { shortcut: "⌥⇧Space" });
+                recorder_box(
+                    ui,
+                    egui::Id::new("rec2"),
+                    RecorderView::Idle {
+                        shortcut: "⌥⇧Space"
+                    },
+                );
                 status_strip(
                     ui,
                     &[StatusItem {
@@ -679,6 +682,27 @@ mod tests {
                     nav_item(ui, nav, nav == Nav::General);
                 }
             });
+        }
+    }
+
+    #[test]
+    fn the_single_line_row_labels_fit_the_label_column() {
+        let mut widths = Vec::new();
+        run(|ui| {
+            widths.clear();
+            for label in ["Launcher shortcut", "Results per search", "Launch at login", "Theme"] {
+                let g = egui::WidgetText::from(style::caps(label, Color32::WHITE)).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                );
+                widths.push((label, g.size().x));
+            }
+        });
+        let room = m::LABEL_COL_W - 2.0 * m::ROW_PAD;
+        for (label, w) in widths {
+            assert!(w <= room, "{label} needs {w} pt but the cell has {room}");
         }
     }
 

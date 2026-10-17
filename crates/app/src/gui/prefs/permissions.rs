@@ -2,7 +2,7 @@
 //! opens the right pane of System Settings. The probes are silent (see `mac::permissions`):
 //! looking at this page never makes macOS ask for anything.
 
-use eframe::egui::{self, Layout, Align, vec2};
+use eframe::egui::{self, Align, Layout, vec2};
 
 use super::app::PrefsApp;
 use super::kit::{self, Tone};
@@ -105,9 +105,13 @@ fn top_line(ui: &mut egui::Ui, grant: Option<Grant>, text: Option<&str>, right: 
         |ui| {
             ui.horizontal(|ui| {
                 kit::light(ui, tone_of(grant));
-                ui.allocate_ui_with_layout(vec2(WORD_W, m::CONTROL_H - 8.0), Layout::left_to_right(Align::Center), |ui| {
-                    ui.label(style::mono(&p, word_of(grant), m::KEY));
-                });
+                ui.allocate_ui_with_layout(
+                    vec2(WORD_W, m::CONTROL_H - 8.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.label(style::mono(&p, word_of(grant), m::KEY));
+                    },
+                );
                 if let Some(text) = text {
                     ui.add(egui::Label::new(egui::RichText::new(text).size(m::SMALL).color(p.text)).wrap());
                 }
@@ -120,5 +124,28 @@ fn top_line(ui: &mut egui::Ui, grant: Option<Grant>, text: Option<&str>, right: 
 fn open_button(ui: &mut egui::Ui, pane: Pane, open: &mut Option<Pane>) {
     if ui.button("Open System Settings").clicked() {
         *open = Some(pane);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_refusal_is_a_warning_and_the_words_are_the_four_from_the_brief() {
+        assert_eq!(tone_of(Some(Grant::Granted)), Tone::Ok);
+        assert_eq!(tone_of(Some(Grant::NotGranted)), Tone::Warn);
+        assert_eq!(tone_of(Some(Grant::AskedOnFirstUse)), Tone::Off);
+        assert_eq!(tone_of(Some(Grant::Unknown)), Tone::Off);
+        assert_eq!(tone_of(None), Tone::Off);
+        assert_eq!(word_of(None), "Checking…");
+        assert_eq!(word_of(Some(Grant::AskedOnFirstUse)), "Asked on first use");
+    }
+
+    #[test]
+    fn the_automation_rows_are_the_three_apps_and_there_is_no_contacts_row() {
+        let names: Vec<_> = AUTOMATION_TARGETS.iter().map(|t| t.name).collect();
+        assert_eq!(names, ["System Events", "Finder", "Terminal"]);
+        assert!(AUTOMATION_TARGETS.iter().all(|t| !t.used_for.is_empty()));
     }
 }

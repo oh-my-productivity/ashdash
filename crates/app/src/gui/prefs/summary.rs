@@ -309,6 +309,10 @@ mod tests {
             "Full Disk Access not granted · Safari bookmarks (bm) return nothing"
         );
         assert_eq!(cards[0].fix, Some(Nav::Permissions));
-        assert!(strip_items(None, Some(&st), true, false).iter().all(|i| i.label != "Disk access"));
+        assert!(
+            strip_items(None, Some(&st), true, false)
+                .iter()
+                .all(|i| i.label != "Disk access")
+        );
     }
 }
