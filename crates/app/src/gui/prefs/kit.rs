@@ -362,44 +362,92 @@ pub fn light(ui: &mut Ui, tone: Tone) {
 }
 
 /// One cell of the bottom strip.
+#[derive(PartialEq)]
 pub struct StatusItem {
     pub label: &'static str,
     pub value: String,
     pub tone: Tone,
 }
 
-/// The bottom STATUS strip: "STATUS" then `■ LABEL value` cells separated by hairlines.
+/// How much of the strip fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripMode {
+    /// "STATUS" and every cell with its value.
+    Full,
+    /// Without the "STATUS" caption.
+    NoCaption,
+    /// Without the caption and without values: light and name, plus the warning triangle for
+    /// cells that need attention (the page's cards say what is wrong).
+    Compact,
+}
+
+/// Pick the richest mode whose width fits `avail`.
+pub fn strip_mode(full: f32, no_caption: f32, avail: f32) -> StripMode {
+    if full <= avail {
+        StripMode::Full
+    } else if no_caption <= avail {
+        StripMode::NoCaption
+    } else {
+        StripMode::Compact
+    }
+}
+
+/// The bottom STATUS strip: "STATUS" then `■ LABEL value` cells separated by hairlines. When the
+/// window is narrow the caption and then the values go (measured by laying the strip out
+/// invisibly in each mode), so nothing is cut off.
 pub fn status_strip(ui: &mut Ui, items: &[StatusItem]) {
+    let avail = ui.available_width();
+    let width_of = |ui: &mut Ui, mode: StripMode| -> f32 {
+        let mut probe = ui.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_size(pos2(0.0, -1.0e4), vec2(1.0e4, m::STATUS_H)))
+                .layout(Layout::left_to_right(Align::Center))
+                .invisible(),
+        );
+        draw_strip(&mut probe, items, mode);
+        probe.min_rect().width()
+    };
+    let full = width_of(ui, StripMode::Full);
+    let no_caption = width_of(ui, StripMode::NoCaption);
+    let mode = strip_mode(full, no_caption, avail);
+    ui.horizontal_centered(|ui| draw_strip(ui, items, mode));
+}
+
+fn draw_strip(ui: &mut Ui, items: &[StatusItem], mode: StripMode) {
     let p = Palette::of(ui);
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        ui.add_space(m::GAP_L);
+    ui.spacing_mut().item_spacing.x = 10.0;
+    ui.add_space(m::GAP_L);
+    if mode == StripMode::Full {
         ui.label(style::caps_dim(&p, "Status", m::STATUS, m::STATUS_SPACING));
-        for it in items {
-            ui.add_space(6.0);
-            let x = ui.cursor().min.x;
-            let r = ui.max_rect();
+    }
+    for (i, it) in items.iter().enumerate() {
+        ui.add_space(6.0);
+        let x = ui.cursor().min.x;
+        let r = ui.max_rect();
+        if mode == StripMode::Full || i > 0 {
             ui.painter()
                 .vline(x, (r.min.y + 6.0)..=(r.max.y - 6.0), Stroke::new(m::STROKE, p.hairline));
-            ui.add_space(8.0);
-            light(ui, it.tone);
-            ui.label(
-                RichText::new(it.label.to_uppercase())
-                    .font(style::medium_font(m::STATUS))
-                    .extra_letter_spacing(m::STATUS_SPACING)
-                    .color(p.text),
-            );
+        }
+        ui.add_space(8.0);
+        light(ui, it.tone);
+        ui.label(
+            RichText::new(it.label.to_uppercase())
+                .font(style::medium_font(m::STATUS))
+                .extra_letter_spacing(m::STATUS_SPACING)
+                .color(p.text),
+        );
+        if mode != StripMode::Compact {
             ui.label(
                 RichText::new(&it.value)
                     .font(style::mono_font(m::STATUS + 1.0))
                     .color(p.dim),
             );
-            // the light is a colour: the triangle says "look at this" without it
-            if matches!(it.tone, Tone::Warn | Tone::Error) {
-                warn_triangle(ui, it.tone.color(&p).unwrap_or(p.warn));
-            }
         }
-    });
+        // the light is a colour: the triangle says "look at this" without it
+        if matches!(it.tone, Tone::Warn | Tone::Error) {
+            warn_triangle(ui, it.tone.color(&p).unwrap_or(p.warn));
+        }
+    }
 }
 
 // ------------------------------------------------------------------ controls
@@ -682,6 +730,53 @@ mod tests {
                     nav_item(ui, nav, nav == Nav::General);
                 }
             });
+        }
+    }
+
+    #[test]
+    fn the_strip_drops_the_caption_and_then_healthy_values_before_it_would_clip() {
+        assert_eq!(strip_mode(600.0, 500.0, 700.0), StripMode::Full);
+        assert_eq!(strip_mode(600.0, 500.0, 550.0), StripMode::NoCaption);
+        assert_eq!(strip_mode(600.0, 500.0, 400.0), StripMode::Compact);
+    }
+
+    #[test]
+    fn the_longest_strip_fits_the_minimum_window_width() {
+        let items = vec![
+            StatusItem {
+                label: "Config",
+                value: "applied 13:44:36".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Problems",
+                value: "0".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Launcher",
+                value: "running".into(),
+                tone: Tone::Ok,
+            },
+            StatusItem {
+                label: "Disk access",
+                value: "not granted".into(),
+                tone: Tone::Warn,
+            },
+        ];
+        let mut items = items;
+        items[0].value = "no report yet".into();
+        items[0].tone = Tone::Warn;
+        items[2].value = "no report yet".into();
+        for width in [m::WINDOW_MIN[0], m::WINDOW[0]] {
+            let mut used = 0.0;
+            run(|ui| {
+                ui.allocate_ui(vec2(width, m::STATUS_H), |ui| {
+                    status_strip(ui, &items);
+                    used = ui.min_rect().width();
+                });
+            });
+            assert!(used <= width + 0.5, "the strip needs {used} pt at {width}");
         }
     }
 

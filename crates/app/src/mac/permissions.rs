@@ -184,6 +184,53 @@ pub fn protected_probe_path() -> Option<PathBuf> {
     Some(real_home()?.join("Library/Safari/Bookmarks.plist"))
 }
 
+/// Its folder: protected the same way, and present on a Mac whose user never bookmarked anything
+/// (the file is not).
+fn protected_probe_dir() -> Option<PathBuf> {
+    Some(real_home()?.join("Library/Safari"))
+}
+
+/// Open the file; if it does not exist, list its folder instead. Opens and lists only, nothing is read.
+pub fn probe_protected_files() -> Grant {
+    let (Some(file), Some(dir)) = (protected_probe_path(), protected_probe_dir()) else {
+        return Grant::Unknown;
+    };
+    let first = full_disk_access_from_open(&std::fs::File::open(file).map(|_| ()));
+    if first != Grant::Unknown {
+        return first;
+    }
+    full_disk_access_from_open(&std::fs::read_dir(dir).map(|_| ()))
+}
+
+// ------------------------------------------------------------------ screenshots and the lab
+
+/// For screenshots and the VM lab only: `ASHDASH_PREFS_FAKE_PERMISSIONS=fda=denied,automation=ask`
+/// replaces the answer of a probe (keys `accessibility`, `automation`, `fda`; values `granted`,
+/// `denied`, `ask`, `unknown`). A VM cannot be made to refuse Full Disk Access reliably, and a
+/// screenshot of the "not granted" states needs them. It changes what the window shows, nothing else.
+pub const OVERRIDE_ENV: &str = "ASHDASH_PREFS_FAKE_PERMISSIONS";
+
+/// One probe's override from the text of [`OVERRIDE_ENV`].
+pub fn override_for(spec: &str, key: &str) -> Option<Grant> {
+    spec.split(',').find_map(|part| {
+        let (k, v) = part.split_once('=')?;
+        if k.trim() != key {
+            return None;
+        }
+        match v.trim() {
+            "granted" => Some(Grant::Granted),
+            "denied" => Some(Grant::NotGranted),
+            "ask" => Some(Grant::AskedOnFirstUse),
+            "unknown" => Some(Grant::Unknown),
+            _ => None,
+        }
+    })
+}
+
+fn env_override(key: &str) -> Option<Grant> {
+    override_for(&std::env::var(OVERRIDE_ENV).ok()?, key)
+}
+
 // ------------------------------------------------------------------ the real thing
 
 /// Asks macOS. All calls are silent (see the module docs).
@@ -191,6 +238,9 @@ pub struct SystemProbes;
 
 impl Probes for SystemProbes {
     fn accessibility(&self) -> Grant {
+        if let Some(g) = env_override("accessibility") {
+            return g;
+        }
         // SAFETY: plain query, no arguments.
         if unsafe { ffi::AXIsProcessTrusted() } != 0 {
             Grant::Granted
@@ -200,15 +250,17 @@ impl Probes for SystemProbes {
     }
 
     fn automation(&self, bundle_id: &str) -> Grant {
+        if let Some(g) = env_override("automation") {
+            return g;
+        }
         ffi::automation_status(bundle_id).map_or(Grant::Unknown, automation_from_status)
     }
 
     fn full_disk_access(&self) -> Grant {
-        let Some(path) = protected_probe_path() else {
-            return Grant::Unknown;
-        };
-        // open only; nothing is read and the handle is dropped at once
-        full_disk_access_from_open(&std::fs::File::open(path).map(|_| ()))
+        if let Some(g) = env_override("fda") {
+            return g;
+        }
+        probe_protected_files()
     }
 }
 
@@ -342,6 +394,28 @@ mod tests {
         assert_eq!(full_disk_access_from_open(&missing), Grant::Unknown);
         let other = Err(io::Error::other("x"));
         assert_eq!(full_disk_access_from_open(&other), Grant::Unknown);
+    }
+
+    #[test]
+    fn the_lab_override_parses_known_keys_and_values_only() {
+        let spec = "fda=denied, automation=ask,accessibility=unknown";
+        assert_eq!(override_for(spec, "fda"), Some(Grant::NotGranted));
+        assert_eq!(override_for(spec, "automation"), Some(Grant::AskedOnFirstUse));
+        assert_eq!(override_for(spec, "accessibility"), Some(Grant::Unknown));
+        assert_eq!(override_for("fda=granted", "fda"), Some(Grant::Granted));
+        assert_eq!(override_for("fda=maybe", "fda"), None);
+        assert_eq!(override_for("fda=denied", "automation"), None);
+        assert_eq!(override_for("", "fda"), None);
+    }
+
+    /// `cargo test -p ashdash real_probes -- --ignored --nocapture` prints what this process is
+    /// really granted and how long the silent probes took (no prompt may appear, nothing may block).
+    #[test]
+    #[ignore = "prints the real answers of this machine"]
+    fn real_probes_print_their_answers() {
+        let t = std::time::Instant::now();
+        let snap = check(&SystemProbes);
+        eprintln!("PROBES {snap:?} in {:?}", t.elapsed());
     }
 
     #[test]

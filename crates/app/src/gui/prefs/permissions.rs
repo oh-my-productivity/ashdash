@@ -50,12 +50,9 @@ impl PrefsApp {
                     };
                     let name = t.name;
                     let text = format!("{name} · {what}");
-                    top_line(ui, g, Some(&text), |ui| {
-                        if i == 0 {
-                            open_button(ui, Pane::Automation, &mut open);
-                        }
-                    });
+                    top_line(ui, g, Some(&text), |_| {});
                 }
+                open_button(ui, Pane::Automation, &mut open);
             });
             kit::row(ui, "Full Disk Access", None, false, |ui| {
                 let g = snap.as_ref().map(|s| s.full_disk_access);
@@ -97,29 +94,35 @@ impl PrefsApp {
     }
 }
 
-/// `■ Word  [text]` on the left and `right` (a button) at the right edge.
+/// `■ Word  [text]` on the left and `right` (a button) at the right edge; when the cell is too
+/// narrow for both, the button goes on the next line.
 fn top_line(ui: &mut egui::Ui, grant: Option<Grant>, text: Option<&str>, right: impl FnOnce(&mut egui::Ui)) {
     let p = Palette::of(ui);
-    egui::containers::Sides::new().shrink_left().show(
-        ui,
-        |ui| {
-            ui.horizontal(|ui| {
-                kit::light(ui, tone_of(grant));
-                ui.allocate_ui_with_layout(
-                    vec2(WORD_W, m::CONTROL_H - 8.0),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        ui.label(style::mono(&p, word_of(grant), m::KEY));
-                    },
-                );
-                if let Some(text) = text {
-                    ui.add(egui::Label::new(egui::RichText::new(text).size(m::SMALL).color(p.text)).wrap());
-                }
-            });
-        },
-        right,
-    );
+    let left = |ui: &mut egui::Ui| {
+        ui.horizontal(|ui| {
+            kit::light(ui, tone_of(grant));
+            ui.allocate_ui_with_layout(
+                vec2(WORD_W, m::CONTROL_H - 8.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.label(style::mono(&p, word_of(grant), m::KEY));
+                },
+            );
+            if let Some(text) = text {
+                ui.add(egui::Label::new(egui::RichText::new(text).size(m::SMALL).color(p.text)).wrap());
+            }
+        });
+    };
+    if ui.available_width() >= NARROW_BELOW {
+        egui::containers::Sides::new().shrink_left().show(ui, left, right);
+    } else {
+        left(ui);
+        right(ui);
+    }
 }
+
+/// Below this cell width the button no longer fits beside the light and the word.
+const NARROW_BELOW: f32 = 340.0;
 
 fn open_button(ui: &mut egui::Ui, pane: Pane, open: &mut Option<Pane>) {
     if ui.button("Open System Settings").clicked() {
