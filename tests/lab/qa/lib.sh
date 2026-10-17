@@ -70,6 +70,16 @@ end tell
 OSA
 }
 
+# allow/deny a pending Automation or other consent dialog of the lab session; prints its text
+consent() { # consent Allow|"Don’t Allow" [secs]
+  local i t; for i in $(seq 1 "${2:-10}"); do
+    t=$(ax_dialogs | grep -E '^UserNotificationCenter' | head -1)
+    if [ -n "$t" ]; then click_button UserNotificationCenter "$1"; echo "$t"; return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 # click_button <process> <button name>
 click_button() { # click_button <process> <button>: the first window of any process with that name that has the button
   wd 30 osascript - "$1" "$2" >/dev/null <<'OSA'

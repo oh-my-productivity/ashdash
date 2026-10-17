@@ -47,15 +47,6 @@ ask() { show || return 1; clear_field; type_text "$1"; sleep "${2:-1.2}"; look "
 look() { shot "$1" 2>/dev/null || { echo "(no window)"; return 1; }; ocr "$QA_ART/$1.png" 2>/dev/null | grep -v IOServiceMatching | tr '\n' '|'; }
 has() { echo "$1" | grep -qiE "$2"; }
 tcc_reset() { tccutil reset All dev.ashdash.launcher >/dev/null 2>&1; }
-# allow/deny a pending Automation or other consent dialog of the lab session; prints its text
-consent() { # consent Allow|"Don’t Allow" [secs]
-  local i t; for i in $(seq 1 "${2:-10}"); do
-    t=$(ax_dialogs | grep -E '^UserNotificationCenter' | head -1)
-    if [ -n "$t" ]; then click_button UserNotificationCenter "$1"; echo "$t"; return 0; fi
-    sleep 1
-  done
-  return 1
-}
 textedit_open() { open -a TextEdit; sleep 3; se 'tell process "TextEdit" to keystroke "n" using command down' >/dev/null; sleep 1.5; }
 textedit_text() { se 'tell process "TextEdit" to get value of text area 1 of scroll area 1 of window 1' | tail -1; }
 textedit_close() { pkill -x TextEdit; sleep 1; rm -rf "$HOME/Library/Autosave Information" 2>/dev/null; }
