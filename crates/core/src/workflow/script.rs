@@ -506,9 +506,15 @@ mod tests {
         let msg = osascript_failure(raw);
         assert!(msg.starts_with("osascript failed: "), "{msg}");
         assert!(msg.contains(raw), "the original text stays: {msg}");
-        assert!(msg.contains("Privacy & Security > Automation") && msg.contains(crate::brand::NAME), "{msg}");
+        assert!(
+            msg.contains("Privacy & Security > Automation") && msg.contains(crate::brand::NAME),
+            "{msg}"
+        );
         // other failures are unchanged
-        assert_eq!(osascript_failure("1:2: syntax error (-2741)"), "osascript failed: 1:2: syntax error (-2741)");
+        assert_eq!(
+            osascript_failure("1:2: syntax error (-2741)"),
+            "osascript failed: 1:2: syntax error (-2741)"
+        );
     }
 
     fn tmp(tag: &str) -> PathBuf {
