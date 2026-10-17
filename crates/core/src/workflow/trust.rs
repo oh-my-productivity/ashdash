@@ -768,9 +768,17 @@ mod tests {
         let s = w.trust_summary();
         let shipped = |name: &str| s.launched_apps.iter().find(|a| a.app == name).map(|a| a.shipped);
         assert_eq!(shipped("payload.app"), Some(true), "{s:?}");
-        assert_eq!(shipped("Safari.app"), Some(false), "an app name, not <workflow>/Safari.app");
+        assert_eq!(
+            shipped("Safari.app"),
+            Some(false),
+            "an app name, not <workflow>/Safari.app"
+        );
         assert_eq!(shipped("com.google.Chrome"), Some(false));
-        assert_eq!(shipped("sub/Tool.app"), Some(true), "a relative path is the workflow's own");
+        assert_eq!(
+            shipped("sub/Tool.app"),
+            Some(true),
+            "a relative path is the workflow's own"
+        );
         assert!(!s.is_passive());
         // the executor reads the same fields the same way (see exec.rs tests)
         assert!(app_is_path("payload.app", &dir));

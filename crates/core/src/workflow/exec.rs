@@ -152,6 +152,10 @@ pub enum Effect {
     },
     Reveal(PathBuf),
     Copy(String),
+    /// Copy to Clipboard with the object's "transient" box ticked: the text is placed on the
+    /// pasteboard with the `org.nspasteboard.TransientType` marker, so no clipboard manager
+    /// (this one included) records it.
+    CopyTransient(String),
     Notify {
         title: String,
         text: String,
@@ -668,7 +672,12 @@ impl Workflow {
                 });
             }
             "alfred.workflow.output.clipboard" => {
-                fx.push(Effect::Copy(rend(st, &node.s("clipboardtext"))));
+                let text = rend(st, &node.s("clipboardtext"));
+                fx.push(if node.b("transient") {
+                    Effect::CopyTransient(text)
+                } else {
+                    Effect::Copy(text)
+                });
             }
             "alfred.workflow.output.largetype" => {
                 fx.push(Effect::LargeType(rend(st, &node.s("largetypetext"))));
@@ -1124,15 +1133,27 @@ mod tests {
         // a URL arriving as the argument of an empty field; a bundle id stays a name
         assert_eq!(
             at("B", "https://example.com/q?a=b"),
-            [open(PathBuf::from("https://example.com/q?a=b"), Some("com.google.Chrome"))]
+            [open(
+                PathBuf::from("https://example.com/q?a=b"),
+                Some("com.google.Chrome")
+            )]
         );
-        assert_eq!(at("B", "mailto:a@b.c"), [open(PathBuf::from("mailto:a@b.c"), Some("com.google.Chrome"))]);
+        assert_eq!(
+            at("B", "mailto:a@b.c"),
+            [open(PathBuf::from("mailto:a@b.c"), Some("com.google.Chrome"))]
+        );
         // a relative path is the workflow's; `payload.app` exists in the package, so it is a path
         assert_eq!(
             at("C", ""),
-            [open(d.join("Documents/y"), Some(&d.join("payload.app").display().to_string()))]
+            [open(
+                d.join("Documents/y"),
+                Some(&d.join("payload.app").display().to_string())
+            )]
         );
-        assert_eq!(at("B", "Documents/y"), [open(d.join("Documents/y"), Some("com.google.Chrome"))]);
+        assert_eq!(
+            at("B", "Documents/y"),
+            [open(d.join("Documents/y"), Some("com.google.Chrome"))]
+        );
         assert_eq!(
             at("L", ""),
             [open(PathBuf::from("mailto:a@b.c"), None), open(d.join("sub/z"), None)]
@@ -1236,5 +1257,41 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(wf.dir.join("real.txt")).unwrap(), "a\nPWNED\n");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_to_clipboard_honours_the_transient_box_and_only_that() {
+        let (paths, root) = temp_paths("copy-transient");
+        let doc = json!({
+            "name": "T", "bundleid": "t",
+            "objects": [
+                {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
+                {"uid": "A", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "plain {query}", "transient": false}},
+                {"uid": "B", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "secret {query}", "transient": true}},
+                {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "unset {query}"}},
+            ],
+            "connections": {"J": [
+                {"destinationuid": "A", "modifiers": 0},
+                {"destinationuid": "B", "modifiers": 0},
+                {"destinationuid": "C", "modifiers": 0},
+            ]}
+        });
+        let wf = load_via_plist(&root, "t", &doc);
+        let act = WorkflowAction {
+            workflow: wf.id.clone(),
+            from_uid: "J".into(),
+            arg: "x".into(),
+            ..Default::default()
+        };
+        let fx = wf.run(&act, Mods::NONE, &paths);
+        let _ = std::fs::remove_dir_all(root);
+        assert_eq!(
+            fx,
+            vec![
+                Effect::Copy("plain x".into()),
+                Effect::CopyTransient("secret x".into()),
+                Effect::Copy("unset x".into()),
+            ]
+        );
     }
 }

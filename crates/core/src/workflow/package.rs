@@ -1146,7 +1146,10 @@ mod tests {
         // without the removal, the sweep puts the previous version back once the folder is gone
         std::fs::create_dir_all(root.join(mine)).unwrap();
         sweep_interrupted_installs(&root, std::time::Duration::from_secs(0));
-        assert!(root.join("user.workflow.t.mine").exists(), "the residual the removal closes");
+        assert!(
+            root.join("user.workflow.t.mine").exists(),
+            "the residual the removal closes"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

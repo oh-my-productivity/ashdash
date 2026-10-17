@@ -328,7 +328,7 @@ arbitrary bytes, wrong JSON types, truncated and mangled JSON never panics.
 ## 5. Other items reviewed without a finding
 
 - `mdfind -onlyin <home> -name <q>`: `q` is its own argv element after `-name`, so a leading `-` is data.
-- `copy_to_clipboard` uses `pbcopy` with stdin; no shell.
+- `copy_to_clipboard` uses `pbcopy` with stdin; no shell. `copy_to_clipboard_transient` (workflow Copy to Clipboard with "transient" ticked, SEC-R5-10) runs `osascript -l JavaScript` with the text as an argument after `--`.
 - `Command::new` is always given a program path or fixed name; `PATH` hijacking of `open`, `osascript`,
   `pbcopy`, `mdfind`, `sips`, `pmset` was possible only if the launcher's own environment is hostile. Fixed: every such tool
   is started by absolute path (`actions::system_command`, guarded by `tests/system_programs.rs`; see the fix logs below).
@@ -699,7 +699,7 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); the reference launcher's bundled templates are loaded by
   `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
 - **SEC-R5-03 (item 3)** `TrustStore` (`urlscheme.rs`): a `url-trust.json` that is there but does not parse (not UTF-8, not JSON, not an object; a half-saved hand edit) is no longer read as an
-  empty file. `refresh` keeps the last good in-memory map (a remembered "deny" still denies), prints a warning to stderr once per change of the file, and `TrustStore::warning()` returns it.
+  empty file. `refresh` keeps the last good in-memory map (a remembered "deny" still denies), prints a warning to stderr once per change of the file, and `TrustStore::warning()` (test builds) returns it.
   `set` moves the damaged file aside to `url-trust.json.bad` (`.bad.1`, `.bad.2`... if a copy is already there, so an earlier one is never replaced) before writing the in-memory map plus the new entry.
   A file that does not exist is still an empty map (deleting it forgets everything, as documented). Tests: `a_half_saved_consent_file_keeps_the_remembered_decisions_and_is_not_overwritten`,
   `a_consent_file_that_is_damaged_at_start_is_kept_until_the_first_answer`. Residual: an edit that keeps both modification time and length is not noticed; the warning is on stderr only (no on-screen message).
@@ -726,3 +726,11 @@ The ids `SEC-R5-nn` are the item numbers of that review.
 - **SEC-R5-09 (item 8)** `Theme::load` (the `theme` setting, `<data>/themes/`, the daemon applying a theme, `ashdash://theme?name=`) reads up to `MAX_INSTALLED_THEME_BYTES` = 8 MiB; `Theme::load_for_install`
   (`ashdash theme <file>` on the command line) and the Finder/`import_theme` paths (`read_limited(.., MAX_THEME_BYTES)`) keep 2 MiB. The probe (SEC-50, SEC-R5-02) bounds nesting and the number of values, so the larger allowance
   adds memory (at most 8 MiB read, then the parsed tree) but no new way to exhaust the stack. Test: `an_installed_theme_may_be_bigger_than_one_offered_for_installation`. Upgrade note: `CHANGELOG.md`, `docs/release-notes/v0.1.0.md`.
+- **SEC-R5-10 (item 9)** Copy to Clipboard in a workflow. The reference launcher's own templates carry a `transient` key on `alfred.workflow.output.clipboard` (checked in the installed reference launcher bundles: `Paste as plain text from hotkey`
+  and `Paste text clip from hotkey` have `transient: true`, `Clipboard` and `Snippet Triggers` have `false`). It is now honoured: `transient: true` gives `Effect::CopyTransient`, applied by
+  `engine::copy_to_clipboard_transient`, which writes the text as `public.utf8-plain-text` together with `org.nspasteboard.TransientType`, so the clipboard watcher (and any other clipboard manager) skips it
+  (`concealed_and_transient_entries_are_never_recorded`). Without the key, or with `false`, the copy is a plain `pbcopy` and **is recorded in clipboard history like a copy made by the user**, as the reference launcher does;
+  a workflow that copies a secret should tick "transient". The text reaches the JXA as an argument after `--`, never in the script source. `A::CopyText` (the "Copy" universal action on a row: a path, a URL,
+  a calculator result) is a user action and stays a plain `pbcopy`, recorded like any user copy. Tests: `copy_to_clipboard_honours_the_transient_box_and_only_that` (exec.rs),
+  `a_transient_copy_carries_the_marker_and_the_text_only_as_an_argument` (engine.rs), `A::CopyText` -> `pbcopy` with stdin in the `actions.rs` command table. Checked live once by hand: the pasteboard held
+  the text and the `org.nspasteboard.TransientType` type, and the text with quotes and a leading `-e` arrived unchanged (the previous clipboard text was restored); not run in the test suite, which must not touch the real pasteboard.

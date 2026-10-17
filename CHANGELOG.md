@@ -13,6 +13,7 @@ desktop or machine is marked **unverified**; the full list is in [docs/STATUS.md
 - Themes: a theme offered for installation (Finder, `ashdash theme <file>`, the preferences window) is limited to 2 MiB, but a theme that is already installed or selected in the settings
   loads up to 8 MiB. Builds between the 0.1.0 candidate of Wave 4 and this change applied the 2 MiB limit to installed themes as well, so a larger installed theme stopped loading after that upgrade;
   with this change it loads again and nothing needs to be re-installed.
+- Workflows: Copy to Clipboard now honours the "transient" box (the text is marked so clipboard history does not record it). Without it, copies stay recorded like your own.
 
 ## [0.1.0] - unreleased (release candidate)
 

@@ -756,6 +756,7 @@ fn apply_effects(effects: Vec<Effect>) -> String {
             Effect::OpenPath { path, with } => open_path(&path, with.as_deref()),
             Effect::Reveal(p) => reveal(&p),
             Effect::Copy(t) => copy_to_clipboard(&t),
+            Effect::CopyTransient(t) => copy_to_clipboard_transient(&t),
             Effect::Notify { title, text } => notify(&title, &text),
             Effect::LargeType(t) => {
                 large = Some(t);
@@ -857,6 +858,33 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// The JXA that puts `argv[0]` on the general pasteboard as plain text together with the
+/// transient marker type (<http://nspasteboard.org>), which every clipboard manager,
+/// this one included, treats as "do not record".
+fn transient_copy_script() -> String {
+    format!(
+        "ObjC.import('AppKit'); function run(argv) {{ var pb = $.NSPasteboard.generalPasteboard; \
+         pb.clearContents; pb.setStringForType($(argv[0]), 'public.utf8-plain-text'); \
+         pb.setDataForType($.NSData.data, '{}'); }}",
+        crate::clipboard::filter::TRANSIENT_TYPE
+    )
+}
+
+/// The text travels as an argument after `--`, never inside the script source.
+fn transient_copy_command(text: &str) -> Command {
+    let mut c = sys_command("osascript");
+    c.args(["-l", "JavaScript", "-e"])
+        .arg(transient_copy_script())
+        .arg("--")
+        .arg(text);
+    c
+}
+
+/// Copy to Clipboard with the workflow object's "transient" box ticked.
+pub fn copy_to_clipboard_transient(text: &str) -> Result<()> {
+    run_status(&mut transient_copy_command(text), "osascript")
+}
+
 /// `osascript -e <line>... -- <arg>...`. The `--` is what makes the arguments data: without it a
 /// first argument beginning with `-e` is parsed as one more script fragment (SEC-01).
 fn osascript_command(lines: &[&str], args: &[&str]) -> Command {
@@ -907,6 +935,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn a_transient_copy_carries_the_marker_and_the_text_only_as_an_argument() {
+        let c = transient_copy_command("-e hunter2\"; do shell script \"x");
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[..3], ["-l", "JavaScript", "-e"]);
+        assert!(args[3].contains(crate::clipboard::filter::TRANSIENT_TYPE));
+        assert!(!args[3].contains("hunter2"));
+        assert_eq!(args[4], "--");
+        assert_eq!(args[5], "-e hunter2\"; do shell script \"x");
+        assert_eq!(args.len(), 6);
+    }
 
     fn engine(tag: &str) -> (Engine, PathBuf) {
         let root = std::env::temp_dir().join(format!("oa-eng-{tag}-{}", std::process::id()));

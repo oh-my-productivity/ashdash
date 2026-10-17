@@ -453,7 +453,11 @@ mod tests {
         let got = got.expect("the parse did not return within 5 s");
         let err = got.unwrap_err();
         assert!(format!("{err:#}").contains("values"), "{err:#}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
         // the same shape with a small fan-out is ordinary and still parses
         assert!(parse_plist(&shared_reference_bomb(4, 4)).is_ok());
     }
@@ -475,7 +479,11 @@ mod tests {
     #[test]
     fn real_system_plists_still_parse() {
         let mut seen = 0;
-        for app in ["/System/Applications/Calculator.app", "/System/Applications/Safari.app", "/System/Applications/Notes.app"] {
+        for app in [
+            "/System/Applications/Calculator.app",
+            "/System/Applications/Safari.app",
+            "/System/Applications/Notes.app",
+        ] {
             let Ok(bytes) = read_limited(&Path::new(app).join("Contents/Info.plist"), 4 * 1024 * 1024) else {
                 continue; // not on this machine
             };

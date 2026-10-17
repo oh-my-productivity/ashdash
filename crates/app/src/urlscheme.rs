@@ -381,6 +381,8 @@ impl TrustStore {
     }
 
     /// Set while the file on disk is damaged (cannot be parsed); the in-memory decisions are used.
+    /// The running app reports it on stderr; this accessor is what the tests read.
+    #[cfg(test)]
     pub fn warning(&self) -> Option<&str> {
         self.damaged.as_deref()
     }
@@ -1299,7 +1301,11 @@ mod tests {
         fs::write(&p, half).unwrap();
         assert_eq!(t.lookup("b.denied"), Some(Decision::Deny), "the last good map is kept");
         assert_eq!(t.lookup("a.allowed"), Some(Decision::Allow));
-        assert!(t.warning().is_some_and(|w| w.contains("url-trust.json")), "{:?}", t.warning());
+        assert!(
+            t.warning().is_some_and(|w| w.contains("url-trust.json")),
+            "{:?}",
+            t.warning()
+        );
         assert_eq!(fs::read_to_string(&p).unwrap(), half, "reading never changes the file");
 
         // a new answer moves the damaged file aside once and writes everything we know

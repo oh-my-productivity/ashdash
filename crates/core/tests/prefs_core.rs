@@ -291,7 +291,12 @@ fn removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version() 
 
     let loaded = ashdash_core::workflow::load_all(std::slice::from_ref(&root));
     assert!(!own.exists(), "the sweep did not restore the removed workflow");
-    assert_eq!(loaded.len(), 1, "{:?}", loaded.iter().map(|w| &w.name).collect::<Vec<_>>());
+    assert_eq!(
+        loaded.len(),
+        1,
+        "{:?}",
+        loaded.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
     assert!(keep.exists());
 }
 
