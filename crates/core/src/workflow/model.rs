@@ -106,10 +106,22 @@ pub(super) fn str_map(v: Option<&Value>) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// A workflow's `info.plist` holds its scripts, so it can be big; one over this is not read.
+pub const MAX_INFO_PLIST_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read `<dir>/info.plist` the only safe way: bounded in size, nesting and number of values
+/// ([`crate::theme::parse_plist`]). `plist::Value::from_file` builds and drops its tree
+/// recursively, so a few KB of nested arrays in a downloaded package aborts the process.
+/// Every reader of a workflow's `info.plist` goes through here.
+pub fn read_info_plist(dir: &Path) -> Result<plist::Value> {
+    let file = dir.join("info.plist");
+    let bytes = crate::theme::read_limited(&file, MAX_INFO_PLIST_BYTES)?;
+    crate::theme::parse_plist(&bytes).with_context(|| format!("parsing {}", file.display()))
+}
+
 impl Workflow {
     pub fn load(dir: &Path) -> Result<Workflow> {
-        let v = plist::Value::from_file(dir.join("info.plist"))
-            .with_context(|| format!("reading {}/info.plist", dir.display()))?;
+        let v = read_info_plist(dir).with_context(|| format!("reading {}/info.plist", dir.display()))?;
         let id = dir
             .file_name()
             .map(|s| s.to_string_lossy().to_string())

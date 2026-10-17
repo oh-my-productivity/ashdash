@@ -466,7 +466,7 @@ pub fn set_workflow_enabled(paths: &Paths, dir: &Path, enabled: bool) -> Result<
     if !std::fs::symlink_metadata(&file)?.is_file() {
         bail!("info.plist is not a regular file");
     }
-    let mut doc = plist::Value::from_file(&file).context("reading info.plist")?;
+    let mut doc = crate::workflow::read_info_plist(&dir).context("reading info.plist")?;
     let Some(d) = doc.as_dictionary_mut() else {
         bail!("info.plist is not a dictionary");
     };

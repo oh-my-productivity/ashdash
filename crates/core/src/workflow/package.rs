@@ -285,7 +285,7 @@ fn stage_in(package: &Path, staging_root: &Path, dest_root: &Path, paths: Option
     let dest = dest_root.join(&dest_name);
 
     let text = |key: &str| -> String {
-        plist::Value::from_file(staging.path.join("info.plist"))
+        super::model::read_info_plist(&staging.path)
             .ok()
             .and_then(|v| v.into_dictionary())
             .and_then(|d| d.get(key).and_then(|v| v.as_string().map(str::to_owned)))
@@ -1030,6 +1030,69 @@ mod tests {
             0,
             "failed attempts leave nothing behind"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A valid `info.plist` with one extra key holding `depth` nested arrays.
+    fn deep_info_plist(depth: usize) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>name</key><string>Deep</string><key>bundleid</key><string>test.deep</string><key>objects</key><array/><key>x</key>{}{}</dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        )
+    }
+
+    fn deep_package(path: &Path, depth: usize) {
+        use std::io::Write;
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("info.plist", options).unwrap();
+        z.write_all(deep_info_plist(depth).as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn a_package_with_a_deeply_nested_info_plist_is_refused_not_a_stack_overflow() {
+        let root = std::env::temp_dir().join(format!("oa-deep-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pkg = root.join("deep.alfredworkflow");
+        deep_package(&pkg, 120_000);
+        assert!(std::fs::metadata(&pkg).unwrap().len() < 10_000, "a small download");
+        let paths = Paths::under(&root);
+        // Test threads have a 2 MiB stack, like the Finder-open and drop paths.
+        let err = match stage_package(&paths, &pkg) {
+            Ok(_) => panic!("a package with a 120 000-level info.plist was staged"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains("nested"), "{err}");
+        let staging_root = paths.data.join(STAGING_DIR);
+        assert_eq!(
+            std::fs::read_dir(&staging_root).unwrap().count(),
+            0,
+            "nothing is left behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_all_skips_a_deep_info_plist_and_keeps_the_rest() {
+        let root = std::env::temp_dir().join(format!("oa-deep-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (bad, good) = (root.join("bad"), root.join("good"));
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(bad.join("info.plist"), deep_info_plist(120_000)).unwrap();
+        std::fs::write(
+            good.join("info.plist"),
+            deep_info_plist(2).replace("<key>x</key><array><array></array></array>", ""),
+        )
+        .unwrap();
+        let all = crate::workflow::load_all(std::slice::from_ref(&root));
+        assert_eq!(all.len(), 1, "{:?}", all.iter().map(|w| &w.name).collect::<Vec<_>>());
+        assert_eq!(all[0].name, "Deep");
+        assert!(Workflow::load(&bad).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
