@@ -420,6 +420,8 @@ pub fn serve(primary: Primary, handler: Arc<dyn Handler>, uid: u32) -> Server {
                 };
                 let handler = Arc::clone(&handler);
                 std::thread::spawn(move || {
+                    // a panic here ends this connection only (crash reports call it recovered)
+                    ashdash_core::recovery::mark_thread();
                     // Released when this closure ends, however it ends (a panicking handler
                     // included): sixteen panics must not lock the socket out until restart.
                     let _slot = slot;

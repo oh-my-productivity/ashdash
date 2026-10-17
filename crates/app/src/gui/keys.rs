@@ -300,7 +300,7 @@ impl LauncherApp {
 }
 
 /// Shown when a key named a row that the arriving results took away.
-const RESULTS_CHANGED: &str = "The results changed under that key press. Check the highlighted row and press ↩ again.";
+const RESULTS_CHANGED: &str = "The results changed under that key press. Check the highlighted row and press it again.";
 
 #[cfg(test)]
 mod tests {
@@ -314,6 +314,12 @@ mod tests {
             repeat,
             modifiers: Modifiers::NONE,
         }
+    }
+
+    #[test]
+    fn the_refused_key_message_fits_return_and_cmd_number() {
+        assert!(RESULTS_CHANGED.contains("press it again"), "{RESULTS_CHANGED}");
+        assert!(!RESULTS_CHANGED.contains('↩'), "Cmd+number is refused with this too");
     }
 
     #[test]

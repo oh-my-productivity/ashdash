@@ -158,6 +158,10 @@ struct Replaced {
     /// The row highlighted after the newest replacement; a different one at key handling means
     /// the keys of this frame moved it (meant for the old list).
     selected_after: usize,
+    /// Every replacement since then was a repeat of the same query (`rerun`): the rows are the
+    /// same results with fresh data, so a key never has to be refused (ids may be titles that
+    /// change on every repeat).
+    rerun_only: bool,
 }
 
 /// Where a key that names a row of the list the user saw lands in the list that is there now.
@@ -198,15 +202,19 @@ impl SelectionTrack {
         *self = SelectionTrack::default();
     }
 
-    fn note(&mut self, old: &[ashdash_core::Item], old_selected: usize, selected: usize) -> usize {
+    fn note(&mut self, old: &[ashdash_core::Item], old_selected: usize, selected: usize, rerun: bool) -> usize {
         self.baseline = selected;
         match &mut self.replaced {
-            Some(r) => r.selected_after = selected,
+            Some(r) => {
+                r.selected_after = selected;
+                r.rerun_only &= rerun;
+            }
             None => {
                 self.replaced = Some(Replaced {
                     seen_ids: old.iter().map(|i| i.id.clone()).collect(),
                     seen_selected: old_selected,
                     selected_after: selected,
+                    rerun_only: rerun,
                 });
             }
         }
@@ -214,9 +222,16 @@ impl SelectionTrack {
     }
 
     /// The list `old` (row `old_selected` highlighted) was replaced by `new` and the selection is
-    /// set by the caller (placeholder rows: row 0; a repeat of the same query: the same id).
+    /// set by the caller (placeholder rows: row 0).
     pub fn replaced_with(&mut self, old: &[ashdash_core::Item], old_selected: usize, selected: usize) -> usize {
-        self.note(old, old_selected, selected)
+        self.note(old, old_selected, selected, false)
+    }
+
+    /// The same query ran again (`rerun`) and the list was replaced; the caller keeps the selection
+    /// on the same result (by id) or the same position. Unlike the other replacements this never
+    /// makes a key press refuse: see [`enter_target`](Self::enter_target).
+    pub fn replaced_with_rerun(&mut self, old: &[ashdash_core::Item], old_selected: usize, selected: usize) -> usize {
+        self.note(old, old_selected, selected, true)
     }
 
     /// The final answer `new` replaced `old`. Returns the row to highlight: the remembered result
@@ -230,17 +245,21 @@ impl SelectionTrack {
         keep: Option<&str>,
         restore_index: usize,
     ) -> usize {
-        let selected = if keep.is_some() {
-            reselect(keep, restore_index, new)
-        } else if self.moved {
+        // a move the user made since the query was sent (also while the re-run after "back" was in
+        // flight) beats the remembered result; the remembered one is the fallback, then the top
+        let moved_to = if self.moved {
             self.anchor
                 .as_deref()
                 .and_then(|id| new.iter().position(|i| i.id == id))
-                .unwrap_or(0)
         } else {
-            0
+            None
         };
-        self.note(old, old_selected, selected)
+        let selected = match moved_to {
+            Some(i) => i,
+            None if keep.is_some() => reselect(keep, restore_index, new),
+            None => 0,
+        };
+        self.note(old, old_selected, selected, false)
     }
 
     /// Return was pressed with row `selected` highlighted in `items` (the current list).
@@ -248,6 +267,19 @@ impl SelectionTrack {
         let Some(r) = &self.replaced else {
             return Target::Row(selected);
         };
+        if r.rerun_only {
+            // the same query again: the row the user saw if it is still there, else the highlighted
+            // row (an arrow key in this frame moved it), clamped
+            let seen = (selected == r.selected_after)
+                .then(|| r.seen_ids.get(r.seen_selected))
+                .flatten()
+                .and_then(|id| items.iter().position(|i| i.id == *id));
+            return match seen {
+                Some(i) => Target::Row(i),
+                None if items.is_empty() => Target::Nothing,
+                None => Target::Row(selected.min(items.len() - 1)),
+            };
+        }
         if selected != r.selected_after {
             return Target::Changed; // an arrow key in the same frame was meant for the old list
         }
@@ -266,6 +298,11 @@ impl SelectionTrack {
             None if n < items.len() => Target::Row(n),
             None => Target::Nothing,
             Some(r) => match r.seen_ids.get(n) {
+                Some(id) if r.rerun_only => items
+                    .iter()
+                    .position(|i| i.id == *id)
+                    .or((n < items.len()).then_some(n))
+                    .map_or(Target::Nothing, Target::Row),
                 Some(id) => find_row(id, items),
                 None => Target::Nothing,
             },
@@ -556,5 +593,106 @@ mod tests {
         let sel = t.replaced(&pending, 0, &fin, None, 0);
         assert_eq!(sel, 1);
         assert_eq!(t.enter_target(sel, &fin), Target::Row(1), "the user saw 'b' selected");
+    }
+
+    // ---- Wave 6 review fixes (docs/reviews/wave5.md 1 and 2)
+
+    /// A clock-style list: the id of a row is its title, so every rerun gives new ids.
+    fn clock(second: u32) -> Vec<ashdash_core::Item> {
+        (0..3)
+            .map(|i| {
+                let t = format!("12:00:{:02} zone {i}", second);
+                ashdash_core::Item::new(t.clone(), t)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rerun_with_changing_ids_never_makes_return_refuse() {
+        let old = clock(1);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(1, 1, &old);
+        let new = clock(2);
+        let sel = t.replaced_with_rerun(&old, 1, reselect(Some(&old[1].id), 1, &new));
+        assert_eq!(sel, 1, "the id is gone: the position stays");
+        assert_eq!(
+            t.enter_target(sel, &new),
+            Target::Row(1),
+            "Return runs the selected row"
+        );
+        assert_eq!(t.number_target(2, &new), Target::Row(2), "Cmd+3 runs the third row");
+        assert_eq!(t.number_target(5, &new), Target::Nothing);
+    }
+
+    #[test]
+    fn a_rerun_that_shrinks_the_list_runs_the_clamped_selected_row() {
+        let old = clock(1);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(1, 2, &old);
+        let new: Vec<_> = clock(2).into_iter().take(2).collect();
+        let sel = t.replaced_with_rerun(&old, 2, reselect(Some(&old[2].id), 2, &new));
+        assert_eq!(sel, 1);
+        assert_eq!(t.enter_target(sel, &new), Target::Row(1));
+        assert_eq!(
+            t.number_target(2, &new),
+            Target::Nothing,
+            "there is no third row any more"
+        );
+        assert_eq!(t.enter_target(0, &[]), Target::Nothing, "an empty list has no row");
+    }
+
+    #[test]
+    fn a_rerun_with_stable_ids_follows_the_row_the_user_saw() {
+        let old = items(&["a", "b", "c"]);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(1, 1, &old);
+        let new = items(&["c", "b", "a"]);
+        let sel = t.replaced_with_rerun(&old, 1, reselect(Some("b"), 1, &new));
+        assert_eq!(t.enter_target(sel, &new), Target::Row(1), "'b' is still 'b'");
+        assert_eq!(t.number_target(0, &new), Target::Row(2), "row 1 was 'a'");
+    }
+
+    #[test]
+    fn a_rerun_after_a_real_replacement_in_the_same_frame_stays_strict() {
+        let (mut t, old) = sent(&["a", "b", "c"], 1);
+        let fin = items(&["x", "y"]);
+        let sel = t.replaced(&old, 1, &fin, None, 0);
+        let again = items(&["x2", "y2"]);
+        let sel = t.replaced_with_rerun(&fin, sel, 0);
+        assert_eq!(t.enter_target(sel, &again), Target::Changed, "'b' is gone");
+    }
+
+    #[test]
+    fn back_from_a_panel_a_move_made_during_the_rerun_wins() {
+        // back from a panel: new generation, the remembered result is 'b'
+        let old = items(&["a", "b", "c"]);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(2, 1, &old); // the restored list, 'b' highlighted
+        t.begin_frame(2, 2, &old); // the user moves down to 'c' while the query runs
+        let new = items(&["a", "b", "c"]);
+        assert_eq!(
+            t.replaced(&old, 2, &new, Some("b"), 1),
+            2,
+            "the user's 'c', not the remembered 'b'"
+        );
+    }
+
+    #[test]
+    fn back_from_a_panel_the_remembered_result_wins_when_the_user_did_not_move() {
+        let old = items(&["a", "b", "c"]);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(2, 1, &old);
+        let new = items(&["x", "b", "c"]);
+        assert_eq!(t.replaced(&old, 1, &new, Some("b"), 1), 1);
+    }
+
+    #[test]
+    fn back_from_a_panel_the_remembered_result_is_the_fallback_when_the_moved_to_row_is_gone() {
+        let old = items(&["a", "b", "c"]);
+        let mut t = SelectionTrack::default();
+        t.begin_frame(2, 1, &old);
+        t.begin_frame(2, 2, &old);
+        let new = items(&["a", "b"]);
+        assert_eq!(t.replaced(&old, 2, &new, Some("b"), 1), 1);
     }
 }

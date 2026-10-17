@@ -100,6 +100,38 @@ echo "$ls_out" | grep -Eq '^(target|\.worktrees|\.git|ignored\.log)$' && bad "ex
 echo "== guest scripts"
 for f in tcc-grant.sh check-golden.sh tcc-probe.sh provision.sh; do check "guest/$f parses" bash -n "$lab/guest/$f"; done
 check "smoke.sh parses" bash -n "$lab/smoke.sh"
+
+# tcc-grant.sh must not write a single TCC row outside a lab VM, and must check its tools before the first write (docs/reviews/wave5.md 13).
+# The tools are faked through PATH; the real TCC databases and tccd are never touched.
+tg="$tmp/tcc"; mkdir -p "$tg/bin" "$tg/home"
+tg_fake() { printf '#!/bin/sh\n%s\n' "$2" >"$tg/bin/$1"; chmod +x "$tg/bin/$1"; }
+tg_fake sysctl 'echo "${FAKE_HW_MODEL:-VirtualMac2,1}"'
+tg_fake id 'echo "${FAKE_USER:-admin}"'
+tg_fake csrutil 'echo "${FAKE_SIP:-System Integrity Protection status: disabled.}"'
+tg_fake sudo 'if [ "${FAKE_NO_SUDO:-0}" = 1 ]; then exit 1; fi; [ "$1" = -n ] && shift; if [ "$1" = true ]; then exit 0; fi; echo "sudo $*" >>"$FAKE_LOG"; "$@"'
+tg_fake sqlite3 'echo "sqlite3 $*" >>"$FAKE_LOG"'
+tg_fake python3 'if [ "${FAKE_NO_PYTHON:-0}" = 1 ]; then exit 127; fi; cat >/dev/null 2>&1; echo "python3 $*" >>"$FAKE_LOG"'
+tg_fake killall 'echo "killall $*" >>"$FAKE_LOG"'
+tg_fake sleep 'exit 0'
+tg_run() { # tg_run <VAR=value>...: runs the script with the fakes first in PATH; the log shows what it wrote
+  : >"$tg/log"
+  env "$@" FAKE_LOG="$tg/log" HOME="$tg/home" PATH="$tg/bin:/usr/bin:/bin" bash "$lab/guest/tcc-grant.sh" >"$tg/out" 2>&1
+}
+tg_refused() { # tg_refused <description> <VAR=value>...
+  local d=$1; shift
+  tg_run "$@"; local rc=$?
+  [ $rc != 0 ] && [ ! -s "$tg/log" ] && ok "tcc-grant.sh refuses $d, nothing written" || bad "tcc-grant.sh $d: rc=$rc log=$(head -c 200 "$tg/log") out=$(head -c 200 "$tg/out")"
+}
+tg_refused "on a real Mac (hw.model Mac15,6)" FAKE_HW_MODEL=Mac15,6
+grep -q "not a lab VM" "$tg/out" && ok "the message names the reason" || bad "message: $(cat "$tg/out")"
+tg_refused "for another user than admin" FAKE_USER=someone
+tg_refused "with SIP on" "FAKE_SIP=System Integrity Protection status: enabled."
+tg_refused "with a partial SIP configuration" "FAKE_SIP=System Integrity Protection status: unknown (Custom Configuration)."
+tg_refused "without passwordless sudo" FAKE_NO_SUDO=1
+tg_refused "without a working python3" FAKE_NO_PYTHON=1
+tg_run FAKE_X=1; rc=$?
+rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
+[ $rc = 0 ] && [ "$rows" -ge 20 ] && grep -q '^killall tccd' "$tg/log" && ok "in a VM as admin with sudo and python3 it grants ($rows sqlite3 calls)" || bad "VM run: rc=$rc rows=$rows out=$(tail -3 "$tg/out")"
 # check-golden must treat a timed-out System Events call as NOT granted (it used to report "look granted")
 fake_guest="$tmp/fakeguest"; mkdir -p "$fake_guest/bin"
 cp "$lab/guest/check-golden.sh" "$fake_guest/check-golden.sh"

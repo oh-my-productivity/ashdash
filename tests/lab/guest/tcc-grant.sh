@@ -4,13 +4,35 @@
 #
 # This only works because the cirruslabs base image ships with SIP *disabled* (see `csrutil status`, docs/LAB.md); on a guest with SIP
 # on, sudo cannot write /Library/Application Support/com.apple.TCC/TCC.db and this script stops with an error.
+# It refuses to run anywhere but in a lab VM (see the guards below).
 # Clients: com.apple.Terminal (what tests/lab/guest/gui-exec uses), com.apple.sshd-session (macOS 15+: responsible process of
 # commands run over ssh) and /usr/libexec/sshd-keygen-wrapper (older macOS).
 set -euo pipefail
 say() { printf '[tcc-grant] %s\n' "$*"; }
 SYS="/Library/Application Support/com.apple.TCC/TCC.db"
 USR="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
-if csrutil status 2>&1 | grep -q 'enabled'; then say "SIP is enabled: TCC.db is not writable. Use the manual steps (docs/LAB.md)."; exit 1; fi
+
+# --- Guards. Everything here runs BEFORE the first write: this script grants permanent Accessibility / Screen Recording / Automation
+# rights and restarts tccd, which must never happen on a developer's own Mac that merely has SIP turned off.
+# 1. Only inside a lab VM. The marker is something the cirruslabs base image already has and a Mac does not: Apple's virtualization
+#    framework reports the hardware model "VirtualMac<N>,<M>" (a physical Mac says e.g. "Mac15,6"), and the image's only account is "admin".
+#    (A file written by provision.sh would only exist after the golden image is rebuilt.)
+model=$(sysctl -n hw.model 2>/dev/null || true)
+case $model in
+  VirtualMac*) ;;
+  *) say "refusing: this is not a lab VM (hw.model='${model:-unknown}', expected VirtualMac*). Run it through tests/lab/lab-with-vm."; exit 1 ;;
+esac
+if [ "$(id -un)" != admin ]; then say "refusing: not the lab account (user '$(id -un)', expected 'admin')."; exit 1; fi
+# 2. SIP must be fully off; a partial configuration prints "enabled" for some parts and is not enough.
+if ! csrutil status 2>&1 | grep -q 'status: disabled'; then
+  say "SIP is not fully disabled: TCC.db is not writable. Use the manual steps (docs/LAB.md)."; exit 1
+fi
+# 3. Tools the script needs, before anything is written (a missing one used to leave a half-done grant).
+if ! sudo -n true 2>/dev/null; then say "refusing: 'sudo -n' does not work (passwordless sudo is needed for the system TCC.db)."; exit 1; fi
+for tool in sqlite3 python3; do
+  command -v "$tool" >/dev/null 2>&1 || { say "refusing: '$tool' is not installed."; exit 1; }
+done
+python3 -c 'import plistlib' >/dev/null 2>&1 || { say "refusing: python3 does not work (needs plistlib)."; exit 1; }
 
 # grant <db> <sudo|""> <service> <client> <client_type> [<indirect id>]
 grant() {

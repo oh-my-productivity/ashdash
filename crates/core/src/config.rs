@@ -446,11 +446,21 @@ impl Config {
 
 /// `~` and `~/rest` mean the home folder; every other string is a path as it stands
 /// (`~user/x` is not expanded).
+///
+/// Extra slashes after the `~` do not send the path to the filesystem root (`~//a` is
+/// `$HOME/a`), and with no home folder (an empty path) nothing is expanded: `~/wf` stays the
+/// literal, missing path it was written as rather than becoming the relative path `wf`.
 pub fn expand_tilde(s: &str, home: &Path) -> PathBuf {
+    if home.as_os_str().is_empty() {
+        return PathBuf::from(s);
+    }
     match s {
         "~" => home.to_path_buf(),
         _ => match s.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
+            Some(rest) => match rest.trim_start_matches('/') {
+                "" => home.to_path_buf(),
+                rest => home.join(rest),
+            },
             None => PathBuf::from(s),
         },
     }
@@ -1218,6 +1228,34 @@ mod tests {
             assert_eq!(c.app_dirs, [PathBuf::from("/home/u/Apps")]);
             assert_eq!(c.theme, Some(PathBuf::from("/home/u/themes/Midnight.alfredappearance")));
         }
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn extra_slashes_after_the_tilde_stay_inside_home() {
+        let home = Path::new("/home/u");
+        assert_eq!(expand_tilde("~//a", home), PathBuf::from("/home/u/a"));
+        assert_eq!(expand_tilde("~///a//b", home), PathBuf::from("/home/u/a//b"));
+        assert_eq!(expand_tilde("~/a", home), PathBuf::from("/home/u/a"));
+        assert_eq!(expand_tilde("~/", home), PathBuf::from("/home/u"));
+        assert_eq!(expand_tilde("~//", home), PathBuf::from("/home/u"));
+        assert_eq!(expand_tilde("~", home), PathBuf::from("/home/u"));
+        assert_eq!(expand_tilde("~user/x", home), PathBuf::from("~user/x"));
+    }
+
+    #[test]
+    fn an_empty_home_disables_the_expansion() {
+        let none = Path::new("");
+        assert_eq!(expand_tilde("~/wf", none), PathBuf::from("~/wf"));
+        assert_eq!(expand_tilde("~", none), PathBuf::from("~"));
+        let paths = tmp_paths("tilde-no-home");
+        write_raw(
+            &paths,
+            json!({"version": CURRENT_VERSION, "workflow_dirs": ["~/wf", "/abs"], "theme": "~/t.alfredappearance"}),
+        );
+        let c = Config::load_in(&paths, none);
+        assert_eq!(c.workflow_dirs, [PathBuf::from("~/wf"), PathBuf::from("/abs")]);
+        assert_eq!(c.theme, Some(PathBuf::from("~/t.alfredappearance")));
         let _ = std::fs::remove_dir_all(&paths.data);
     }
 

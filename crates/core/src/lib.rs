@@ -14,6 +14,7 @@ pub mod fuzzy;
 pub mod index;
 pub mod item;
 pub mod providers;
+pub mod recovery;
 pub mod settings_view;
 pub mod system;
 pub mod theme;

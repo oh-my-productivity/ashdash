@@ -239,9 +239,10 @@ pub(crate) fn truncate(s: &str, n: usize) -> String {
 /// The last two make the order a function of the candidates alone: a stable sort on score and
 /// case-folded title would leave two equal candidates (the same app name in two folders, `Terminal`
 /// and `terminal`) in whatever order the providers and the index happened to produce them.
-/// A NaN score sorts last.
+/// A NaN score sorts last; `-0.0` is `0.0`.
 pub(crate) fn sort_items(items: &mut [Item]) {
-    let key = |s: f64| if s.is_nan() { f64::NEG_INFINITY } else { s };
+    // `+ 0.0` turns -0.0 into 0.0: the two are the same score, so the title decides
+    let key = |s: f64| if s.is_nan() { f64::NEG_INFINITY } else { s + 0.0 };
     items.sort_by(|a, b| {
         key(b.score)
             .total_cmp(&key(a.score))
@@ -328,6 +329,17 @@ mod order_tests {
 
     fn ids(items: &[Item]) -> Vec<&str> {
         items.iter().map(|i| i.id.as_str()).collect()
+    }
+
+    #[test]
+    fn negative_zero_is_the_same_score_as_zero() {
+        let mut items = vec![
+            Item::new("a", "Zed").score(0.0),
+            Item::new("b", "Aaa").score(-0.0),
+            Item::new("c", "Mid").score(0.0),
+        ];
+        sort_items(&mut items);
+        assert_eq!(ids(&items), ["b", "c", "a"], "by title, whatever the sign of the zero");
     }
 
     /// Equal scores must not leave the order to the order the providers happened to answer in
