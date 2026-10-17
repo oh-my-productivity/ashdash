@@ -352,8 +352,16 @@ pub fn run_osascript(source: &str) -> Result<String> {
     if out.success {
         Ok(out.stdout.trim_end().to_string())
     } else {
-        bail!("osascript failed: {}", out.stderr.trim())
+        bail!("{}", osascript_failure(&out.stderr))
     }
+}
+
+/// The message for a failed `osascript`, with the Automation hint for a refused Apple event.
+fn osascript_failure(stderr: &str) -> String {
+    format!(
+        "osascript failed: {}",
+        crate::engine::with_automation_hint(stderr.trim())
+    )
 }
 
 /// Largest stdout a script may produce; more kills the script and is an error (SEC-06).
@@ -485,6 +493,23 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_denied_automation_request_says_where_to_allow_it() {
+        let raw = "49:75: execution error: Not authorized to send Apple events to Terminal. (-1743)";
+        let msg = osascript_failure(raw);
+        assert!(msg.starts_with("osascript failed: "), "{msg}");
+        assert!(msg.contains(raw), "the original text stays: {msg}");
+        assert!(
+            msg.contains("Privacy & Security > Automation") && msg.contains(crate::brand::NAME),
+            "{msg}"
+        );
+        // other failures are unchanged
+        assert_eq!(
+            osascript_failure("1:2: syntax error (-2741)"),
+            "osascript failed: 1:2: syntax error (-2741)"
+        );
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("oa-script-{tag}-{}", std::process::id()));

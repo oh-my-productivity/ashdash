@@ -69,11 +69,32 @@ deletes the throwaway HOME. Requirements and cautions:
 a synthetic workflow, Script Filter rerun and pending rows, Quick Look layering, held-modifier subtitle, scrolling Large Type).
 It shows windows and drives System Events on the **host desktop**, so it takes the lock `/tmp/ashdash-desktop.lock`
 (`mkdir`; always `rmdir` it afterwards), runs with a throw-away HOME and a non-default hotkey, and leaves whole-desktop
-screenshots in a temp folder that you look at and delete. Run it from a clean desktop session, not from CI. Once the VM lab
-(`docs/LAB.md` on branch `wp/wp14-lab`, not merged) is available, GUI checks belong in the lab instead.
+screenshots in a temp folder that you look at and delete. Run it from a clean desktop session, not from CI. GUI checks belong in the VM lab
+(`docs/LAB.md`) instead: the script runs unchanged inside a clone (`lab-run "$vm" -- bash scripts/qa/ui-glue-smoke.sh <bare binary>`).
+
+### 2.1 Lab QA scripts (`tests/lab/qa/`)
+
+The manual checklist below is scripted as far as a VM allows. Everything runs **inside a lab VM**, never on the host desktop; screenshots are window-only
+(`screencapture -l`), read back by OCR (`qa/ocr.swift`, Vision) and by eye, and are not committed.
+
+| Script | What it does |
+|---|---|
+| `qa/pkg-install.sh` | fresh clone: `build-app.sh` + `make-dmg.sh`, quarantined DMG, copy to /Applications, Gatekeeper switched on, the refusal dialog, "Open Anyway", `xattr -dr`, first launch with no TCC rows for the app, login item, `ashdash://prefs`, the first Automation / Accessibility prompts |
+| `qa/checklist.sh [section...]` | sections 3.1-3.9, 3.11, the Wave 4/5 behaviours and the "known unverified" items; one `result id PASS/FAIL/BLOCKED/NEEDS-OWNER evidence` line per check, a tsv in `$QA_ART/results.tsv` |
+| `qa/soak.sh [seconds] [interval]` | show, type, hide every 30 s for 2 h; footprint, RSS, CPU time, threads and open files every 5 minutes; crash reports; hotkey check at the end |
+| `qa/prep.sh` | grants, `build-app.sh`, install to /Applications (no quarantine): the starting point of `checklist.sh` and `soak.sh` in a fresh clone |
+| `qa/verify-tab.sh`, `qa/repro-placeholder.sh`, `qa/sleep.sh` | single-purpose re-checks: Tab on an application row, the Wave 5 "placeholder with results" screenshot (40 trials), `pmset displaysleepnow` / `sleepnow` and the hotkey |
+| `qa/report.py` | merges result files into the tables of `docs/qa-runs/<run>.md` |
+| `qa/lib.sh`, `qa/qa-tool.swift`, `qa/ocr.swift`, `qa/fixtures.py` | helpers: dialogs read through the accessibility tree, window listing, held keys with the auto-repeat flag, pasteboard with the nspasteboard.org marker types, a seeded data folder (workflows, snippets, files) |
+
+Run: `tests/lab/lab-up --id qa --max-age 14400`, then `tests/lab/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/lab/qa/pkg-install.sh`
+(and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/lab/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
+display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in the run documents.
+Results of the release-candidate run: [qa-runs/2026-10-rc1.md](qa-runs/2026-10-rc1.md).
 
 ## 3. Manual checklist
 
+Result of the Wave 6 run in the lab: [qa-runs/2026-10-rc1.md](qa-runs/2026-10-rc1.md) (every item below has an id there; the items marked NEEDS-OWNER carry the exact steps).
 Run on a debug build (`cargo run -p ashdash`) with a clean profile
 (`HOME=$(mktemp -d) cargo run ...` after building, or delete `~/Library/Application Support/ashdash`).
 Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
@@ -119,12 +140,12 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] `clip` lists recent copies (use harmless text). Newest first; duplicate copies move to top.
 - [ ] Return on an entry copies it; Cmd+V into a text editor pastes it.
 - [ ] Copy from a password manager (1Password/Bitwarden "copy password"; marked concealed): the entry must **not**
-  appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist, **this check with a real password manager has never been done**).
+  appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist; the pasteboard side with the real `org.nspasteboard.ConcealedType` marker was verified in the lab (3.5.3), **this check with a real password manager has still never been done**).
 - [ ] Per-app ignore list: copies made in an app listed in `clipboard.ignored_apps` (or added in Preferences > Clipboard) are skipped, without a restart.
 - [ ] `ls -l@ ~/Library/Application\ Support/ashdash/*.json` shows `-rw-------` for `clipboard.json` and `usage.json`.
 - [ ] Image / file copies: a title is shown, copying back restores the original type.
 - [ ] `snip` lists snippets from `snippets.json`; `{clipboard}`, `{date}`, `{time}`, `{datetime}` expand; `{cursor}` handling.
-- [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Real Cmd+V behaviour is still unverified.)
+- [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Verified in the lab with a real Cmd+V into TextEdit: 3.5.8b, 3.5.10.)
 
 ### 3.6 Workflows
 - [ ] `ashdash import x.alfredworkflow` for a trusted sample workflow prints the trust summary, asks `Install this workflow? [y/N]`, and installs only on `y`; with stdin not a terminal and without `--yes` it refuses; `--yes` installs without asking. The keyword works afterwards (within a second, no reload needed).
@@ -145,7 +166,7 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Automation prompts when Terminal (`>`), Finder (empty trash), System Events (logout/restart) are first driven; denial shows an error row.
 - [ ] Accessibility: required for auto-paste / snippet expansion; the app explains how to grant it and works without it otherwise.
 - [ ] Contacts / Files & Folders / Full Disk Access prompts only appear for features that use them.
-- [ ] Gatekeeper: a downloaded build opens after the documented steps (signing/notarisation is a later work package).
+- [ ] Gatekeeper: a downloaded build opens after the documented steps (signing/notarisation is a later work package). **On macOS 15 and later** a quarantined ad-hoc app is refused with "Apple could not verify..." and only *Done* / *Move to Trash*; it opens after System Settings > Privacy & Security > *Open Anyway* (then a second dialog with *Open Anyway*) or `xattr -dr com.apple.quarantine /Applications/Ashdash.app`. Right-click > Open is the macOS 14 and earlier route (qa-runs PKG-06..PKG-14).
 
 ### 3.8 Appearance and robustness
 - [ ] Light/dark mode switch while open; a custom `.alfredappearance` theme loads; a broken theme falls back.

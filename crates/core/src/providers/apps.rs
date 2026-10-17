@@ -22,6 +22,7 @@ impl Provider for AppsProvider {
                     .subtitle(files::tilde(&app.path))
                     .icon(Icon::App(app.path.clone()))
                     .action(Action::Open(app.path.clone()))
+                    .autocomplete(&app.name)
                     .score(s);
                 it.cmd_action = Some(Action::Reveal(app.path.clone()));
                 items.push(it);
@@ -44,6 +45,16 @@ mod tests {
         assert!(matches!(r[0].cmd_action, Some(Action::Reveal(_))));
         // ranked, not exclusive: fallbacks still follow
         assert!(r.last().unwrap().id.starts_with("fallback:"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Tab on an application row completes the field with the app's name (docs/QA.md 3.3.3b; it did nothing).
+    #[test]
+    fn application_rows_tab_complete_to_their_name() {
+        let (e, root) = engine("apps-tab");
+        let r = e.query("saf");
+        assert_eq!(r[0].title, "Safari");
+        assert_eq!(r[0].autocomplete.as_deref(), Some("Safari"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

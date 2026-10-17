@@ -134,8 +134,8 @@ Remember `reference://` belongs to the reference launcher; Ashdash never registe
 
 ## macOS refuses to open the app
 
-Ad-hoc signed builds are not trusted by Gatekeeper: right-click > Open, or
-`xattr -dr com.apple.quarantine /Applications/Ashdash.app` ([RELEASING.md](RELEASING.md)). Notarization is not done yet.
+Ad-hoc signed builds are not trusted by Gatekeeper. On macOS 15 and later the dialog ("Apple could not verify...") only offers *Done* and *Move to Trash*: use System Settings > Privacy & Security > *Open Anyway* (then *Open Anyway* in the second dialog), or
+`xattr -dr com.apple.quarantine /Applications/Ashdash.app`; right-click > Open works up to macOS 14 ([RELEASING.md](RELEASING.md)). Notarization is not done yet.
 
 ## Ashdash quit unexpectedly
 

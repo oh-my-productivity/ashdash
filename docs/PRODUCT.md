@@ -32,8 +32,8 @@ The same keystrokes do the same thing, so muscle memory is safe.
 | Bar | Today | Status |
 |---|---|---|
 | The same query on the same data gives the same order (deterministic tie-break) | Engine merge sorts by score, title (case-folded), exact title, id; a NaN score sorts last. `providers::order_tests` shuffles equal-score candidates through all 5,040 input orders and through two folder orders. Providers that cut their own list before the merge (bookmarks general limit, exclusive workflow lists) are not checked | partly |
-| Once you have moved the selection, results that arrive later never change which item is highlighted | The final answer keeps the item you moved to by id; if you did not move, the new top is selected; if the item is gone, the top (`SelectionTrack` in `gui/schedule.rs`, used by `gui/workers.rs`; tests `final_answer_*`, `the_pending_rows_*`). Logic is unit-tested; not seen on screen | partly |
-| Return runs the item highlighted in the frame you saw | Return and Cmd+1..9 resolve against the list drawn before the frame in which a result list replaced it; a row that is gone runs nothing and the footer says so (tests `return_*`, `cmd_number_*`, `several_replacements_*`). A mouse click is not covered. Not seen on screen | partly |
+| Once you have moved the selection, results that arrive later never change which item is highlighted | The final answer keeps the item you moved to by id; if you did not move, the new top is selected; if the item is gone, the top (`SelectionTrack` in `gui/schedule.rs`, used by `gui/workers.rs`; tests `final_answer_*`, `the_pending_rows_*`). Logic is unit-tested. Seen on screen in the lab (QA run 2026-10-rc1, W5.1/W5.2a/W5.2b): a Script Filter whose rerun reorders the list kept the highlighted row by id in 3 of 3 trials, and the slow answer left the moved-to row selected. | met |
+| Return runs the item highlighted in the frame you saw | Return and Cmd+1..9 resolve against the list drawn before the frame in which a result list replaced it; a row that is gone runs nothing and the footer says so (tests `return_*`, `cmd_number_*`, `several_replacements_*`). A mouse click is not covered. Seen on screen (W5.2b): after a slow Script Filter answered, Return ran the row that was on screen. The "same frame" case (W5.2c) cannot be provoked from a script and stays unit-test only. | partly |
 | Learned order never ranks a result above an exact keyword or exact name match; learning can be turned off | `learn_usage` opt-out and "Forget" exist; the ranking rule is not checked | partly |
 
 ## 3. Reliability
@@ -42,10 +42,10 @@ It is there every time you press the hotkey.
 
 | Bar | Today | Status |
 |---|---|---|
-| Hotkey and window survive sleep/wake, display connect/disconnect, Spaces, full-screen apps and an app update | on the QA list, never run | not tested |
-| 7-day soak with use every few minutes: no crash, footprint drift < 10 % | 60 s idle runs and 20 show/hide cycles only | not run |
+| Hotkey and window survive sleep/wake, display connect/disconnect, Spaces, full-screen apps and an app update | on the QA list, never run QA run 2026-10-rc1 (VM): shows over a full-screen app (3.1.3a), hotkey works after a display sleep/wake of the virtual display (SOAK-PM), after 2 h of use (SOAK), and after a hotkey change (3.1.6a). Not possible in the VM, steps for the owner in `docs/qa-runs/2026-10-rc1.md`: second display / Spaces / hot-plug / real sleep (the guest cannot sleep) / app update. | partly |
+| 7-day soak with use every few minutes: no crash, footprint drift < 10 % | 60 s idle runs and 20 show/hide cycles only 2 h soak in a lab VM (240 show/type/hide cycles, one every 30 s): 0 missed hotkeys, 0 crashes, RSS +2.1 % (91.2 -> 93.2 MB), footprint 31 -> 33 MB, threads and open files constant (`docs/qa-runs/2026-10-rc1.md`). The 7-day run with real use is still to do. | partly |
 | No outside input (packages, themes, plists, URLs, clipboard, script output) can abort the process | Every class found so far is fixed with tests: plist depth and value count, calculator recursion, multibyte URLs (`docs/SECURITY.md`, `crates/core/tests/fuzz.rs`). This bar is never "done" | partly |
-| After a crash you can find out why | Panic hook in the launcher and the preferences window writes `<data>/crashes/crash-<UTC>.txt` (version, process, thread, message, location, backtrace; last 10 kept), a one-time footer note on the next launch, and `ashdash paths` names it (`crates/app/src/crash.rs`, 7 tests). Crashes that are not panics (killed process, native crash) leave nothing there; no real panic of the running app was provoked | partly |
+| After a crash you can find out why | Panic hook in the launcher and the preferences window writes `<data>/crashes/crash-<UTC>.txt` (version, process, thread, message, location, backtrace; last 10 kept), a one-time footer note on the next launch, and `ashdash paths` names it (`crates/app/src/crash.rs`, 7 tests). Crashes that are not panics (killed process, native crash) leave nothing there; no real panic of the running app was provoked Seen on screen in the lab (W5.3a/b): a report newer than `last-seen` gives the footer note once, not on the second show, and `ashdash paths` names it. Still no real panic of the running app. | partly |
 
 ## 4. Flow
 
@@ -54,7 +54,7 @@ You never leave the keyboard, and the tool never interrupts you.
 | Bar | Today | Status |
 |---|---|---|
 | Every action reachable by keyboard | Launcher: yes (modifiers, Universal Actions panel, file buffer, Esc). Preferences window: not audited | partly |
-| On hide, focus returns to the app you came from | smoke test only (`docs/PERF.md` notes) | partly |
+| On hide, focus returns to the app you came from | smoke test (`docs/PERF.md` notes). Lab run (3.1.4): after Esc the previous app (TextEdit) is frontmost again and receives the next keystroke. Separate bug, not this bar: the launcher does not always hide when another app is activated (3.4.1, `docs/qa-runs/2026-10-rc1.md`). | met |
 | No UI you did not ask for, except trust/consent prompts for foreign code and results of your own actions | by design: no update nags, no notifications of its own | met |
 
 ## 5. Trust (security and privacy)

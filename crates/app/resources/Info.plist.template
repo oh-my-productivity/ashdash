@@ -107,6 +107,12 @@
     </dict>
   </array>
 
+  <!-- AppleScript / JXA: Cocoa Scripting loads the dictionary named here (installed by packaging/build-app.sh). -->
+  <key>NSAppleScriptEnabled</key>
+  <true/>
+  <key>OSAScriptingDefinition</key>
+  <string>Ashdash.sdef</string>
+
   <!-- Shown by macOS the first time something needs the permission. -->
   <key>NSAppleEventsUsageDescription</key>
   <string>@NAME@ and the workflows you install use AppleScript to control other apps, for example to open files, reveal them in Finder or run system commands.</string>

@@ -4,10 +4,10 @@
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
-max=$LAB_MAX_VM_AGE
+max=$LAB_MAX_VM_AGE explicit=
 while [ $# -gt 0 ]; do
   case "$1" in
-    --max-age) max=$2; shift 2 ;;
+    --max-age) max=$2; explicit=1; shift 2 ;;
     -h|--help) sed -n '2,3p' "$0"; exit 0 ;;
     *) lab_die "unknown argument: $1" ;;
   esac
@@ -15,8 +15,14 @@ done
 lab_need_tart
 for vm in $("$TART_BIN" list --source local --quiet 2>/dev/null | grep "^${LAB_PREFIX}" || true); do
   age=$(lab_vm_age "$vm")
-  if [ "$age" -gt "$max" ]; then
-    lab_log "watchdog: $vm is ${age}s old (> ${max}s): deleting"
+  limit=$max
+  # a VM started with `lab-up --max-age N` (a soak run) keeps its own limit, unless --max-age is given here explicitly
+  if [ -z "$explicit" ] && [ -f "$LAB_RUN_DIR/max-age/$vm" ]; then
+    own=$(cat "$LAB_RUN_DIR/max-age/$vm" 2>/dev/null || true)
+    case "$own" in ''|*[!0-9]*) ;; *) limit=$own ;; esac
+  fi
+  if [ "$age" -gt "$limit" ]; then
+    lab_log "watchdog: $vm is ${age}s old (> ${limit}s): deleting"
     "$LAB_DIR/lab-down" "$vm" || true
   fi
 done

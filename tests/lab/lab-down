@@ -22,7 +22,7 @@ for vm in "$@"; do
       sleep 2
     done
   fi
-  rm -f "$LAB_RUN_DIR/pids/$vm.pid"
+  rm -f "$LAB_RUN_DIR/pids/$vm.pid" "$LAB_RUN_DIR/max-age/$vm"
   lab_slot release --name "$vm" || true
   if lab_vm_exists "$vm"; then
     lab_log "ERROR: $vm still exists after delete"

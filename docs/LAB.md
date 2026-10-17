@@ -39,7 +39,7 @@ Rules:
 
 | File | Purpose |
 |---|---|
-| `lab-up [--id ID] [--image NAME]` | gc, wait for a slot, `tart clone ashdash-golden ashdash-run-<id>`, `tart run --no-graphics`, wait for an IP and for ssh. Idempotent for a given `--id`. Prints `<vm> <ip>`. |
+| `lab-up [--id ID] [--image NAME] [--max-age S]` | gc, wait for a slot, `tart clone ashdash-golden ashdash-run-<id>`, `tart run --no-graphics`, wait for an IP and for ssh. Idempotent for a given `--id`. Prints `<vm> <ip>`. `--max-age S` lets this VM live longer than the default 30 minutes (a soak run): the limit is written to `/tmp/ashdash-lab/max-age/<vm>` so that the watchdog run by *other* `lab-up` calls respects it; `lab-down` removes it. |
 | `lab-run <vm> [--artifacts DIR] [--no-sync] [--src DIR] [--env K=V] -- cmd...` | rsync the worktree in (honours `.gitignore`; skips `target/`, `.worktrees/`, `.git`; the guest's `target/` persists between runs), run `cmd` over ssh, stream output, propagate the exit code, copy artifacts out. |
 | `lab-down <vm>...` | stop + delete + release the slot. Idempotent; fails loudly if the VM still exists. |
 | `lab-with-vm [opts] -- cmd...` | up, run, down with a `trap` for EXIT/INT/TERM/HUP. Exit code is the command's. |
@@ -48,6 +48,7 @@ Rules:
 | `slot.py` | the two-slot semaphore (see below). `slot.py status` shows who holds what. |
 | `golden-setup.sh create|gui|verify|manual-steps|tcc-probe` | build and maintain the golden image. |
 | `smoke.sh` | the job that runs inside the VM. Grants TCC in the clone first (`LAB_AUTO_TCC=0` to skip, see "TCC grants"). |
+| `qa/` | the release-candidate QA scripts (Wave 6): `pkg-install.sh` (DMG, quarantine, Gatekeeper, first launch), `checklist.sh` (docs/QA.md section 3 and the Wave 4/5 behaviours), `soak.sh`, helpers `lib.sh`, `qa-tool.swift`, `ocr.swift`, `fixtures.py`. See docs/QA.md section 2.1 and `docs/qa-runs/`. |
 | `guest/` | helpers copied into the golden image (`~/lab-guest`) and used from the synced tree: `gui-exec`, `provision.sh`, `check-golden.sh`, `tcc-probe.sh`, `tcc-grant.sh`. |
 | `test/run-tests.sh` | host-side tests of all of the above against a fake `tart` and fake `ssh` (no VM; ~100 s). |
 | `lib.sh` | shared settings. Every knob is an environment variable (`LAB_*`, `TART_HOME`), see the top of the file. |
@@ -163,6 +164,16 @@ disabled (`StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null`) because ev
 | `gui-exec` times out | nobody is logged in on the console (auto-login failed): `golden-setup.sh gui`, log in once, re-check `check-golden.sh`. |
 | rsync / ssh hangs in `lab-run` | VM crashed or IP changed: `lab-down <vm>` and start over. |
 | Disk is filling up | `tart list` for stray VMs; `tart prune --older-than 7` removes cached OCI images (never the golden image, but it would delete the pulled base). |
+
+### Things the Wave 6 QA runs learned about the guest
+
+* **Gatekeeper is off in the base image** (`spctl --status`: assessments disabled). `qa/pkg-install.sh` runs `sudo spctl --master-enable` in the clone before it tests quarantine.
+* **Spotlight indexing is off** (`mdutil -s /`), so `mdfind`-backed features (`open`, `find`, Open With...) return nothing. `sudo mdutil -i on /` starts indexing but it had not produced results 40 minutes later.
+* **SIP is off, and TCC does not protect `~/Library/Safari`** in this guest: a process without Full Disk Access reads `Bookmarks.plist`, so the Full Disk Access denial cannot be reproduced here.
+* **`pmset displaysleepnow` locks the session** and nothing in the lab can unlock it (System Events keystrokes do not reach the login window; `sysadminctl -screenLock off` did not help). Recover with `sudo shutdown -r now` (auto-login brings the session back). Do not call it before the end of a run.
+* The display is 1024x768 at 2x backing scale. Windows are listed with `scripts/qa/windows.swift` (owner `Ashdash` for the bundle, `ashdash` for a bare binary); a freshly started app also owns a hidden, launcher-sized window at layer 3: only layer 25 means "shown".
+* A modifier chord posted in one go (`key code N using {option down}`) reaches the app within one 16 ms frame with the modifier already released: hold the modifier with `key down` for ~0.3 s (`chord` in `qa/lib.sh`). `keystroke` of non-ASCII text is mangled by System Events: use `qa-tool type`.
+* To make the app its own TCC client (prompts name "Ashdash"), start it with `open` (`gui-exec -- open --env HOME=... Ashdash.app`); started as a child of Terminal the prompts name Terminal.
 
 ## Verifying the lab itself
 

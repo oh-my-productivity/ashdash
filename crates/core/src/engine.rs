@@ -813,9 +813,25 @@ fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
         .stderr(Stdio::piped())
         .output()?;
     if !out.status.success() {
-        bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "{what} failed: {}",
+            with_automation_hint(String::from_utf8_lossy(&out.stderr).trim())
+        );
     }
     Ok(())
+}
+
+/// A refused Apple event (-1743: the user said Don't Allow, or never answered the prompt) gets the place to fix it
+/// appended; the raw `osascript` error alone does not say what to do.
+pub(crate) fn with_automation_hint(stderr: &str) -> String {
+    if stderr.contains("(-1743)") {
+        format!(
+            "{stderr} ({} may not control that app: allow it in System Settings > Privacy & Security > Automation)",
+            crate::brand::NAME
+        )
+    } else {
+        stderr.to_string()
+    }
 }
 
 /// A command for a macOS system tool, by absolute path (see `actions::system_program`).
@@ -1221,6 +1237,21 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_apple_event_from_a_system_tool_says_where_to_allow_it() {
+        // what `osascript` prints when the user answered "Don't Allow" (the `> cmd` / Empty Trash path goes through run_status)
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg("echo '49:75: execution error: Not authorized to send Apple events to Terminal. (-1743)' >&2; exit 1");
+        let err = run_status(&mut c, "osascript").unwrap_err().to_string();
+        assert!(err.contains("Not authorized to send Apple events"), "{err}");
+        assert!(err.contains("Privacy & Security > Automation"), "{err}");
+        // other failures keep the plain text
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg("echo 'boom' >&2; exit 1");
+        assert_eq!(run_status(&mut c, "open").unwrap_err().to_string(), "open failed: boom");
+    }
+
+    #[test]
     fn universal_actions_are_never_written_to_usage() {
         let (e, _fake, root) = sandboxed("usage");
         let secret = "correct horse battery staple (copied from the clipboard history)";
@@ -1236,19 +1267,21 @@ mod tests {
         let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
         assert!(!on_disk.contains("horse") && !on_disk.contains("act:"), "{on_disk}");
         // ...while an ordinary result is still learned
-        let open = Item::new("file:/tmp/x", "x").action(Action::Open(PathBuf::from("/tmp/x")));
-        let _ = e.execute(&open, "x", Mods::NONE, true);
-        assert!(e.paths.usage_file().exists() || e.usage.lock().unwrap().boost("x", "file:/tmp/x") > 0.0);
+        // (an item with no side effect: `Action::Open` would start the real `open` on the
+        // host, and only succeeds, and so is only learned, when the file exists)
+        let ordinary = Item::new("file:ordinary", "x");
+        assert_eq!(e.execute(&ordinary, "x", Mods::NONE, true), Outcome::Done);
+        assert!(e.usage.lock().unwrap().boost("x", "file:ordinary") > 0.0);
         // a Cmd variant that is Universal is not recorded either
-        let mut it = Item::new("file:/tmp/y", "y").action(Action::Open(PathBuf::from("/tmp/y")));
+        let mut it = Item::new("file:y", "y");
         it.cmd_action = Some(Action::Universal(actions::UniversalAction::LargeType("zzz".into())));
         let cmd = Mods {
             cmd: true,
             ..Mods::NONE
         };
-        let before = e.usage.lock().unwrap().boost("y", "file:/tmp/y");
+        let before = e.usage.lock().unwrap().boost("y", "file:y");
         let _ = e.execute(&it, "y", cmd, true);
-        assert_eq!(e.usage.lock().unwrap().boost("y", "file:/tmp/y"), before);
+        assert_eq!(e.usage.lock().unwrap().boost("y", "file:y"), before);
         let _ = std::fs::remove_dir_all(root);
     }
 
