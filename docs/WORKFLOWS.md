@@ -33,7 +33,7 @@ ashdash trigger com.example.hello go "text"       # fire an External Trigger obj
   keyed by bundle id, so the new package reads the old settings (API tokens, credentials) as its own. The prompt adds a
   warning line when saved values exist. The reference launcher behaves the same way, so that an update keeps your configuration.
 * `workflow_dirs` in the config ([SETTINGS.md](SETTINGS.md)) can point at other folders of workflow folders, for example an
-  existing reference launcher `workflows` directory. They run **in place**; Ashdash does not copy them. Use absolute paths.
+  existing reference launcher `workflows` directory. They run **in place**; Ashdash does not copy them. A leading `~/` is your home folder.
   **These folders never go through the import prompt**: whatever workflow is found there is loaded, its keywords work, its workflow hotkeys are
   registered and its External Triggers become reachable. Adding a folder is a settings change (Preferences cannot do it; it is done
   in `config.json` or `ashdash config set workflow_dirs ...`), so see the warning under Trust model.

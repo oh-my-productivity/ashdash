@@ -48,7 +48,10 @@ ashdash config set file_search.roots '["~/Documents","~/Projects"]'
   `clipboard.max_entries`); the file is rewritten at the next save.
 * Unreadable `config.json` at start-up: Ashdash prints `ashdash: ignoring invalid config.json: ...` on stderr and runs
   with defaults. If it becomes unreadable while running, the settings in force stay (see live reload above).
-* **Paths:** `~` is expanded only in `file_search.*` paths. Write absolute paths in `app_dirs`, `workflow_dirs` and `theme`.
+* **Paths:** a leading `~` or `~/` means your home folder in `app_dirs`, `workflow_dirs`, `theme` and the `file_search.*`
+  paths, so a `config.json` kept in your dotfiles works on every machine (`~user/...` is not expanded; other relative paths are
+  left as they are). **A save keeps what you wrote:** `"workflow_dirs": ["~/dotfiles/workflows"]` stays `~/dotfiles/workflows`
+  in the file when preferences or `ashdash config set` save it; a path you add yourself is written as you give it. `ashdash config get` prints the expanded, absolute path, because that is the folder in use.
 
 Defaults below are from `ashdash config get` on a fresh account (`<home>` is your home folder).
 
@@ -92,8 +95,8 @@ when it is loaded (checked: `0` entries becomes `1000`, `5` ms becomes `100`).
 ashdash config set hotkey cmd+shift+space
 ashdash config set max_results 15
 ashdash config set app_dirs '["/Applications","/System/Applications","/Users/me/Applications","/opt/homebrew/Caskroom"]'
-ashdash config set workflow_dirs '["/Users/me/Library/Application Support/reference-launcher/reference-launcher.prefs/workflows"]'
-ashdash config set theme /Users/me/Themes/Midnight.alfredappearance
+ashdash config set workflow_dirs '["~/Library/Application Support/reference-launcher/reference-launcher.prefs/workflows"]'
+ashdash config set theme '~/Themes/Midnight.alfredappearance'
 ashdash config set theme null
 ashdash config set providers_disabled clipboard,snippets
 ashdash config set bookmarks.enabled_sources safari,firefox

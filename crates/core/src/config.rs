@@ -207,13 +207,7 @@ impl FileSearchSettings {
     }
 
     pub(crate) fn to_scope_with(&self, home: &Path, list: &dyn Fn(&Path) -> Vec<PathBuf>) -> FileSearchScope {
-        let expand = |s: &String| match s.as_str() {
-            "~" => home.to_path_buf(),
-            _ => match s.strip_prefix("~/") {
-                Some(rest) => home.join(rest),
-                None => PathBuf::from(s),
-            },
-        };
+        let expand = |s: &String| expand_tilde(s, home);
         let mut excluded: Vec<PathBuf> = self.excluded_paths.iter().map(expand).collect();
         if self.include_icloud_drive {
             excluded = carve_out(excluded, &home.join(ICLOUD_DRIVE), list);
@@ -335,10 +329,16 @@ impl Default for Config {
 
 impl Config {
     pub fn load(paths: &Paths) -> Config {
+        Config::load_in(paths, &dirs::home_dir().unwrap_or_default())
+    }
+
+    /// [`Config::load`] with `~` meaning `home`.
+    pub fn load_in(paths: &Paths, home: &Path) -> Config {
         match std::fs::read(paths.config_file()) {
             Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
                 .map(migrate)
                 .and_then(serde_json::from_value)
+                .map(|c: Config| c.with_tilde_expanded(home))
                 .unwrap_or_else(|e| {
                     eprintln!("ashdash: ignoring invalid config.json: {e}");
                     Config::default()
@@ -347,18 +347,34 @@ impl Config {
         }
     }
 
+    /// `app_dirs`, `workflow_dirs` and `theme` with a leading `~` or `~/` replaced by `home`
+    /// (as `file_search.*` already is at use). Only loading does this: the file keeps what the
+    /// user wrote, see [`Config::save`].
+    fn with_tilde_expanded(mut self, home: &Path) -> Config {
+        let expand = |p: &PathBuf| expand_tilde_path(p, home);
+        self.app_dirs = self.app_dirs.iter().map(expand).collect();
+        self.workflow_dirs = self.workflow_dirs.iter().map(expand).collect();
+        self.theme = self.theme.as_ref().map(expand);
+        self
+    }
+
     /// Like [`Config::load`] but reports a file that exists and cannot be read as
     /// settings instead of falling back to defaults (so a CLI edit never
     /// replaces a hand-written file it failed to parse). A missing file is not
     /// an error.
     pub fn load_strict(paths: &Paths) -> anyhow::Result<Config> {
+        Config::load_strict_in(paths, &dirs::home_dir().unwrap_or_default())
+    }
+
+    /// [`Config::load_strict`] with `~` meaning `home`.
+    pub fn load_strict_in(paths: &Paths, home: &Path) -> anyhow::Result<Config> {
         let bytes = match std::fs::read(paths.config_file()) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
             Err(e) => return Err(e.into()),
         };
         let raw: serde_json::Value = serde_json::from_slice(&bytes)?;
-        Ok(serde_json::from_value(migrate(raw))?)
+        Ok(serde_json::from_value::<Config>(migrate(raw))?.with_tilde_expanded(home))
     }
 
     /// Read-modify-write of `config.json` under an exclusive advisory `flock` on
@@ -394,6 +410,16 @@ impl Config {
     /// merged over the (migrated) file contents, recursing into objects. Arrays (web searches,
     /// root lists) are replaced as a whole, so unknown keys inside array elements are not kept.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
+        self.save_in(paths, &dirs::home_dir().unwrap_or_default())
+    }
+
+    /// [`Config::save`] with `~` meaning `home`.
+    ///
+    /// Paths are loaded with `~` expanded, but a save writes back the spelling the file has:
+    /// an entry of `app_dirs` / `workflow_dirs` (or the `theme`) that is the expansion of a
+    /// `~...` entry already in the file is written as that `~...` entry. A path the user typed
+    /// or set (`ashdash config set ...`) is written as given.
+    pub fn save_in(&self, paths: &Paths, home: &Path) -> std::io::Result<()> {
         let mut base = serde_json::Value::Null;
         if let Ok(bytes) = std::fs::read(paths.config_file())
             && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -408,12 +434,69 @@ impl Config {
         let mut out = self.clone();
         out.version = CURRENT_VERSION;
         let mut merged = serde_json::to_value(&out)?;
+        keep_tilde_spelling(&mut merged, &base, home);
         if base.is_object() {
             merge_unknown(&mut base, &mut merged);
             merged = base;
         }
         // 0600, written through a unique temp file and renamed (SEC-18)
         write_private(&paths.config_file(), &serde_json::to_vec_pretty(&merged)?)
+    }
+}
+
+/// `~` and `~/rest` mean the home folder; every other string is a path as it stands
+/// (`~user/x` is not expanded).
+pub fn expand_tilde(s: &str, home: &Path) -> PathBuf {
+    match s {
+        "~" => home.to_path_buf(),
+        _ => match s.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(s),
+        },
+    }
+}
+
+fn expand_tilde_path(p: &Path, home: &Path) -> PathBuf {
+    match p.to_str() {
+        Some(s) => expand_tilde(s, home),
+        None => p.to_path_buf(),
+    }
+}
+
+/// In `merged` (the settings about to be written), put back the `~...` spelling that `old` (the
+/// file as it is) uses for the same folder, for `app_dirs`, `workflow_dirs` and `theme`.
+fn keep_tilde_spelling(merged: &mut serde_json::Value, old: &serde_json::Value, home: &Path) {
+    use serde_json::Value;
+    // the `~...` strings of one old setting, with the path each stands for
+    let spelled = |v: Option<&Value>| -> Vec<(PathBuf, String)> {
+        let strings: Vec<&str> = match v {
+            Some(Value::String(s)) => vec![s.as_str()],
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        strings
+            .into_iter()
+            .filter(|s| s.starts_with('~'))
+            .map(|s| (expand_tilde(s, home), s.to_string()))
+            .collect()
+    };
+    let rewrite = |item: &mut Value, old: &[(PathBuf, String)]| {
+        if let Some(s) = item.as_str()
+            && let Some((_, raw)) = old.iter().find(|(p, _)| *p == expand_tilde(s, home))
+        {
+            *item = Value::String(raw.clone());
+        }
+    };
+    for key in ["app_dirs", "workflow_dirs", "theme"] {
+        let old_spelled = spelled(old.get(key));
+        if old_spelled.is_empty() {
+            continue;
+        }
+        match merged.get_mut(key) {
+            Some(Value::Array(items)) => items.iter_mut().for_each(|i| rewrite(i, &old_spelled)),
+            Some(item @ Value::String(_)) => rewrite(item, &old_spelled),
+            _ => {}
+        }
     }
 }
 
@@ -1090,5 +1173,133 @@ mod tests {
         ] {
             assert!(keys.contains(&format!("file_search.{k}")), "{k}");
         }
+    }
+
+    // ---- `~` in workflow_dirs, app_dirs and theme (docs/PRODUCT.md section 8)
+
+    fn write_raw(paths: &Paths, v: serde_json::Value) {
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    }
+
+    fn read_raw(paths: &Paths) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn tilde_in_paths_is_expanded_on_load() {
+        let paths = tmp_paths("tilde-load");
+        let home = Path::new("/home/u");
+        write_raw(
+            &paths,
+            json!({
+                "version": CURRENT_VERSION,
+                "workflow_dirs": ["~/dotfiles/workflows", "~", "/abs/wf", "rel/wf", "~other/x", "a~/b"],
+                "app_dirs": ["~/Apps"],
+                "theme": "~/themes/Midnight.alfredappearance",
+            }),
+        );
+        for c in [
+            Config::load_in(&paths, home),
+            Config::load_strict_in(&paths, home).unwrap(),
+        ] {
+            assert_eq!(
+                c.workflow_dirs,
+                [
+                    "/home/u/dotfiles/workflows",
+                    "/home/u",
+                    "/abs/wf",
+                    "rel/wf",
+                    "~other/x",
+                    "a~/b"
+                ]
+                .map(PathBuf::from)
+            );
+            assert_eq!(c.app_dirs, [PathBuf::from("/home/u/Apps")]);
+            assert_eq!(
+                c.theme,
+                Some(PathBuf::from("/home/u/themes/Midnight.alfredappearance"))
+            );
+        }
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn a_save_keeps_the_tilde_the_user_wrote() {
+        let paths = tmp_paths("tilde-save");
+        let home = Path::new("/home/u");
+        write_raw(
+            &paths,
+            json!({
+                "version": CURRENT_VERSION,
+                "workflow_dirs": ["~/dotfiles/workflows", "/abs/wf"],
+                "app_dirs": ["~/Apps", "/Applications"],
+                "theme": "~/themes/T.alfredappearance",
+                "future_key": 1,
+            }),
+        );
+        let mut c = Config::load_strict_in(&paths, home).unwrap();
+        c.max_results = 7; // an unrelated change, like a toggle in preferences
+        c.save_in(&paths, home).unwrap();
+        let raw = read_raw(&paths);
+        assert_eq!(raw["max_results"], 7);
+        assert_eq!(raw["workflow_dirs"], json!(["~/dotfiles/workflows", "/abs/wf"]));
+        assert_eq!(raw["app_dirs"], json!(["~/Apps", "/Applications"]));
+        assert_eq!(raw["theme"], "~/themes/T.alfredappearance");
+        assert_eq!(raw["future_key"], 1);
+
+        // reorder, remove and add: kept entries keep their spelling, new ones are written as given
+        c.workflow_dirs = vec![
+            PathBuf::from("/new/abs"),
+            PathBuf::from("/home/u/dotfiles/workflows"),
+            PathBuf::from("~/typed/tilde"),
+        ];
+        c.app_dirs.truncate(1);
+        c.theme = Some(PathBuf::from("/elsewhere/T.alfredappearance"));
+        c.save_in(&paths, home).unwrap();
+        let raw = read_raw(&paths);
+        assert_eq!(
+            raw["workflow_dirs"],
+            json!(["/new/abs", "~/dotfiles/workflows", "~/typed/tilde"])
+        );
+        assert_eq!(raw["app_dirs"], json!(["~/Apps"]));
+        assert_eq!(raw["theme"], "/elsewhere/T.alfredappearance");
+
+        // and the next load sees the same folders again
+        let c2 = Config::load_strict_in(&paths, home).unwrap();
+        assert_eq!(c2.workflow_dirs[1], PathBuf::from("/home/u/dotfiles/workflows"));
+        assert_eq!(c2.workflow_dirs[2], PathBuf::from("/home/u/typed/tilde"));
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn a_path_that_was_absolute_in_the_file_stays_absolute() {
+        let paths = tmp_paths("tilde-abs");
+        let home = Path::new("/home/u");
+        write_raw(
+            &paths,
+            json!({"version": CURRENT_VERSION, "workflow_dirs": ["/home/u/wf"]}),
+        );
+        let c = Config::load_strict_in(&paths, home).unwrap();
+        c.save_in(&paths, home).unwrap();
+        assert_eq!(read_raw(&paths)["workflow_dirs"], json!(["/home/u/wf"]));
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn config_set_with_a_tilde_is_stored_as_written() {
+        // `ashdash config set workflow_dirs '["~/dotfiles/workflows"]'` goes through edit_locked
+        let paths = tmp_paths("tilde-set");
+        let (c, ()) = Config::edit_locked(&paths, |c| {
+            c.workflow_dirs = vec![PathBuf::from("~/dotfiles/workflows")];
+            c.theme = Some(PathBuf::from("~/t.alfredappearance"));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(c.workflow_dirs, [PathBuf::from("~/dotfiles/workflows")]);
+        let raw = read_raw(&paths);
+        assert_eq!(raw["workflow_dirs"], json!(["~/dotfiles/workflows"]));
+        assert_eq!(raw["theme"], "~/t.alfredappearance");
+        let _ = std::fs::remove_dir_all(&paths.data);
     }
 }

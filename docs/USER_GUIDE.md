@@ -90,9 +90,9 @@ In the launcher window (from `crates/app/src/gui/keys.rs`):
 
 | Key | Does |
 |---|---|
-| Up / Down, Ctrl+P / Ctrl+N | move the selection |
+| Up / Down, Ctrl+P / Ctrl+N | move the selection. Slower results never take it from you: if you moved the selection while a query was still running, the result you moved to stays highlighted when the final list arrives (found again by identity, not by row); if you did not move it, the new top result is highlighted |
 | PageUp / PageDown | move by one page (9 rows) |
-| Return | run the selected row. A row that is dangerous (Log Out, Restart, Shut Down, Empty Trash, Move to Trash, clearing the clipboard history) asks first: press Return **again** to confirm. A Return that you hold down does not confirm by key repeat; release it and press it again. |
+| Return | run the selected row: the one that was highlighted in the frame you saw, even if a result list arrives at that moment (if that row is gone from the new list, nothing runs and the footer says so; press Return again). Cmd+1...9 follow the same rule. A row that is dangerous (Log Out, Restart, Shut Down, Empty Trash, Move to Trash, clearing the clipboard history) asks first: press Return **again** to confirm. A Return that you hold down does not confirm by key repeat; release it and press it again. |
 | Cmd+Return | the row's alternative action: reveal in Finder for files and folders; copy instead of paste for `clip` and `snip` rows |
 | Other modifiers + Return | passed to workflows, whose items can define a different result per modifier (Alt, Ctrl, Shift, Cmd) |
 | Cmd+1 ... Cmd+9 | run the 1st ... 9th visible row (same rule for confirmations: a fresh press) |
