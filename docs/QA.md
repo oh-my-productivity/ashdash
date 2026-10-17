@@ -120,7 +120,7 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] Return on an entry copies it; Cmd+V into a text editor pastes it.
 - [ ] Copy from a password manager (1Password/Bitwarden "copy password"; marked concealed): the entry must **not**
   appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist, **this check with a real password manager has never been done**).
-- [ ] Per-app ignore list: copies made in an app listed in `clipboard.ignored_apps` (or added in Preferences > Features > Clipboard history) are skipped, without a restart.
+- [ ] Per-app ignore list: copies made in an app listed in `clipboard.ignored_apps` (or added in Preferences > Clipboard) are skipped, without a restart.
 - [ ] `ls -l@ ~/Library/Application\ Support/ashdash/*.json` shows `-rw-------` for `clipboard.json` and `usage.json`.
 - [ ] Image / file copies: a title is shown, copying back restores the original type.
 - [ ] `snip` lists snippets from `snippets.json`; `{clipboard}`, `{date}`, `{time}`, `{datetime}` expand; `{cursor}` handling.
@@ -163,7 +163,7 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Actions are not offered for system commands, workflow results and `> cmd` rows; nothing run from the panel changes the ranking of the original result.
 
 ### 3.10 Preferences window and live reload
-- [ ] Menu-bar item > Preferences..., `ashdash prefs` and `open ashdash://prefs` open one window with General, Features, Workflows, About; a second request brings it forward instead of opening another. The launcher hotkey still behaves as before while the window is open.
+- [ ] Menu-bar item > Preferences..., `ashdash prefs` and `open ashdash://prefs` open one window with a sidebar (General, Search, Clipboard, Snippets, Workflows, About; Cmd+1...6 switch, Cmd+K focuses "Go to a setting..."; dark and light follow the system); a second request brings it forward instead of opening another. The launcher hotkey still behaves as before while the window is open.
 - [ ] General: record a new shortcut (a system one such as Cmd+Space is warned about), launch at login (bundle only), pick a theme, change results per search, switch learning off (and check that `usage.json` is still there), press Forget (the file is emptied).
 - [ ] Features: switch `calc` off and on; add a web search with a bad URL (`file:///x/{query}`) and see it refused; add a good one and use its keyword at once; change clipboard retention and an ignored app; add/edit/delete a snippet.
 - [ ] Workflows: enable/disable a workflow (its keyword appears/disappears within a second), "Configure..." saves a value, "What can it do?" shows the summary, Remove asks twice.

@@ -8,7 +8,10 @@ use ashdash_core::{Config, Paths};
 use eframe::egui::{self, RichText};
 
 use super::app::{PrefsApp, Purpose};
-use super::widgets::{Msg, RowAction, WARN, confirm_button, hint, section, show_msg, string_list};
+use super::kit;
+use super::nav::FeaturesPart;
+use super::style::{self, Palette};
+use super::widgets::{Msg, RowAction, confirm_button, hint, is_error, section, show_msg, string_list, warn_text};
 use crate::prefs_model::{self as model, ClipboardForm, FileList, SnippetDraft, WebSearchDraft};
 
 #[derive(Default)]
@@ -51,45 +54,55 @@ impl State {
 }
 
 impl PrefsApp {
-    pub(super) fn features_page(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn features_page(&mut self, ui: &mut egui::Ui, part: FeaturesPart) {
         if self.features.clip_form.is_none() {
             self.features.clip_form = Some(ClipboardForm::from_settings(&self.cfg.clipboard));
         }
-        self.providers_section(ui);
-        self.file_search_section(ui);
-        self.bookmarks_section(ui);
-        self.clipboard_section(ui);
-        self.web_searches_section(ui);
-        self.snippets_section(ui);
+        match part {
+            FeaturesPart::Search => {
+                self.providers_section(ui);
+                self.file_search_section(ui);
+                self.bookmarks_section(ui);
+                self.web_searches_section(ui);
+            }
+            FeaturesPart::Clipboard => self.clipboard_section(ui),
+            FeaturesPart::Snippets => self.snippets_section(ui),
+        }
     }
 
     // ---------------------------------------------------------------- providers
 
     fn providers_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Features", |ui| {
+        kit::section_title(ui, "Features", Some("providers_disabled"));
+        kit::rows(ui, |ui| {
             for (id, label, what) in model::PROVIDER_INFO {
                 let mut on = model::provider_enabled(&self.cfg, id);
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut on, *label).changed() {
-                        self.features.providers_msg = self
-                            .edit(|c| model::set_provider_enabled(c, id, on))
-                            .err()
-                            .map(Msg::err);
-                    }
-                    ui.label(RichText::new(*what).weak().small());
+                kit::row(ui, label, None, false, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut on, label).changed() {
+                            self.features.providers_msg = self
+                                .edit(|c| model::set_provider_enabled(c, id, on))
+                                .err()
+                                .map(Msg::err);
+                        }
+                        hint(ui, what);
+                    });
                 });
             }
-            show_msg(ui, &self.features.providers_msg);
         });
+        show_msg(ui, &self.features.providers_msg);
     }
 
     // ---------------------------------------------------------------- file search
 
     fn file_search_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, "File search (open, find, in, ')", |ui| {
+        kit::section_title(ui, "File search (open, find, in, ')", Some("file_search"));
+        kit::card(ui, |ui| {
             for (n, list) in FileList::ALL.into_iter().enumerate() {
-                ui.add_space(6.0);
-                ui.label(RichText::new(list.title()).strong());
+                if n > 0 {
+                    ui.add_space(10.0);
+                }
+                ui.label(style::caps(list.title(), Palette::of(ui).text));
                 let items = list.get(&self.cfg).to_vec();
                 let mut input = std::mem::take(&mut self.features.file_inputs[n]);
                 let (action, added) = string_list(ui, &format!("fl{n}"), &items, &mut input, list.hint());
@@ -112,105 +125,148 @@ impl PrefsApp {
                 }
                 show_msg(ui, &self.features.file_msgs[n]);
             }
-            ui.add_space(8.0);
-            let mut hidden = self.cfg.file_search.include_hidden;
-            if ui.checkbox(&mut hidden, "Include hidden files").changed() {
-                self.features.files_msg = self.edit(|c| model::set_include_hidden(c, hidden)).err().map(Msg::err);
-            }
-            let mut icloud = self.cfg.file_search.include_icloud_drive;
-            if ui
-                .checkbox(
-                    &mut icloud,
-                    "Keep iCloud Drive searchable although ~/Library is excluded",
-                )
-                .changed()
-            {
-                self.features.files_msg = self.edit(|c| model::set_include_icloud(c, icloud)).err().map(Msg::err);
-            }
-            show_msg(ui, &self.features.files_msg);
         });
+        ui.add_space(style::m::GAP);
+        let err = is_error(&self.features.files_msg);
+        kit::rows(ui, |ui| {
+            let mut hidden = self.cfg.file_search.include_hidden;
+            kit::row(
+                ui,
+                "Include hidden files",
+                Some("file_search.include_hidden"),
+                err,
+                |ui| {
+                    if kit::toggle(ui, &mut hidden, "Include hidden files").changed() {
+                        self.features.files_msg =
+                            self.edit(|c| model::set_include_hidden(c, hidden)).err().map(Msg::err);
+                    }
+                },
+            );
+            let mut icloud = self.cfg.file_search.include_icloud_drive;
+            kit::row(
+                ui,
+                "iCloud Drive",
+                Some("file_search.include_icloud_drive"),
+                err,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut icloud, "Keep iCloud Drive searchable").changed() {
+                            self.features.files_msg =
+                                self.edit(|c| model::set_include_icloud(c, icloud)).err().map(Msg::err);
+                        }
+                        hint(ui, "Keep iCloud Drive searchable although ~/Library is excluded");
+                    });
+                },
+            );
+        });
+        show_msg(ui, &self.features.files_msg);
     }
 
     // ---------------------------------------------------------------- bookmarks
 
     fn bookmarks_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Bookmarks (bm)", |ui| {
+        kit::section_title(ui, "Bookmarks (bm)", Some("bookmarks.enabled_sources"));
+        kit::rows(ui, |ui| {
             for id in ALL_SOURCE_IDS {
                 let mut on = model::bookmark_source_enabled(&self.cfg, id);
-                if ui.checkbox(&mut on, model::bookmark_source_label(id)).changed() {
-                    self.features.bookmarks_msg =
-                        self.edit(|c| model::set_bookmark_source(c, id, on)).err().map(Msg::err);
-                }
+                let name = model::bookmark_source_label(id);
+                kit::row(ui, &name, None, false, |ui| {
+                    if kit::toggle(ui, &mut on, &name).changed() {
+                        self.features.bookmarks_msg =
+                            self.edit(|c| model::set_bookmark_source(c, id, on)).err().map(Msg::err);
+                    }
+                });
             }
             let mut general = self.cfg.bookmarks.include_in_general_search;
-            if ui
-                .checkbox(&mut general, "Also show bookmarks in ordinary searches")
-                .changed()
-            {
-                self.features.bookmarks_msg = self
-                    .edit(|c| model::set_bookmarks_in_general_search(c, general))
-                    .err()
-                    .map(Msg::err);
-            }
-            hint(
+            kit::row(
                 ui,
-                "Safari bookmarks need Full Disk Access for Ashdash in System Settings > Privacy & Security.",
+                "In ordinary searches",
+                Some("bookmarks.include_in_general_search"),
+                false,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if kit::toggle(ui, &mut general, "Also show bookmarks in ordinary searches").changed() {
+                            self.features.bookmarks_msg = self
+                                .edit(|c| model::set_bookmarks_in_general_search(c, general))
+                                .err()
+                                .map(Msg::err);
+                        }
+                        hint(ui, "Also show bookmarks in ordinary searches");
+                    });
+                },
             );
-            show_msg(ui, &self.features.bookmarks_msg);
         });
+        ui.add_space(6.0);
+        hint(
+            ui,
+            "Safari bookmarks need Full Disk Access for Ashdash in System Settings > Privacy & Security.",
+        );
+        show_msg(ui, &self.features.bookmarks_msg);
     }
 
     // ---------------------------------------------------------------- clipboard
 
     fn clipboard_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Clipboard history (clip)", |ui| {
-            let mut form = self
-                .features
-                .clip_form
-                .clone()
-                .unwrap_or_else(|| ClipboardForm::from_settings(&self.cfg.clipboard));
-            let mut apply = false;
-            egui::Grid::new("clip-grid")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("Keep at most");
-                    ui.horizontal(|ui| {
-                        let r = ui.add(egui::TextEdit::singleline(&mut form.max_entries).desired_width(70.0));
-                        ui.label("entries");
-                        apply |= r.lost_focus();
-                    });
-                    ui.end_row();
-                    ui.label("Forget after");
-                    ui.horizontal(|ui| {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut form.max_age_days)
-                                .hint_text("never")
-                                .desired_width(70.0),
-                        );
-                        ui.label("days");
-                        apply |= r.lost_focus();
-                    });
-                    ui.end_row();
-                    ui.label("Largest image");
-                    ui.horizontal(|ui| {
-                        let r = ui.add(egui::TextEdit::singleline(&mut form.max_image_mb).desired_width(70.0));
-                        ui.label("MB");
-                        apply |= r.lost_focus();
-                    });
-                    ui.end_row();
+        let mut form = self
+            .features
+            .clip_form
+            .clone()
+            .unwrap_or_else(|| ClipboardForm::from_settings(&self.cfg.clipboard));
+        let mut apply = false;
+        let err = is_error(&self.features.clip_msg);
+        kit::section_title(ui, "Clipboard history (clip)", Some("clipboard"));
+        kit::rows(ui, |ui| {
+            let p = Palette::of(ui);
+            kit::row(ui, "Keep at most", Some("clipboard.max_entries"), err, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut form.max_entries)
+                            .font(style::mono_font(style::m::BODY))
+                            .desired_width(70.0),
+                    );
+                    ui.label(style::hint_text(&p, "entries"));
+                    apply |= r.lost_focus();
                 });
-            if apply && form != ClipboardForm::from_settings(&self.cfg.clipboard) {
-                self.features.clip_msg = Some(match self.edit(|c| model::apply_clipboard_form(c, &form)) {
-                    Ok(()) => Msg::ok("Saved."),
-                    Err(e) => Msg::err(e),
+            });
+            kit::row(ui, "Forget after", Some("clipboard.max_age_days"), err, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut form.max_age_days)
+                            .font(style::mono_font(style::m::BODY))
+                            .hint_text("never")
+                            .desired_width(70.0),
+                    );
+                    ui.label(style::hint_text(&p, "days"));
+                    apply |= r.lost_focus();
                 });
-            }
-            self.features.clip_form = Some(form);
-            show_msg(ui, &self.features.clip_msg);
+            });
+            kit::row(ui, "Largest image", Some("clipboard.max_image_bytes"), err, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut form.max_image_mb)
+                            .font(style::mono_font(style::m::BODY))
+                            .desired_width(70.0),
+                    );
+                    ui.label(style::hint_text(&p, "MB"));
+                    apply |= r.lost_focus();
+                });
+            });
+        });
+        if apply && form != ClipboardForm::from_settings(&self.cfg.clipboard) {
+            self.features.clip_msg = Some(match self.edit(|c| model::apply_clipboard_form(c, &form)) {
+                Ok(()) => Msg::ok("Saved."),
+                Err(e) => Msg::err(e),
+            });
+        }
+        self.features.clip_form = Some(form);
+        show_msg(ui, &self.features.clip_msg);
 
-            ui.add_space(8.0);
-            ui.label(RichText::new("Never record copies from these apps").strong());
+        kit::section_title(
+            ui,
+            "Never record copies from these apps",
+            Some("clipboard.ignored_apps"),
+        );
+        kit::card(ui, |ui| {
             let items = self.cfg.clipboard.ignored_apps.clone();
             let mut input = std::mem::take(&mut self.features.ignored_input);
             let (action, added) = string_list(ui, "ignored", &items, &mut input, "com.example.passwordmanager");
@@ -284,13 +340,13 @@ impl PrefsApp {
                             ui.add(egui::TextEdit::singleline(&mut draft.keyword).desired_width(140.0));
                             ui.end_row();
                             ui.label("Name");
-                            ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(260.0));
+                            ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(220.0));
                             ui.end_row();
                             ui.label("URL");
                             ui.add(
                                 egui::TextEdit::singleline(&mut draft.url)
                                     .hint_text("https://example.com/search?q={query}")
-                                    .desired_width(420.0),
+                                    .desired_width(330.0),
                             );
                             ui.end_row();
                         });
@@ -398,7 +454,7 @@ impl PrefsApp {
                     .map(|(_, s)| s.name.clone())
                     .unwrap_or_default();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Delete '{name}'?")).color(WARN));
+                    ui.label(warn_text(ui, &format!("Delete '{name}'?")));
                     if ui.button("Delete").clicked() {
                         self.features.confirm_delete = None;
                         self.mutate_library(|lib| lib.remove(loc));
@@ -433,7 +489,7 @@ impl PrefsApp {
                         .spacing([10.0, 6.0])
                         .show(ui, |ui| {
                             ui.label("Name");
-                            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(300.0));
+                            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(220.0));
                             ui.end_row();
                             ui.label("Keyword");
                             ui.add(
@@ -459,7 +515,7 @@ impl PrefsApp {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.features.new_collection)
                                         .hint_text("or a new collection name")
-                                        .desired_width(180.0),
+                                        .desired_width(130.0),
                                 );
                             });
                             ui.end_row();
@@ -506,7 +562,7 @@ impl PrefsApp {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.features.sn_input)
                         .hint_text("path of an .alfredsnippets file")
-                        .desired_width(300.0),
+                        .desired_width(220.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Import").clicked() || enter) && !self.features.sn_input.trim().is_empty() {
