@@ -4,6 +4,7 @@ Everything is synthetic. Creates workflows (folders under <HOME>/Library/Applica
   qa.rerun   keyword `rr`  Script Filter rotating three rows (stable uids) every second (rerun 1); Return writes the row's arg to <work>/picked.txt
   qa.slow    keyword `sl`  Script Filter that sleeps 3 s (runningsubtext "Slow..."), three rows; Return writes the arg to <work>/picked.txt
   qa.garbage keyword `gb`  prints garbage; qa.hang keyword `hg` sleeps 30 s
+  qa.pick    keyword `pk`  twelve static rows Pick 01..12 (arg P01..P12); Return writes the arg to <work>/picked.txt
   qa.mods    keyword `md`  one row with cmd/alt/shift variants (subtitle + arg)
   qa.trigger external trigger `go` -> Write File <work>/trigger.txt (arg); qa.url external trigger `u` -> Open URL (consent dialog)
 plus three snippets and one file tree under <work>/files.
@@ -48,7 +49,11 @@ wf("qa.garbage", "QA garbage", "qa.garbage", [sf("S", "gb", "echo 'this is {not 
 wf("qa.hang", "QA hang", "qa.hang", [sf("S", "hg", "sleep 30")], {})
 mods = ('echo \'{"items":[{"uid":"m1","title":"Mods row","subtitle":"plain subtitle","arg":"plain","mods":{'
         '"cmd":{"subtitle":"CMD subtitle","arg":"cmd"},"alt":{"subtitle":"ALT subtitle","arg":"alt"},"shift":{"subtitle":"SHIFT subtitle","arg":"shift"}}}]}\'')
-wf("qa.mods", "QA mods", "qa.mods", [sf("S", "md", mods), run("R", pick)], {"S": [{"destinationuid": "R", "modifiers": 0}]})
+wf("qa.mods", "QA mods", "qa.mods", [sf("S", "md", mods), run("R", pick)],
+   {"S": [{"destinationuid": "R", "modifiers": m} for m in (0, 524288, 1048576, 131072)]})
+rows = ",".join('{"uid":"p%02d","title":"Pick %02d","subtitle":"row %d","arg":"P%02d"}' % (i, i, i, i) for i in range(1, 13))
+wf("qa.pick", "QA pick", "qa.pick", [sf("S", "pk", "echo '{\"items\":[%s]}'" % rows), run("R", pick)],
+   {"S": [{"destinationuid": "R", "modifiers": 0}]})
 wf("qa.trigger", "QA trigger", "qa.trigger",
    [{"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "go"}},
     run("R", f'printf "%s" "$1" > "{work}/trigger.txt"')], {"T": [{"destinationuid": "R", "modifiers": 0}]})

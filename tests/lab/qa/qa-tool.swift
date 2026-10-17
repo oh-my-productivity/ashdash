@@ -5,6 +5,7 @@
 //   qa-tool pb-set-file PATH                     put a file reference on the pasteboard
 //   qa-tool pb-types                             print the types now on the pasteboard
 //   qa-tool hog KEYCODE MODS SECONDS             register a global hotkey (Carbon) and hold it; MODS: cmd=256 shift=512 opt=2048 ctrl=4096 (sum)
+//   qa-tool type TEXT                           type TEXT as key events carrying the characters (Unicode, no IME)
 //   qa-tool front                                print the frontmost application's bundle id
 import AppKit
 import Carbon
@@ -59,7 +60,11 @@ case "pb-set":
 case "pb-set-file":
     let pb = NSPasteboard.general
     pb.clearContents()
-    pb.writeObjects([URL(fileURLWithPath: a[2]) as NSURL])
+    let url = URL(fileURLWithPath: a[2])
+    let fileURL = NSPasteboard.PasteboardType("public.file-url")
+    pb.declareTypes([fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType")], owner: nil)
+    pb.setString(url.absoluteString, forType: fileURL)
+    pb.setPropertyList([url.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
 case "pb-types":
     for t in NSPasteboard.general.types ?? [] { print(t.rawValue) }
 case "hog":
@@ -69,6 +74,16 @@ case "hog":
     print("RegisterEventHotKey status \(st)")
     fflush(stdout)
     RunLoop.current.run(until: Date(timeIntervalSinceNow: Double(a[4])!))
+case "type":
+    for ch in a[2] {
+        let u = Array(String(ch).utf16)
+        for down in [true, false] {
+            let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
+            e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u)
+            e.post(tap: .cghidEventTap)
+            usleep(15_000)
+        }
+    }
 case "front":
     print(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none")
 default: die("unknown command \(a[1])")
