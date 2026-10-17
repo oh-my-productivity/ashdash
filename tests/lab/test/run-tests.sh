@@ -124,6 +124,18 @@ sleep 2
 [ ! -d "$TART_HOME/vms/ashdash-run-old" ] && ok "watchdog deleted the stale run VM" || bad "stale VM kept"
 [ -d "$TART_HOME/vms/other-vm" ] && [ -d "$TART_HOME/vms/ashdash-golden" ] && ok "watchdog left unrelated VMs alone" || bad "watchdog deleted a foreign VM"
 
+echo "== watchdog respects lab-up --max-age"
+# A long run (soak) must survive the watchdog that other agents' lab-up calls run with the default 30 minutes.
+vm=$("$lab/lab-up" --id longrun --max-age 100000 2>/dev/null | cut -d' ' -f1)
+[ "$(cat "$LAB_RUN_DIR/max-age/ashdash-run-longrun" 2>/dev/null)" = 100000 ] && ok "lab-up --max-age records the limit" || bad "no max-age marker"
+sleep 2
+"$lab/lab-gc" --max-age 1000000 >/dev/null 2>&1; LAB_MAX_VM_AGE=1 "$lab/lab-gc" >/dev/null 2>&1
+[ -d "$TART_HOME/vms/ashdash-run-longrun" ] && ok "the default watchdog (even with a 1 s default) keeps a VM that asked for more" || bad "long-run VM was reaped"
+"$lab/lab-gc" --max-age 1 >/dev/null 2>&1
+[ ! -d "$TART_HOME/vms/ashdash-run-longrun" ] && ok "an explicit lab-gc --max-age still wins" || { bad "explicit --max-age ignored"; "$lab/lab-down" ashdash-run-longrun >/dev/null 2>&1; }
+[ ! -e "$LAB_RUN_DIR/max-age/ashdash-run-longrun" ] && ok "lab-down removes the marker" || bad "marker left"
+[ -n "$vm" ] || bad "lab-up printed no VM name"
+
 echo "== concurrency: 2 slots, third job queues"
 for n in 1 2 3; do
   ( "$lab/lab-with-vm" --id "conc$n" -- sh -c 'date +%s; sleep 6' >"$tmp/conc$n.out" 2>/dev/null ) &
