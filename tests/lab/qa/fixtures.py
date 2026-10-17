@@ -5,6 +5,7 @@ Everything is synthetic. Creates workflows (folders under <HOME>/Library/Applica
   qa.slow    keyword `sl`  Script Filter that sleeps 3 s (runningsubtext "Slow..."), three rows; Return writes the arg to <work>/picked.txt
   qa.garbage keyword `gb`  prints garbage; qa.hang keyword `hg` sleeps 30 s
   qa.pick    keyword `pk`  twelve static rows Pick 01..12 (arg P01..P12); Return writes the arg to <work>/picked.txt
+  qa.long    keyword `lt`  one row whose Large Type text is 700 numbered words (to see the Large Type scroll)
   qa.mods    keyword `md`  one row with cmd/alt/shift variants (subtitle + arg)
   qa.copy    keywords `cp` (transient Copy to Clipboard), `cq` (plain copy), `nt` (notification)
   qa.trigger external trigger `go` -> Write File <work>/trigger.txt (arg); qa.url external trigger `u` -> Open URL (consent dialog)
@@ -64,6 +65,10 @@ wf("qa.url", "QA url", "qa.url",
    [{"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "u"}},
     {"uid": "U", "type": "alfred.workflow.action.openurl", "config": {"url": "https://example.invalid/{query}"}}],
    {"T": [{"destinationuid": "U", "modifiers": 0}]})
+
+lt = 'text=$(for i in $(seq 1 700); do printf "L%03d " $i; done); echo "{\\"items\\":[{\\"title\\":\\"Long text\\",\\"valid\\":false,\\"text\\":{\\"largetype\\":\\"$text\\"}}]}"'
+wf("qa.long", "QA long", "qa.long", [sf("S", "lt", lt)], {})
+
 
 def kw(uid, word, title):
     return {"uid": uid, "type": "alfred.workflow.input.keyword",

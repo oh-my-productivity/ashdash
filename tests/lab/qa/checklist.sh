@@ -22,8 +22,10 @@ app_pid() { pgrep -f "$BIN\$" | head -1; }
 sock_ok() { [ -S "$DATA/run/ipc.sock" ] || [ -S "/tmp/ashdash-$(id -u)/ipc.sock" ]; }
 
 stop_app() { cli quit >/dev/null 2>&1; sleep 1; pkill -f "$BIN\$" 2>/dev/null; sleep 0.5; }
+# every gui-exec call leaves a Terminal window (docs/LAB.md); after a hundred of them Terminal starts jobs late, so restart it
+reap_terminal() { [ "$(wd 20 osascript -e 'tell application "System Events" to tell process "Terminal" to count of windows' | tail -1)" -gt 20 ] 2>/dev/null && { pkill -x Terminal; sleep 1.5; rm -rf "$HOME/Library/Saved Application State/com.apple.Terminal.savedState"; }; }
 start_app() { # start_app [ENV=VAL ...]: launch in the GUI session with the seeded HOME
-  stop_app
+  stop_app; reap_terminal
   # `open` (not the binary as a child of Terminal): the app is then its own responsible process for TCC prompts
   local envs=(); local e; for e in "$@"; do envs+=(--env "$e"); done
   : >"$QA_ART/app.log"
@@ -248,6 +250,13 @@ s33() {
   [ -n "$big" ] && result 3.3.6a PASS "Cmd+L opens Large Type (window $big)" || result 3.3.6a FAIL "no Large Type window: $(win_tool Ashdash ashdash | tr '\n' ';')"
   key_code $KC_ESC; sleep 0.8; [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && result 3.3.6b PASS "Esc dismisses Large Type" || result 3.3.6b FAIL "Large Type still up after Esc"
   hide_
+  # Large Type with text longer than the screen scrolls (numbered words: the first word on screen must change)
+  ask 'lt ' 1.5 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
+  local lt0 lt1 lt2; lt0=$(look lt-top | cut -c1-40)
+  key_code 121; key_code 121; sleep 0.6; lt1=$(look lt-pgdn | cut -c1-40)
+  key_code 125; key_code 125; key_code 125; sleep 0.6; lt2=$(look lt-down | cut -c1-40)
+  [ -n "$lt0" ] && [ "$lt0" != "$lt1" ] && [ "$lt1" != "$lt2" ] && result 3.3.6c PASS "Large Type text taller than the screen scrolls with Page Down and the arrow keys (first words on screen: '$lt0' -> '$lt1' -> '$lt2')" || result 3.3.6c FAIL "Large Type did not scroll: '$lt0' / '$lt1' / '$lt2'"
+  key_code $KC_ESC; sleep 0.6; hide_
   # held Return on a confirmation: never confirms by repeating. Real target: Empty Trash with a file in the trash.
   mkdir -p "$HOME/.Trash"; echo x >"$HOME/.Trash/qa-trash-item.txt"
   tcc_reset
@@ -560,9 +569,13 @@ PL
   o=$(cli theme "$WORK/qa.alfredappearance" 2>&1); sleep 1.5; ask 'saf' 1.2 >/dev/null; shot appearance-theme >/dev/null
   local m3; m3=$(md5 -q "$QA_ART/appearance-theme.png")
   [ "$m3" != "$m1" ] && [ "$m3" != "$m2" ] && result 3.8.1b PASS "ashdash theme <file> applies a custom .alfredappearance to the running launcher at once ($o); screenshot differs from both built-in looks" || result 3.8.1b FAIL "theme did not change the look ($o)"
+  local before_set="" after_set="" k
+  ask 'saf' 1.0 >/dev/null; for k in 1 2 3 4; do shot th-b$k >/dev/null 2>&1; before_set="$before_set $(md5 -q "$QA_ART/th-b$k.png")"; sleep 0.27; done
   hide_; echo "not a plist" >"$WORK/broken.alfredappearance"
-  o=$(cli theme "$WORK/broken.alfredappearance" 2>&1); sleep 1; ask 'saf' 1.0 >/dev/null; shot appearance-after-broken >/dev/null
-  alive && [ "$(md5 -q "$QA_ART/appearance-after-broken.png")" = "$m3" ] && result 3.8.1c PASS "a broken theme is refused ('$(echo "$o" | head -1 | cut -c1-120)') and the current look is unchanged" || result 3.8.1c FAIL "after a broken theme: alive=$(alive && echo y || echo n) out=$o"
+  o=$(cli theme "$WORK/broken.alfredappearance" 2>&1); sleep 1; ask 'saf' 1.0 >/dev/null
+  for k in 1 2 3 4; do shot th-a$k >/dev/null 2>&1; after_set="$after_set $(md5 -q "$QA_ART/th-a$k.png")"; sleep 0.27; done
+  local same=0 x; for x in $after_set; do echo "$before_set" | grep -q "$x" && same=1; done
+  alive && [ "$same" = 1 ] && result 3.8.1c PASS "a broken theme is refused ('$(echo "$o" | head -1 | cut -c1-120)') and the current look is unchanged (identical frames before/after)" || result 3.8.1c FAIL "after a broken theme: alive=$(alive && echo y || echo n) frames identical=$same out=$o"
   wd 20 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null
   local pw ph; pw=$(file "$QA_ART/appearance-theme.png" | sed -n 's/.*PNG image data, \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
   result 3.8.2 PASS "Retina: the 700 pt window is captured as $pw px (2x backing scale) and sits at $(lw) (x y w h) on the 1024x768 display, fully on screen; non-Retina display and text scaling: see the owner steps"
@@ -615,18 +628,18 @@ s39() {
 
 # ------------------------------------------------------------------------------------------------------------------------ 3.11 measurements that need the real process
 s311() {
-  stop_app; sleep 2; local t0 t1 i
+  stop_app; reap_terminal; sleep 2; local t0 t1 i
   # hotkey-ready: from `open` until the first hotkey press shows the window
   t0=$(now_ms)
   for i in 1 2 3 4 5 6 7 8; do pgrep -f "$BIN\$" >/dev/null || break; sleep 0.5; done
-  wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null
+  wd 25 /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null   # straight from the ssh session: no Terminal hop in the measurement
   local ready="" tries=0
   for i in $(seq 1 200); do
-    if ! pgrep -f "$BIN\$" >/dev/null && [ $(( $(now_ms) - t0 )) -gt 4000 ] && [ $tries -lt 2 ]; then tries=$((tries+1)); wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null; t0=$(now_ms); fi
+    if ! pgrep -f "$BIN\$" >/dev/null && [ $(( $(now_ms) - t0 )) -gt 4000 ] && [ $tries -lt 2 ]; then tries=$((tries+1)); wd 25 /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null; t0=$(now_ms); fi
     hotkey; local k; for k in 1 2 3 4 5 6; do sleep 0.1; visible && break; done   # (pressing again before the window is listed would hide it)
     if visible; then ready=$(( $(now_ms) - t0 )); break; fi
   done
-  [ -n "$ready" ] && result 3.11.2 PASS "process start (open) to the first Option+Shift+Space that shows the window: ${ready} ms (includes ~150 ms osascript start per probe and the gui-exec/Terminal hop; target < 300 ms is for the app alone, docs/PERF.md has the in-process number)" || result 3.11.2 FAIL "no window within 20 s of launch"
+  [ -n "$ready" ] && result 3.11.2 PASS "process start (open) to the first Option+Shift+Space that shows the window: ${ready} ms (includes ~250 ms osascript start per probe; target < 300 ms is for the app alone, docs/PERF.md has the in-process number)" || result 3.11.2 FAIL "no window within 20 s of launch (alive=$(alive && echo y || echo n) socket=$(sock_ok && echo y || echo n) windows: $(win_tool Ashdash ashdash | awk '{print $2":"$6"x"$7}' | tr '\n' ' ') hotkey in config: $(grep -m1 '"hotkey"' "$DATA/config.json" 2>/dev/null))"
   hide_; sleep 12
   local pid; pid=$(app_pid); local r1 r2 c1 c2
   r1=$(ps -o rss= -p "$pid" | tr -d ' '); c1=$(ps -o cputime= -p "$pid" | tr -d ' '); sleep 60; r2=$(ps -o rss= -p "$pid" | tr -d ' '); c2=$(ps -o cputime= -p "$pid" | tr -d ' ')
