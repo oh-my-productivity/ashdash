@@ -25,11 +25,12 @@ use std::time::Duration;
 pub use compat::{ENTRY_KINDS, FLOW_KINDS, INPUT_KINDS, is_supported, unsupported_kinds};
 pub use exec::{Effect, Resume, WriteFile, WriteMode, debug_log, render, spawn_delayed};
 pub use filter::{KeywordResults, ModOverride, WorkflowAction, rerun_interval};
-pub use model::{Connection, Node, Workflow, load_all, read_info_plist};
+pub use model::{Connection, Node, Workflow, load_all, read_info_plist, sweep_interrupted_installs};
 pub use package::{
     InstalledWorkflow, PackagePreview, StagedPackage, WORKFLOW_PACKAGE_EXTENSIONS, import_package, is_workflow_package,
     stage_package,
 };
+pub(crate) use package::remove_swap_leftovers_of;
 pub use script::{ScriptOutput, run_osascript};
 pub use trust::{FileWriteInfo, INCOMING_ARGUMENT, LaunchedApp, TrustSummary, WriteKind, WritePlace};
 pub use userconfig::ConfigVar;

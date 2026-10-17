@@ -715,3 +715,11 @@ The ids `SEC-R5-nn` are the item numbers of that review.
 - **SEC-R5-06 (item 6)** Wording only. The File Filter `mdfind` is *bounded by the budget* (4 s by default, `mdfind_timeout_ms`, and 200 hits / about 200 KB of output), not "cheap": `mdfind` spends about 2.3 s
   starting up before it prints, so a types-only predicate (empty argument) still holds the single query worker for that long on a cold run (one run on one machine, `docs/reviews/wave4b.md`; not re-measured here), and
   a slow or hung `mdfind` for up to the timeout. The output cap shortens neither. No code change; lowering `mdfind_timeout_ms` shortens the worst case at the cost of missed results on a slow index.
+- **SEC-R5-07 (item 7)** Removing a workflow (`settings_view::remove_workflow`, the preferences window's "Remove...") also removes the `.import-old-*` previous-version leftovers that name that folder
+  (`package::remove_swap_leftovers_of`; exact folder-name match, empty or path-like names remove nothing), so the sweep can no longer put the old copy back once the installed folder is gone.
+  `.import-copy-*` leftovers name no workflow and are only ever deleted by the sweep, never restored, so they are not touched. This closes the residual in 9e for removals made through the app; a folder
+  deleted in Finder still leaves a leftover (hidden `.import-old-*`) that is restored an hour later - delete it with the workflow. Tests: `removing_a_workflow_removes_its_previous_version_leftovers_and_only_those`
+  (package.rs), `removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version` (tests/prefs_core.rs).
+- **SEC-R5-08 (item 10)** `load_all` no longer sweeps. `workflow::sweep_interrupted_installs(own_root)` is called by the engine's content reload for the app's own workflows folder only (first root, built by
+  `Engine::reload_job`) and by `stage_package` (as before); roots from `workflow_dirs` (a synced reference launcher folder, a read-only share) are only read. Amends 9e, which said the sweep ran on every `load_all` of a folder.
+  Test: `only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs` (tests/prefs_core.rs: a writable and a read-only extra root keep their stale leftovers, the own folder's lost workflow is put back).

@@ -150,6 +150,11 @@ impl ReloadJob {
     }
 
     fn run_content(&self) {
+        // The first root is the app's own workflows folder (`reload_job`); the others come from
+        // `workflow_dirs` and are never written to.
+        if let Some(own) = self.workflow_roots.first() {
+            workflow::sweep_interrupted_installs(own);
+        }
         let fresh = workflow::load_all(&self.workflow_roots);
         let snippets = clipboard::load_snippets(&self.snippets_file);
         let old = std::mem::replace(&mut *self.workflows.write().unwrap(), fresh);

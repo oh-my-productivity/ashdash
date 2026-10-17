@@ -253,12 +253,13 @@ impl Workflow {
 ///
 /// Hidden folders (a name starting with `.`) are not workflows: the importer keeps staging
 /// folders, the new tree and the previous version of a workflow being replaced there
-/// (`.import-*`), and a reload during an install must not see a second copy of it. Leftovers of
-/// an interrupted install are cleaned up first (`package::sweep_interrupted_installs`).
+/// (`.import-*`), and a reload during an install must not see a second copy of it. This only
+/// reads: a root may belong to someone else (a synced reference launcher folder, read-only), so cleaning up
+/// after an interrupted install is [`sweep_interrupted_installs`], called for the app's own
+/// workflows folder only.
 pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {
     let mut out = Vec::new();
     for root in roots {
-        super::package::sweep_interrupted_installs(root, super::package::STALE_SWAP);
         let Ok(rd) = std::fs::read_dir(root) else { continue };
         let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         dirs.sort();
@@ -273,4 +274,11 @@ pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {
         }
     }
     out
+}
+
+/// Clean up what an interrupted install left in the app's **own** workflows folder `own_root`
+/// (see `package::sweep_interrupted_installs`: staging and half-made copies are removed, a lost
+/// previous version is put back). Never call it for a folder from `workflow_dirs`.
+pub fn sweep_interrupted_installs(own_root: &Path) {
+    super::package::sweep_interrupted_installs(own_root, super::package::STALE_SWAP);
 }
