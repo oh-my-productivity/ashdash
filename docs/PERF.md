@@ -115,7 +115,7 @@ Nothing in the product was changed or tuned; the harness only starts the normal 
 ## What was measured, on what
 
 * Binary: `cargo build --release` in the worktree (`target/release/ashdash`, 19.0 MB, the bare binary, **not** the signed `.app` bundle).
-* Machine: Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2. It is the user's working desktop, so not quiet: `uptime` 1-minute load at the start of the 18 measured starts ran **1.7-5.3** (15-minute 3.2-5.0); the summed `%CPU` of all other processes at those moments was **70-211 %** of 1,200 %. The runs are in time order and the load fell over the 25 minutes, so rep 1 of each variant ran under the heaviest load (see `docs/perf-data/gui-2026-10-17.jsonl`, `load_before`).
+* Machine: Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2. It is the user's working desktop, so not quiet: `uptime` 1-minute load at the start of the 18 measured starts ran **1.7-5.3** (15-minute 3.2-5.2); the summed `%CPU` of all other processes at those moments was **70-211 %** of 1,200 %. The runs are in time order and the load fell over the 25 minutes, so rep 1 of each variant ran under the heaviest load (see `docs/perf-data/gui-2026-10-17.jsonl`, `load_before`).
 * Three app lists, each with a fresh temporary `HOME` per repetition (the user's real data folder is never read or written; the app list comes from `app_dirs` in the temporary config):
   * **0 apps** (`app_dirs: []`),
   * **real**: the machine's own `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications` (82-83 apps, read-only scan, `~/Applications` of the temporary HOME is empty),
@@ -161,7 +161,7 @@ Cells are `min-max (median)` over the 3 repetitions, in milliseconds unless note
 | 5,002 apps | warm cache | 8-10 (9) | **135-151 (140)** | 218-239 (222) | 81-88 |
 
 * The control socket is bound before the engine is built, so socket-up is *not* readiness.
-* Where the time goes (inference from the numbers, not a profile): `ashdash --version` takes 4.5 ms and `ashdash query x` with a warm cache 5 ms (0 apps) / 5 ms (real) / 11 ms (5,002 apps) as separate CLI processes, so `Engine::new` is a few ms warm. The remaining **~110-130 ms before hotkey-ready is GUI initialisation** (winit/eframe/wgpu/Metal device and pipelines, status item), independent of the app list. A cold scan adds 10 ms (0 apps), ~20 ms (real) and ~220 ms (5,002 apps; the same ~225 ms as the engine bench in the first part of this file).
+* Where the time goes (inference from the numbers, not a profile): `ashdash --version` takes 4.5 ms and `ashdash query x` with a warm cache 5 ms (0 apps) / 5 ms (real) / 11 ms (5,002 apps) as separate CLI processes, so `Engine::new` is a few ms warm. The remaining **~110-130 ms before hotkey-ready is GUI initialisation** (winit/eframe/wgpu/Metal device and pipelines, status item), independent of the app list. A cold scan adds ~5 ms (0 apps), ~21 ms (real) and ~218 ms (5,002 apps; the same ~225 ms as the engine bench in the first part of this file).
 * **Outliers not in the table:** the very first execution of the freshly built binary (a smoke run before the measured ones, load average 11-27 at the time) took 594 ms to the socket and 878 ms to hotkey-ready, and in one separate investigation run the first hotkey after a cold start took 749 ms to show the window. Both were single events; I could not reproduce them in the 18 measured starts. Likely candidates (not verified): first-exec code-signature/XProtect check of a new binary, cold GPU shader cache, the machine load. A real first launch after an install can look like this.
 
 ### (b) Idle with the window hidden (60 s)
@@ -193,6 +193,7 @@ Per repetition: show with the hotkey, wait 0.5 s, type `saf` (synthetic key even
 
 * **Does memory return? Footprint yes, RSS no.** Showing the window raises the footprint by about **185 MB** (35 -> 220 MB, in every variant, independent of the app list), and it falls back to the idle level within roughly 11 s of hiding (147-163 MB one second after hiding, 34-51 MB after eleven). After 20 further cycles the footprint is 35-47 MB, i.e. at most +1 to +9 MB above the baseline (small residue: query/icon caches or heap fragmentation; 20 cycles cannot rule out a slow leak). RSS rises 6-12 MB with first use (heap and pages touched) and is **not** given back (it stays at 97-122 MB).
 * The 185 MB is **graphics memory** ("owned unmapped (graphics)" 2.5 MB -> 182 MB in `vmmap`; `docs/perf-data/vmmap-0apps-window-shown.txt`), not malloc heap (heap +0.7 MB). Control experiments with the reference process: a 700x63 transparent borderless Metal window shown at status level with one presented frame costs **+3 MB** footprint, and adding the same `NSVisualEffectView` (HUD material, corner radius) as `gui/mac.rs` costs **+3 MB** as well (3 runs each). So the cost is not the window, the layer or the vibrancy view; it comes from the wgpu/egui rendering path. Which exact allocation (shader/pipeline compilation, buffers, texture atlas, drawable pool) was **not** determined; see suggestions.
+* `footprint`'s graphics accounting is volatile at the moment of a transition: in one 5,002-app repetition the "typed" sample read 44 MB between a 226 MB and a 145 MB reading. Treat the 1-second columns as coarse; the 11-second and 20-cycle columns are the reliable ones.
 * The window's on-screen size is 700 x 63 pt (header only, before results), drawable `1400x126` (Retina), so the surface itself is ~0.7 MB.
 
 ### (d) Hotkey -> window visible
@@ -201,8 +202,8 @@ Per repetition: show with the hotkey, wait 0.5 s, type `saf` (synthetic key even
 
 | Path | all variants | post -> `show()` in the app (ASHDASH_TRACE) | post -> key focus (trace) |
 |---|---|---|---|
-| synthetic hotkey chord -> window on screen | **179-234 ms (200-216)** per-rep median, p95 per rep 205-234 | 166-213 ms (median 184-196) | 184-241 ms (206-223) |
-| `ashdash show` over the socket (proxy) -> window on screen | **116-131 ms (123-127)** | (CLI start to `show()`: 107-110 ms, from the gap run) | 133-144 ms |
+| synthetic hotkey chord -> window on screen | **179-234 ms (200-216)** per-rep median, p95 per rep 205-234 | 166-213 ms (median 184-196) | 184-241 ms (205-223) |
+| `ashdash show` over the socket (proxy) -> window on screen | **116-131 ms (123-127)** | (CLI start to `show()`: 107-110 ms, from the gap run) | 130-144 ms (gap run) |
 | first hotkey immediately after start (table in (a)) | 75-88 ms | | |
 
 (One 78.7 ms outlier in 90 presses, 5,002 apps rep 2.) Hotkey latency does **not** depend on how long the window has been hidden: gap run (0.5, 3, 10, 30 s hidden; 3 presses each; `docs/perf-data/gui-hotkey-gap-2026-10-17.jsonl`): hotkey 190-215 ms at every gap, `ashdash show` 122-131 ms at every gap.
