@@ -665,12 +665,15 @@ s_known() {
   pkill -f 'ashdash prefs-window'; sleep 1
   # a held Return in the in-window import prompt never installs (key repeat), a fresh press does
   mkpkg "$WORK/held.alfredworkflow" qa.pkg.held ph
-  show; clear_field; type_text "$WORK/held.alfredworkflow"; sleep 1.2; key_code $KC_RIGHT; sleep 0.8; key_code $KC_RETURN; sleep 1.5
+  show; clear_field; type_text "$WORK/held.alfredworkflow"; sleep 1.2; key_code $KC_RIGHT; sleep 0.8
+  # ONE held Return starts on "Install Workflow..." in the actions panel: its first event opens the prompt, the 40 repeats that follow must not confirm it
+  qt keyrepeat 36 40 40; sleep 1.2
   local ptext; ptext=$(look held-prompt)
-  qt keyrepeat 36 30 40; sleep 1.5
-  ! cli workflows 2>&1 | grep -q 'qa.pkg.held' && has "$ptext" 'Install' && result KU-HELD PASS "in-window import prompt: a held Return (30 auto-repeat events) does not install (workflows: none new); the prompt reads: $ptext" || result KU-HELD FAIL "prompt='$ptext' installed=$(cli workflows 2>&1 | grep -c qa.pkg.held)"
-  key_code $KC_RETURN; sleep 2
-  cli workflows 2>&1 | grep -q 'qa.pkg.held' && result KU-HELD2 PASS "a fresh Return after the prompt installs the workflow" || result KU-HELD2 FAIL "fresh Return did not install"
+  if ! cli workflows 2>&1 | grep -q 'qa.pkg.held' && has "$ptext" 'Install workflow'; then
+    result KU-HELD PASS "a Return held down from 'Install Workflow...' opens the prompt and 40 auto-repeats do not install it (workflows list has no qa.pkg.held); prompt: $(echo "$ptext" | cut -c1-200)"
+  else result KU-HELD FAIL "held Return: prompt visible=$(has "$ptext" 'Install workflow' && echo yes || echo no), installed=$(cli workflows 2>&1 | grep -c qa.pkg.held)"; fi
+  sleep 0.8; key_code $KC_RETURN; sleep 2
+  cli workflows 2>&1 | grep -q 'qa.pkg.held' && result KU-HELD2 PASS "a fresh Return after the key was released installs the workflow" || result KU-HELD2 FAIL "fresh Return did not install"
   hide_
 }
 
