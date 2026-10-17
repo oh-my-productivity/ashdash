@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# lab-run <vm> [--artifacts DIR] [--no-sync] [--src DIR] [--env K=V]... -- <cmd> [args...]
+#
+# Sync the worktree into the VM (rsync; honours .gitignore, skips target/, .worktrees/ and .git/;
+# the guest's target/ survives between runs so rebuilds are incremental), run <cmd> there over ssh
+# from the synced directory, streaming its output, and propagate its exit code.
+# Inside the VM, $LAB_ARTIFACTS is a fresh directory; with --artifacts DIR its contents are copied
+# to DIR on the host afterwards (also when the command failed). Screenshots belong there, never in git.
+set -euo pipefail
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+
+vm="" artifacts="" sync=1 src=$LAB_REPO_ROOT envs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --artifacts) artifacts=$2; shift 2 ;;
+    --no-sync) sync=0; shift ;;
+    --src) src=$(cd "$2" && pwd); shift 2 ;;
+    --env) envs+=("$2"); shift 2 ;;
+    --) shift; break ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -*) lab_die "unknown option: $1" ;;
+    *) if [ -z "$vm" ]; then vm=$1; shift; else lab_die "unexpected argument: $1 (use -- before the command)"; fi ;;
+  esac
+done
+[ -n "$vm" ] || lab_die "usage: lab-run <vm> [options] -- <cmd> [args...]"
+[ $# -gt 0 ] || lab_die "no command given (usage: lab-run <vm> -- <cmd>)"
+lab_check_run_name "$vm"
+lab_need_tart
+lab_vm_exists "$vm" || lab_die "VM $vm does not exist (lab-up first)"
+ip=$(lab_vm_ip "$vm" 30) || lab_die "cannot get the IP of $vm (is it running?)"
+
+work="$LAB_REMOTE_ROOT/$(basename "$src")"
+run_id=$(date +%s)-$$
+art_remote="lab-artifacts/$run_id"
+
+ssh_opts=()
+while IFS= read -r line; do ssh_opts+=("$line"); done < <(lab_ssh_opts)
+
+if [ "$sync" = 1 ]; then
+  lab_log "syncing $src -> $vm:~/$work"
+  lab_ssh "$ip" "mkdir -p $(printf %q "$work")"
+  # shellcheck disable=SC2086
+  rsync -a --delete \
+    --filter=':- .gitignore' \
+    --exclude '/target/' --exclude 'target/' --exclude '/.worktrees/' --exclude '/.git' --exclude '.DS_Store' \
+    -e "ssh ${ssh_opts[*]}" \
+    "$src/" "$LAB_USER@$ip:$work/" >&2
+fi
+
+# Build the remote command line with shell quoting that bash and zsh (the guest login shell) both read.
+quoted=""
+for a in "$@"; do quoted+=" $(printf %q "$a")"; done
+exports="export LAB_ARTIFACTS=\"\$HOME/$art_remote\" LAB_VM=$(printf %q "$vm") PATH=\"\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH\";"
+for e in "${envs[@]+"${envs[@]}"}"; do exports+=" export $(printf %q "$e");"; done
+# mkdir -p the work dir too: with --no-sync on a fresh VM it does not exist yet.
+script="$exports mkdir -p \"\$LAB_ARTIFACTS\" $(printf %q "$work") && cd $(printf %q "$work") &&$quoted"
+
+rc=0
+lab_log "running in $vm: $*"
+lab_ssh "$ip" "$script" || rc=$?
+
+if [ -n "$artifacts" ]; then
+  mkdir -p "$artifacts"
+  lab_log "copying artifacts to $artifacts"
+  rsync -a -e "ssh ${ssh_opts[*]}" "$LAB_USER@$ip:$art_remote/" "$artifacts/" >&2 \
+    || lab_log "warning: could not copy artifacts"
+fi
+exit $rc

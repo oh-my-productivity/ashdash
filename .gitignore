@@ -1,3 +1,7 @@
 /target
 /.worktrees
 /dist
+
+# Test lab artifacts (screenshots, logs) - never commit
+/lab-out/
+__pycache__/
