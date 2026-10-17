@@ -813,9 +813,25 @@ fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
         .stderr(Stdio::piped())
         .output()?;
     if !out.status.success() {
-        bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "{what} failed: {}",
+            with_automation_hint(String::from_utf8_lossy(&out.stderr).trim())
+        );
     }
     Ok(())
+}
+
+/// A refused Apple event (-1743: the user said Don't Allow, or never answered the prompt) gets the place to fix it
+/// appended; the raw `osascript` error alone does not say what to do.
+pub(crate) fn with_automation_hint(stderr: &str) -> String {
+    if stderr.contains("(-1743)") {
+        format!(
+            "{stderr} ({} may not control that app: allow it in System Settings > Privacy & Security > Automation)",
+            crate::brand::NAME
+        )
+    } else {
+        stderr.to_string()
+    }
 }
 
 /// A command for a macOS system tool, by absolute path (see `actions::system_program`).
@@ -1218,6 +1234,21 @@ mod tests {
         assert!(matches!(e.execute(&it, "a", cmd, false), Outcome::Confirm(_)));
         assert!(fake.calls().is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_refused_apple_event_from_a_system_tool_says_where_to_allow_it() {
+        // what `osascript` prints when the user answered "Don't Allow" (the `> cmd` / Empty Trash path goes through run_status)
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg("echo '49:75: execution error: Not authorized to send Apple events to Terminal. (-1743)' >&2; exit 1");
+        let err = run_status(&mut c, "osascript").unwrap_err().to_string();
+        assert!(err.contains("Not authorized to send Apple events"), "{err}");
+        assert!(err.contains("Privacy & Security > Automation"), "{err}");
+        // other failures keep the plain text
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg("echo 'boom' >&2; exit 1");
+        assert_eq!(run_status(&mut c, "open").unwrap_err().to_string(), "open failed: boom");
     }
 
     #[test]

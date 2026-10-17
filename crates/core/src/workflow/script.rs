@@ -356,18 +356,12 @@ pub fn run_osascript(source: &str) -> Result<String> {
     }
 }
 
-/// The message for a failed `osascript`. A refused Apple event (-1743: the user said Don't Allow, or never
-/// answered) gets the place to fix it appended; the raw error alone does not say what to do.
+/// The message for a failed `osascript`, with the Automation hint for a refused Apple event.
 fn osascript_failure(stderr: &str) -> String {
-    let raw = stderr.trim();
-    if raw.contains("(-1743)") {
-        format!(
-            "osascript failed: {raw} ({} may not control that app: allow it in System Settings > Privacy & Security > Automation)",
-            crate::brand::NAME
-        )
-    } else {
-        format!("osascript failed: {raw}")
-    }
+    format!(
+        "osascript failed: {}",
+        crate::engine::with_automation_hint(stderr.trim())
+    )
 }
 
 /// Largest stdout a script may produce; more kills the script and is an error (SEC-06).
