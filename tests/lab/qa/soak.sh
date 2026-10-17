@@ -4,7 +4,7 @@
 # Every INTERVAL seconds: press the hotkey (the launcher must appear), type 'saf', wait, hide with Esc. Every 5 minutes: a sample line in
 # $SOAK_DIR/samples.tsv (time, pid, RSS KB, footprint MB, cputime, threads, open files, windows, crash reports, misses so far).
 # At the end: the hotkey must still work, crash reports are listed, the verdict goes to $SOAK_DIR/result.txt.
-# shellcheck disable=SC2015
+# shellcheck disable=SC2015,SC2010
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
 SOAK_DIR=${SOAK_DIR:-$HOME/qa-soak}; mkdir -p "$SOAK_DIR"

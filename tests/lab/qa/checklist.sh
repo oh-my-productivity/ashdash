@@ -4,7 +4,7 @@
 #   bash tests/lab/qa/checklist.sh [section ...]     sections: s_setup s31 s32 s33 s34 s35 s36 s37 s37fda s38 s39 s311 w45 (default: all)
 # The app under test is the packaged bundle (APP=/Applications/Ashdash.app, or $APP) started with HOME=$QA_HOME (a seeded throw-away data
 # folder, tests/lab/qa/fixtures.py) so its TCC identity is the bundle's. Results go to $QA_RESULTS (tsv); screenshots to $QA_ART.
-# shellcheck disable=SC2015,SC2016,SC2034
+# shellcheck disable=SC2015,SC2016,SC2034,SC2119,SC2120,SC2010,SC2012,SC2088  # report-style one-liners; ls|grep on fixture names only
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 # shellcheck source=lib.sh
@@ -483,7 +483,7 @@ w45() {
   [ "$nd" = 1 ] && result W5.4b PASS "first ashdash://trigger for a bundle: consent dialog 'A link or app wants to run the workflow \"QA trigger\" (qa.trigger) in Ashdash', default Don't Allow; two URLs in a row for the same bundle raise ONE dialog (dialogs for qa.trigger: $nd)" || result W5.4b FAIL "dialogs for qa.trigger: $nd ($o)"
   sleep 66
   o=$(ax_dialogs | grep -c 'wants to run the workflow'); local stored; stored=$(cat "$DATA/url-trust.json" 2>/dev/null)
-  [ "$o" = 0 ] && ! has "$stored" 'qa.trigger' && [ ! -s "$WORK/trigger.txt" -o "$(cat "$WORK/trigger.txt" 2>/dev/null)" != consent-1 ] && result W5.4c PASS "left alone for 60 s the dialog times out: nothing runs and nothing is stored (url-trust.json: '${stored:-absent}')" || result W5.4c FAIL "after the timeout: dialogs=$o stored='$stored' trigger.txt='$(cat "$WORK/trigger.txt" 2>/dev/null)'"
+  [ "$o" = 0 ] && ! has "$stored" 'qa.trigger' && { [ ! -s "$WORK/trigger.txt" ] || [ "$(cat "$WORK/trigger.txt" 2>/dev/null)" != consent-1 ]; } && result W5.4c PASS "left alone for 60 s the dialog times out: nothing runs and nothing is stored (url-trust.json: '${stored:-absent}')" || result W5.4c FAIL "after the timeout: dialogs=$o stored='$stored' trigger.txt='$(cat "$WORK/trigger.txt" 2>/dev/null)'"
   rm -f "$WORK/trigger.txt"; open "ashdash://trigger?bundle=qa.trigger&name=go&arg=consent-3"; sleep 3
   ax_dialogs | grep -q 'wants to run the workflow' && result W5.4d PASS "after the timeout the next URL asks again" || result W5.4d FAIL "no second dialog"
   click_button osascript "Allow"; sleep 2
