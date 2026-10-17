@@ -15,6 +15,8 @@ use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Margin, Rich
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub dark: bool,
+    /// The window's own title bar (the native one is hidden).
+    pub titlebar: Color32,
     /// Content area and cards.
     pub bg: Color32,
     pub sidebar: Color32,
@@ -54,6 +56,7 @@ pub struct Palette {
 
 pub const DARK: Palette = Palette {
     dark: true,
+    titlebar: rgb(0x2a, 0x2a, 0x2a),
     bg: rgb(0x1c, 0x1c, 0x1c),
     sidebar: rgb(0x1a, 0x1a, 0x1a),
     status_bg: rgb(0x1c, 0x1c, 0x1c),
@@ -78,6 +81,7 @@ pub const DARK: Palette = Palette {
 
 pub const LIGHT: Palette = Palette {
     dark: false,
+    titlebar: rgb(0xeb, 0xea, 0xe6),
     bg: rgb(0xf7, 0xf6, 0xf4),
     sidebar: rgb(0xea, 0xe8, 0xe4),
     status_bg: rgb(0xf2, 0xf1, 0xed),
@@ -121,6 +125,8 @@ pub mod m {
     pub const WINDOW: [f32; 2] = [760.0, 560.0];
     pub const WINDOW_MIN: [f32; 2] = [640.0, 480.0];
 
+    /// Height of the drawn title bar; the traffic lights sit in it, nothing else does.
+    pub const TITLEBAR_H: f32 = 28.0;
     pub const SIDEBAR_W: f32 = 160.0;
     pub const NAV_ITEM_H: f32 = 34.0;
     /// Width of the orange bar on the active nav item.
@@ -128,18 +134,19 @@ pub mod m {
     pub const SEARCH_H: f32 = 28.0;
 
     pub const PAGE_PAD_X: f32 = 20.0;
-    pub const HEADER_PAD_Y: f32 = 14.0;
+    pub const HEADER_PAD_Y: f32 = 10.0;
 
     /// Width of the label cell of a setting row; the control cell takes the rest.
-    pub const LABEL_COL_W: f32 = 172.0;
-    pub const ROW_PAD: f32 = 14.0;
+    pub const LABEL_COL_W: f32 = 188.0;
+    /// Padding inside a row cell (left/right, top/bottom).
+    pub const ROW_PAD: f32 = 12.0;
     pub const ROW_MIN_H: f32 = 60.0;
 
     pub const CONTROL_H: f32 = 28.0;
     pub const STEPPER_H: f32 = 32.0;
     pub const STEPPER_BTN_W: f32 = 36.0;
     pub const STEPPER_VALUE_W: f32 = 100.0;
-    pub const RECORDER_H: f32 = 48.0;
+    pub const RECORDER_H: f32 = 42.0;
     pub const TOGGLE_W: f32 = 38.0;
     pub const TOGGLE_H: f32 = 20.0;
     /// SPEC.md says 48; 36 keeps more of the 560 pt window for content.
@@ -170,6 +177,10 @@ pub mod m {
     pub const STATUS: f32 = 10.0;
     pub const STATUS_SPACING: f32 = 1.4;
     pub const BIG_NUMBER: f32 = 20.0;
+    /// The shortcut in the idle recorder.
+    pub const RECORDER_TEXT: f32 = 20.0;
+    /// Dim mono notes under a row key.
+    pub const NOTE: f32 = 10.0;
 }
 
 // ------------------------------------------------------------------ fonts
@@ -216,6 +227,11 @@ pub fn caps_dim(p: &Palette, text: &str, size: f32, spacing: f32) -> RichText {
 /// A config key or other machine text: grey monospace.
 pub fn key(p: &Palette, text: &str) -> RichText {
     RichText::new(text).font(mono_font(m::KEY)).color(p.key)
+}
+
+/// Dim monospace (captions, notes).
+pub fn mono_dim(p: &Palette, text: &str, size: f32) -> RichText {
+    RichText::new(text).font(mono_font(size)).color(p.dim)
 }
 
 /// Monospace in the primary colour (numbers, shortcuts).
@@ -384,6 +400,7 @@ mod tests {
             v.push(("ok_text", p.ok_text, bg));
             v.push(("warn_text", p.warn_text, bg));
         }
+        v.push(("title bar text", p.text, p.titlebar));
         v.push(("text on hover", p.text, p.hover));
         v.push(("dim on nav hover", p.dim, p.nav_hover));
         v.push(("text on nav hover", p.text, p.nav_hover));

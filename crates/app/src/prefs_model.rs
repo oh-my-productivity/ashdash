@@ -28,12 +28,19 @@ pub enum Page {
     General,
     Features,
     Workflows,
+    Permissions,
     About,
 }
 
 impl Page {
     #[cfg(test)]
-    pub const ALL: [Page; 4] = [Page::General, Page::Features, Page::Workflows, Page::About];
+    pub const ALL: [Page; 5] = [
+        Page::General,
+        Page::Features,
+        Page::Workflows,
+        Page::Permissions,
+        Page::About,
+    ];
 
     #[cfg(test)]
     pub fn title(self) -> &'static str {
@@ -41,6 +48,7 @@ impl Page {
             Page::General => "General",
             Page::Features => "Features",
             Page::Workflows => "Workflows",
+            Page::Permissions => "Permissions",
             Page::About => "About",
         }
     }
@@ -342,6 +350,13 @@ pub fn bookmark_source_label(id: &str) -> String {
 
 pub fn bookmark_source_enabled(c: &Config, id: &str) -> bool {
     c.bookmarks.enabled_sources.iter().any(|s| s == id)
+}
+
+/// Does a setting that is on need Full Disk Access? Safari's bookmarks file is protected by
+/// macOS, so `bm` returns nothing for it without the grant (Chrome and the others are not
+/// protected). Used for the General page's attention card and the DISK ACCESS light.
+pub fn needs_full_disk_access(c: &Config) -> bool {
+    provider_enabled(c, "bookmarks") && bookmark_source_enabled(c, "safari")
 }
 
 /// Keeps the sources in the engine's own order, whatever order they were toggled in.
@@ -942,6 +957,17 @@ mod tests {
     // ---- bookmarks
 
     #[test]
+    fn full_disk_access_is_needed_only_while_safari_bookmarks_are_on() {
+        let mut c = Config::default();
+        assert!(needs_full_disk_access(&c), "Safari bookmarks are on by default");
+        set_bookmark_source(&mut c, "safari", false).unwrap();
+        assert!(!needs_full_disk_access(&c), "Chrome and the others are not protected");
+        set_bookmark_source(&mut c, "safari", true).unwrap();
+        set_provider_enabled(&mut c, "bookmarks", false).unwrap();
+        assert!(!needs_full_disk_access(&c), "the bm feature itself is off");
+    }
+
+    #[test]
     fn bookmark_sources_keep_the_engine_order_and_unknown_entries() {
         let mut c = Config::default();
         set_bookmark_source(&mut c, "safari", false).unwrap();
@@ -1279,7 +1305,7 @@ mod tests {
     #[test]
     fn pages_are_listed_in_order() {
         let titles: Vec<_> = Page::ALL.iter().map(|p| p.title()).collect();
-        assert_eq!(titles, ["General", "Features", "Workflows", "About"]);
+        assert_eq!(titles, ["General", "Features", "Workflows", "Permissions", "About"]);
         assert_eq!(Page::default(), Page::General);
     }
 }

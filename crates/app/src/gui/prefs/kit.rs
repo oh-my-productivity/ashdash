@@ -149,6 +149,19 @@ pub fn rows<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// `key` is `None` for settings that are not in `config.json` (say so in `note` inside the
 /// control). `error` outlines the row in the error colour.
 pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control: impl FnOnce(&mut Ui) -> R) -> R {
+    row_with_note(ui, label, key, None, error, control)
+}
+
+/// [`row`] with one more dim mono line under the key in the label cell (e.g. the keys that work
+/// while the shortcut recorder is listening). Keep it to one short line.
+pub fn row_with_note<R>(
+    ui: &mut Ui,
+    label: &str,
+    key: Option<&str>,
+    note: Option<&str>,
+    error: bool,
+    control: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let p = Palette::of(ui);
     let width = ui.available_width();
     let pad = m::ROW_PAD;
@@ -167,6 +180,9 @@ pub fn row<R>(ui: &mut Ui, label: &str, key: Option<&str>, error: bool, control:
                     ui.add(egui::Label::new(style::caps(label, p.text)));
                     if let Some(key) = key {
                         ui.add(egui::Label::new(style::key(&p, key)).wrap());
+                    }
+                    if let Some(note) = note {
+                        ui.add(egui::Label::new(style::mono_dim(&p, note, m::NOTE)).wrap());
                     }
                 });
             });
@@ -252,9 +268,9 @@ pub fn card<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
-/// A card with a small-caps title, a line of dim text, and room for a button on the right
-/// (the RELOAD and attention cards of the General page).
-pub fn info_card(ui: &mut Ui, title: &str, tone: Tone, lines: &[String], right: impl FnOnce(&mut Ui)) {
+/// A card with an optional small-caps title, lines of dim text, and room for a button on the right
+/// (the RELOAD and attention cards of the General page). The text wraps; the button keeps its size.
+pub fn info_card(ui: &mut Ui, title: Option<&str>, tone: Tone, lines: &[String], right: impl FnOnce(&mut Ui)) {
     let p = Palette::of(ui);
     Frame::new()
         .fill(p.bg)
@@ -263,17 +279,29 @@ pub fn info_card(ui: &mut Ui, title: &str, tone: Tone, lines: &[String], right: 
         .inner_margin(style::margin(m::ROW_PAD, 10.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                light(ui, tone);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.label(style::caps(title, p.text));
-                    for l in lines {
-                        ui.add(egui::Label::new(style::hint_text(&p, l)).wrap());
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Min), right);
-            });
+            egui::containers::Sides::new().shrink_left().show(
+                ui,
+                |ui| {
+                    ui.horizontal_top(|ui| {
+                        light(ui, tone);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            if let Some(title) = title {
+                                ui.label(style::caps(title, p.text));
+                            }
+                            for l in lines {
+                                let t = if title.is_some() {
+                                    style::hint_text(&p, l)
+                                } else {
+                                    RichText::new(l).size(m::SMALL).color(p.text)
+                                };
+                                ui.add(egui::Label::new(t).wrap());
+                            }
+                        });
+                    });
+                },
+                right,
+            );
         });
 }
 
@@ -366,6 +394,10 @@ pub fn status_strip(ui: &mut Ui, items: &[StatusItem]) {
                     .font(style::mono_font(m::STATUS + 1.0))
                     .color(p.dim),
             );
+            // the light is a colour: the triangle says "look at this" without it
+            if matches!(it.tone, Tone::Warn | Tone::Error) {
+                warn_triangle(ui, it.tone.color(&p).unwrap_or(p.warn));
+            }
         }
     });
 }
@@ -504,11 +536,24 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
     )
 }
 
-/// The shortcut recorder box: idle shows the current shortcut in mono, recording shows a 2 px
-/// orange outline and the prompt. Click it to start recording.
-pub fn recorder_box(ui: &mut Ui, listening: bool, main: &str, sub: &str) -> Response {
+/// What the recorder box shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecorderView<'a> {
+    /// The current shortcut, large and mono.
+    Idle { shortcut: &'a str },
+    /// Listening: an orange outline, the prompt, and the shortcut it replaces (`was`).
+    Recording { was: &'a str },
+}
+
+/// The shortcut recorder: **one box**. Idle it shows the current shortcut; Click / Return / Space
+/// on the focused box starts recording (the caller decides, from the response). While recording
+/// it has a 1.5 pt orange outline, "Press the new shortcut…" and "was ⌥⇧Space" right-aligned
+/// (on the second line when the box is too narrow for both).
+pub fn recorder_box(ui: &mut Ui, id: egui::Id, view: RecorderView<'_>) -> Response {
     let p = Palette::of(ui);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), m::RECORDER_H), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), m::RECORDER_H), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    let listening = matches!(view, RecorderView::Recording { .. });
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), "Launcher shortcut"));
     let (stroke, fill) = if listening {
         (Stroke::new(m::STROKE_MID, p.accent), p.bg)
@@ -519,37 +564,67 @@ pub fn recorder_box(ui: &mut Ui, listening: bool, main: &str, sub: &str) -> Resp
         )
     };
     ui.painter().rect(rect, radius(), fill, stroke, StrokeKind::Inside);
-    let painter = ui.painter();
-    if sub.is_empty() {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            main,
-            style::mono_font(22.0),
-            p.text,
-        );
-    } else {
-        painter.text(
-            pos2(rect.center().x, rect.center().y - 9.0),
-            Align2::CENTER_CENTER,
-            main,
-            if listening {
-                style::mono_font(m::BODY)
+    match view {
+        RecorderView::Idle { shortcut } => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                shortcut,
+                style::mono_font(m::RECORDER_TEXT),
+                p.text,
+            );
+        }
+        RecorderView::Recording { was } => {
+            let inner = rect.shrink2(vec2(m::GAP + 2.0, 0.0));
+            let painter = ui.painter();
+            let prompt = painter.layout_no_wrap("Press the new shortcut…".into(), style::mono_font(m::BODY), p.text);
+            let was_galley = painter.layout_no_wrap(format!("was {was}"), style::mono_font(m::KEY), p.dim);
+            let fits = prompt.size().x + was_galley.size().x + 2.0 * m::GAP <= inner.width();
+            let (y1, y2) = if fits {
+                (rect.center().y, rect.center().y)
             } else {
-                style::mono_font(22.0)
-            },
-            p.text,
-        );
-        painter.text(
-            pos2(rect.center().x, rect.center().y + 12.0),
-            Align2::CENTER_CENTER,
-            sub,
-            style::mono_font(m::KEY),
-            p.dim,
-        );
+                (rect.center().y - 9.0, rect.center().y + 10.0)
+            };
+            painter.galley(pos2(inner.min.x, y1 - prompt.size().y / 2.0), prompt, p.text);
+            painter.galley(
+                pos2(inner.max.x - was_galley.size().x, y2 - was_galley.size().y / 2.0),
+                was_galley,
+                p.dim,
+            );
+        }
     }
     focus_ring(ui, &resp, rect);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+// ------------------------------------------------------------------ own title bar
+
+/// The window's own title bar: the native title is hidden (the traffic lights stay), so this
+/// strip is what sits next to them. "Ashdash" centred, and the whole strip drags the window;
+/// a double click zooms it like a native title bar.
+pub fn title_bar(ui: &mut Ui, title: &str) {
+    let p = Palette::of(ui);
+    let rect = ui.max_rect();
+    let resp = ui.interact(rect, ui.id().with("titlebar-drag"), Sense::click_and_drag());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.max.y - 0.5,
+        Stroke::new(m::STROKE, p.hairline),
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        title,
+        style::medium_font(m::BODY),
+        p.text,
+    );
+    let ctx = ui.ctx();
+    if resp.double_clicked() {
+        let zoomed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+    } else if resp.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
 }
 
 #[cfg(test)]
@@ -587,7 +662,8 @@ mod tests {
                         stepper(ui, &mut n, 1..=50);
                     });
                 });
-                recorder_box(ui, true, "Press the new shortcut…", "⌥⇧Space");
+                recorder_box(ui, egui::Id::new("rec"), RecorderView::Recording { was: "⌥⇧Space" });
+                recorder_box(ui, egui::Id::new("rec2"), RecorderView::Idle { shortcut: "⌥⇧Space" });
                 status_strip(
                     ui,
                     &[StatusItem {
@@ -596,7 +672,7 @@ mod tests {
                         tone: Tone::Ok,
                     }],
                 );
-                info_card(ui, "Reload", Tone::Warn, &["a".into()], |ui| {
+                info_card(ui, Some("Reload"), Tone::Warn, &["a".into()], |ui| {
                     primary_button(ui, "Fix…");
                 });
                 for nav in Nav::ALL {
