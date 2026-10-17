@@ -118,3 +118,6 @@ qt() {
   "$QA_BIN_DIR/qa-tool" "$@"
 }
 front() { se 'get name of first process whose frontmost is true' | tail -1; }
+# chord <modifier: option|command|shift|control> <key code>: hold the modifier for 0.3 s around the key. A chord synthesised in one go
+# ('key code N using {option down}') reaches the app inside one 16 ms frame with the modifier already released again.
+chord() { se "key down $1" >/dev/null; sleep 0.3; se "key code $2" >/dev/null; sleep 0.2; se "key up $1" >/dev/null; }

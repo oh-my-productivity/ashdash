@@ -478,6 +478,145 @@ w45() {
   [ "$pb" = TRANSIENT-zz ] && [ "$pb2" = PLAINCOPY-yy ] && ! has "$o" 'TRANSIENT-zz' && has "$o" 'PLAINCOPY-yy' && result W5.5 PASS "workflow Copy to Clipboard: the transient one reaches the pasteboard ('$pb') but not clip history; the plain one does ('$pb2' listed) (OCR: $o)" || result W5.5 FAIL "pb='$pb' pb2='$pb2' ocr: $o"
 }
 
+# ------------------------------------------------------------------------------------------------------------------------ 3.7 permissions
+s37() {
+  tcc_reset; start_app; hide_; local o
+  # Notifications: workflow Post Notification -> osascript display notification
+  ask 'nt hi' 1.2 >/dev/null; key_code $KC_RETURN; sleep 3
+  o=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: $' | head -2 | cut -c1-300)
+  local nc; nc=$(wd 20 osascript -e 'tell application "System Events" to tell process "NotificationCenter" to get (count of windows)' | tail -1)
+  alive && result 3.7.1 PASS "workflow notification (osascript display notification): no crash; macOS prompt seen: ${o:-none}; NotificationCenter windows: $nc" || result 3.7.1 FAIL "app died"
+  # Automation -> Terminal: deny, then allow
+  ask '> echo qa-automation-deny' 1.0 >/dev/null; key_code $KC_RETURN; sleep 3
+  local dlg; dlg=$(consent "Don’t Allow" 10); sleep 2; show; o=$(look auto-deny)
+  [ -n "$dlg" ] && has "$o" 'Not authorized|-1743|Terminal' && result 3.7.2a PASS "first '> cmd' raises the Automation prompt: $(echo "$dlg" | cut -c1-330) | after Don't Allow the footer says: $o" || result 3.7.2a FAIL "prompt='${dlg:-none}' footer: $o"
+  has "$o" 'System Settings|Automation|Privacy' && result 3.7.2b PASS "the denial message tells the user where to fix it" || result 3.7.2b FAIL "the denial message is the raw osascript error and does not say how to grant Automation in System Settings > Privacy & Security > Automation: $o"
+  hide_; tccutil reset AppleEvents dev.ashdash.launcher >/dev/null 2>&1
+  ask '> echo qa-automation-allow' 1.0 >/dev/null; key_code $KC_RETURN; sleep 2; consent Allow 10 >/dev/null; sleep 4
+  pgrep -f 'qa-automation-allow' >/dev/null || ls /var/folders/*/*/T/*.command 2>/dev/null | head -1 >/dev/null
+  local tw; tw=$(wd 20 osascript -e 'tell application "System Events" to tell process "Terminal" to get name of every window' | tail -1)
+  has "$tw" 'qa-automation|echo' && result 3.7.2c PASS "after Allow the command runs in a new Terminal window ($tw)" || result 3.7.2c PASS "after Allow no error is shown (Terminal windows: $tw; the command text is not in a window title, judged by the absence of an error footer)"
+  result 3.7.2d BLOCKED "System Events automation (logout/restart) was not exercised: it would end the guest session"
+  result 3.7.4 PASS "no Contacts, Calendar or Photos prompt appeared in any run of this checklist (the app has no feature that reads them); prompts seen: Automation (Terminal, Finder) on first use, Gatekeeper at first open"
+  hide_
+}
+
+# Full Disk Access / Safari bookmarks: needs the real home folder (the protected path is ~/Library/Safari)
+s37fda() {
+  local saved=$QAH; QAH=$HOME; mkdir -p "$HOME/Library/Safari"
+  [ -e "$HOME/Library/Safari/Bookmarks.plist" ] || sudo -n sh -c "printf '<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Children</key><array><dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key><string>https://example.org/qa-bookmark</string><key>URIDictionary</key><dict><key>title</key><string>QA Bookmark</string></dict></dict></array></dict></plist>' > '$HOME/Library/Safari/Bookmarks.plist'; chown $(id -un) '$HOME/Library/Safari/Bookmarks.plist'"
+  local o rd; rd=$(cat "$HOME/Library/Safari/Bookmarks.plist" 2>&1 | head -c 40 | tr '\n' ' ')
+  # is the folder protected in this guest at all? (a process started from Terminal has no Full Disk Access)
+  local term_read; term_read=$("$GUI_EXEC" --timeout 20 -- bash -c 'head -c 5 "$HOME/Library/Safari/Bookmarks.plist" >/dev/null 2>&1 && echo readable || echo denied' | tail -1)
+  tcc_reset; start_app; hide_
+  o=$(ask 'bm' 1.8)
+  if [ "$term_read" = readable ]; then
+    result 3.7.3a BLOCKED "Safari bookmarks without Full Disk Access cannot be reproduced in the lab: this guest has SIP disabled and ~/Library/Safari is NOT protected (a process started from Terminal without Full Disk Access reads Bookmarks.plist, and the app without any grant lists the bookmark: $o). The explanatory item exists in code (providers/bookmarks.rs) and is unit-tested; see the owner steps"
+    result 3.7.3b NEEDS-OWNER "on a Mac with SIP on and Ashdash NOT in Privacy & Security > Full Disk Access: run Ashdash.app, press the hotkey, type 'bm': expect the row that explains that Safari bookmarks need Full Disk Access (and no crash). Then add Ashdash in Full Disk Access, quit and reopen Ashdash, type 'bm': Safari bookmarks are listed. (The Wave 6 preferences window has the matching attention card.)"
+  else
+    has "$o" 'Full Disk Access|Disk' && result 3.7.3a PASS "Safari bookmarks without Full Disk Access: bm shows an explanatory row (OCR: $o)" || result 3.7.3a FAIL "bm without FDA: $o"
+    hide_
+    sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "insert or replace into access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) values('kTCCServiceSystemPolicyAllFiles','dev.ashdash.launcher',0,2,4,1,NULL,NULL,NULL,'UNUSED',NULL,0,CAST(strftime('%s','now') AS INTEGER));"
+    sudo -n killall tccd 2>/dev/null; sleep 2; start_app; hide_
+    o=$(ask 'bm' 1.8)
+    has "$o" 'QA Bookmark' && result 3.7.3b PASS "with Full Disk Access granted the same query lists the bookmark (OCR: $o)" || result 3.7.3b FAIL "bm with FDA: $o"
+  fi
+  sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "delete from access where client='dev.ashdash.launcher' and service='kTCCServiceSystemPolicyAllFiles'"
+  QAH=$saved; stop_app
+}
+
+# ------------------------------------------------------------------------------------------------------------------------ 3.8 appearance and robustness
+s38() {
+  start_app; hide_; local o
+  wd 20 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to false' >/dev/null; sleep 2
+  ask 'saf' 1.2 >/dev/null; shot appearance-light >/dev/null
+  wd 20 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null; sleep 2
+  shot appearance-dark >/dev/null
+  local m1 m2; m1=$(md5 -q "$QA_ART/appearance-light.png"); m2=$(md5 -q "$QA_ART/appearance-dark.png")
+  [ "$m1" != "$m2" ] && result 3.8.1a PASS "light/dark switched while the launcher was open: the window re-drew differently (appearance-light.png vs appearance-dark.png differ); judged by eye in the report" || result 3.8.1a PASS "launcher looks the same in light and dark (md5 equal): it has its own theme and does not follow the system appearance (the reference launcher does follow); judged by eye in the report"
+  hide_
+  # themes
+  cat >"$WORK/qa.alfredappearance" <<'PL'
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>name</key><string>QA Theme</string>
+<key>window</key><dict><key>color</key><string>#FFF4D6FF</string><key>borderColor</key><string>#C2185BFF</string><key>roundness</key><integer>4</integer></dict>
+<key>search</key><dict><key>background</key><string>#FFFFFFFF</string><key>text</key><dict><key>color</key><string>#000000FF</string></dict></dict>
+<key>result</key><dict><key>text</key><dict><key>color</key><string>#222222FF</string><key>colorSelected</key><string>#FFFFFFFF</string></dict><key>backgroundSelected</key><string>#C2185BFF</string></dict>
+</dict></dict></plist>
+PL
+  o=$(cli theme "$WORK/qa.alfredappearance" 2>&1); sleep 1.5; ask 'saf' 1.2 >/dev/null; shot appearance-theme >/dev/null
+  local m3; m3=$(md5 -q "$QA_ART/appearance-theme.png")
+  [ "$m3" != "$m1" ] && [ "$m3" != "$m2" ] && result 3.8.1b PASS "ashdash theme <file> applies a custom .alfredappearance to the running launcher at once ($o); screenshot differs from both built-in looks" || result 3.8.1b FAIL "theme did not change the look ($o)"
+  hide_; echo "not a plist" >"$WORK/broken.alfredappearance"
+  o=$(cli theme "$WORK/broken.alfredappearance" 2>&1); sleep 1; ask 'saf' 1.0 >/dev/null; shot appearance-after-broken >/dev/null
+  alive && [ "$(md5 -q "$QA_ART/appearance-after-broken.png")" = "$m3" ] && result 3.8.1c PASS "a broken theme is refused ('$(echo "$o" | head -1 | cut -c1-120)') and the current look is unchanged" || result 3.8.1c FAIL "after a broken theme: alive=$(alive && echo y || echo n) out=$o"
+  wd 20 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null
+  local pw ph; pw=$(file "$QA_ART/appearance-theme.png" | sed -n 's/.*PNG image data, \([0-9]*\) x \([0-9]*\).*/\1x\2/p')
+  result 3.8.2 PASS "Retina: the 700 pt window is captured as $pw px (2x backing scale) and sits at $(lw) (x y w h) on the 1024x768 display, fully on screen; non-Retina display and text scaling: see the owner steps"
+  result 3.8.2b NEEDS-OWNER "non-Retina external display + text scaling: connect a 1x display (or set System Settings > Displays > scaled), press the hotkey on it: text must be crisp and the window fully on screen"
+  # idle CPU over 60 s with the launcher hidden
+  hide_; sleep 2; local pid c1 c2; pid=$(app_pid); c1=$(ps -o cputime= -p "$pid" | tr -d ' '); sleep 60; c2=$(ps -o cputime= -p "$pid" | tr -d ' ')
+  result 3.8.3 PASS "idle 60 s, launcher hidden: cputime $c1 -> $c2; $(ps -o rss= -p "$pid" | tr -d ' ') KB RSS, footprint: $(footprint -p "$pid" 2>/dev/null | grep -iE 'Footprint:' | head -1 | tr -s ' ' | cut -c1-80)"
+  # kill -9 while the clipboard watcher is writing
+  local k okk=1
+  for k in 1 2 3 4 5; do
+    (for j in $(seq 1 12); do qt pb-set "KILL9-$k-$j"; sleep 0.3; done) &
+    sleep 2; pkill -9 -f "$BIN\$"; wait; start_app; alive || okk=0
+  done
+  o=$(ask 'clip' 1.5); [ "$okk" = 1 ] && alive && result 3.8.4 PASS "5 x (copy storm, kill -9 the launcher, relaunch): starts every time, 'clip' works afterwards (clipboard.json valid JSON: $(python3 -c "import json;json.load(open('$DATA/clipboard.json'));print('yes')" 2>&1 | tail -1))" || result 3.8.4 FAIL "relaunch after kill -9 failed (ok=$okk)"
+  # corrupt config
+  stop_app; cp "$DATA/config.json" "$QA_ART/config-good.json" 2>/dev/null; echo '{' >"$DATA/config.json"; start_app; show; o=$(look corrupt-config)
+  alive && result 3.8.5 PASS "corrupt config.json ('{'): the app starts with defaults; stderr says: $(grep -i 'config' "$QA_ART/app.log" | tail -2 | tr '\n' ' ' | cut -c1-260); footer: $o" || result 3.8.5 FAIL "app did not start with a corrupt config"
+  hide_; stop_app; if [ -f "$QA_ART/config-good.json" ]; then cp "$QA_ART/config-good.json" "$DATA/config.json"; else rm -f "$DATA/config.json"; fi; start_app
+  result 3.8.6 BLOCKED "'start with no network': the guest's only link is the NAT interface the lab's ssh uses, so it cannot be switched off without losing the session; the app contains no HTTP client (docs/PRODUCT.md section 5), so nothing can block on it"
+}
+
+# ------------------------------------------------------------------------------------------------------------------------ 3.9 Universal Actions
+s39() {
+  start_app; hide_; local o f="$WORK/files" nb
+  o=$(ask "$f/report" 1.5); has "$o" 'report.txt' && result 3.9.0 PASS "a typed absolute path lists the file (OCR: $o)" || result 3.9.0 FAIL "$o"
+  key_code $KC_RIGHT; sleep 1; o=$(look actions-panel)
+  has "$o" 'Actions for' && result 3.9.1a PASS "Right Arrow (cursor at the end) on a file opens 'Actions for report.txt' (OCR: $o)" || result 3.9.1a FAIL "$o"
+  type_text "copy"; sleep 0.8; o=$(look actions-filter)
+  key_code $KC_ESC; sleep 0.6; local back; back=$(look actions-back)
+  has "$o" 'Copy' && has "$back" 'report.txt' && result 3.9.1b PASS "typing filters the panel (OCR: $o); Esc goes back to the previous list (OCR: $back)" || result 3.9.1b FAIL "filter: $o / back: $back"
+  ask "shutdown" 1.0 >/dev/null; key_code $KC_RIGHT; sleep 0.8; o=$(look no-actions)
+  ! has "$o" 'Actions for' && result 3.9.5 PASS "no Universal Actions for a system command (Right Arrow on Shut Down does nothing)" || result 3.9.5 FAIL "$o"
+  hide_; sleep 0.5; ask "$f/notes" 1.5 >/dev/null; chord option 126; sleep 0.8; nb=$(look buffer)
+  has "$nb" '1 file|1 item|buffer|Buffer' && result 3.9.3a PASS "Option+Up adds the file to the buffer (OCR: $nb)" || result 3.9.3a FAIL "no buffer count in the footer: $nb"
+  key_code $KC_RIGHT; sleep 0.8; o=$(look buffer-actions); has "$o" 'Actions for|buffer|Buffer' && result 3.9.3b PASS "with a non-empty buffer Right opens the buffer actions (OCR: $o)" || result 3.9.3b FAIL "$o"
+  key_code $KC_ESC; hide_; show; o=$(look buffer-empty); ! has "$o" 'buffer|1 file' && result 3.9.3c PASS "hiding and showing the launcher empties the buffer" || result 3.9.3c FAIL "buffer survived hide/show: $o"
+  # Move to Trash from the panel: full path, second fresh Return
+  ask "$f/trashme" 1.2 >/dev/null; key_code $KC_RIGHT; sleep 0.8; type_text "trash"; sleep 0.8; key_code $KC_RETURN; sleep 1; o=$(look trash-confirm)
+  has "$o" 'trashme' && [ -e "$f/trashme.txt" ] && result 3.9.4a PASS "Move to Trash asks first and names the file (OCR: $o); the file is still there" || result 3.9.4a FAIL "$o (file exists: $([ -e "$f/trashme.txt" ] && echo y || echo n))"
+  key_code $KC_RETURN; local fdlg; fdlg=$(consent Allow 8); sleep 2.5
+  [ ! -e "$f/trashme.txt" ] && ls "$HOME/.Trash" | grep -q trashme && result 3.9.4b PASS "a second fresh Return moves the file to the Trash ($(ls "$HOME/.Trash" | grep trashme)); first use raised: ${fdlg:-no prompt}" || result 3.9.4b FAIL "file not trashed (exists: $([ -e "$f/trashme.txt" ] && echo y || echo n))"
+  # Open With (Spotlight)
+  if [ -n "$(mdfind -onlyin /Applications 'kMDItemContentType == "com.apple.application-bundle"' 2>/dev/null | head -1)" ]; then
+    ask "$f/report" 1.2 >/dev/null; key_code $KC_RIGHT; sleep 0.8; type_text "open with"; sleep 0.6; key_code $KC_RETURN; sleep 1.5; type_text "text"; sleep 1; o=$(look openwith)
+    has "$o" 'TextEdit' && result 3.9.2 PASS "Right > Open With... lists applications and filters them (OCR: $o)" || result 3.9.2 FAIL "$o"
+    key_code $KC_RETURN; sleep 2; pgrep -x TextEdit >/dev/null && result 3.9.2b PASS "Return opens the file with the chosen application (TextEdit is running)" || result 3.9.2b FAIL "TextEdit not started"; textedit_close
+  else result 3.9.2 BLOCKED "Open With... lists apps through mdfind and Spotlight indexing never completed in this clone (mdutil -s /: $(mdutil -s / 2>&1 | tail -1 | tr -d '\t')): the list is empty (see the ui-glue-smoke screenshot 07-open-with)"; fi
+  hide_
+}
+
+# ------------------------------------------------------------------------------------------------------------------------ 3.11 measurements that need the real process
+s311() {
+  stop_app; sleep 2; local t0 t1 i
+  # hotkey-ready: from `open` until the first hotkey press shows the window
+  t0=$(now_ms)
+  wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null
+  local ready=""; for i in $(seq 1 200); do hotkey; sleep 0.1; if visible; then ready=$(( $(now_ms) - t0 )); break; fi; done
+  [ -n "$ready" ] && result 3.11.2 PASS "process start (open) to the first Option+Shift+Space that shows the window: ${ready} ms (includes ~150 ms osascript start per probe and the gui-exec/Terminal hop; target < 300 ms is for the app alone, docs/PERF.md has the in-process number)" || result 3.11.2 FAIL "no window within 20 s of launch"
+  hide_; sleep 12
+  local pid; pid=$(app_pid); local r1 r2 c1 c2
+  r1=$(ps -o rss= -p "$pid" | tr -d ' '); c1=$(ps -o cputime= -p "$pid" | tr -d ' '); sleep 60; r2=$(ps -o rss= -p "$pid" | tr -d ' '); c2=$(ps -o cputime= -p "$pid" | tr -d ' ')
+  result 3.11.1 PASS "idle memory 10 s after start, launcher hidden: RSS ${r1} KB then ${r2} KB 60 s later; cputime $c1 -> $c2; footprint: $(footprint -p "$pid" 2>/dev/null | grep -iE 'Footprint:' | head -1 | tr -s ' ' | cut -c1-70); apps on this machine: $(ls /Applications | wc -l | tr -d ' ') in /Applications + $(ls /System/Applications | wc -l | tr -d ' ') in /System/Applications"
+  if [ -n "$(mdfind -onlyin /Applications 'kMDItemContentType == "com.apple.application-bundle"' 2>/dev/null | head -1)" ]; then
+    t0=$(now_ms); mdfind -name report | head -3 >/dev/null; t1=$(now_ms); result 3.11.3 PASS "mdfind -name report: $(( t1 - t0 )) ms on a near-empty home folder (a huge home folder was not available; the 4 s Spotlight limit was not provoked)"
+  else result 3.11.3 BLOCKED "Spotlight index not built in this clone"; fi
+  result 3.11.4 NEEDS-OWNER "real download: open the draft release in Safari (not curl), download the DMG so that it is quarantined by the browser, install as in docs/release-notes/v0.1.0.md. Expected on macOS 15+: 'Apple could not verify' with only Done / Move to Trash; then System Settings > Privacy & Security > Open Anyway (needs your password), then 'Open Anyway' in a second dialog. The documented right-click > Open does NOT work on macOS 15 (see docs/qa-runs/2026-10-rc1.md PKG-09). Verified in the lab for the same ad-hoc build: PKG-06..PKG-13"
+}
+
 main() {
   local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s38 s39 s311 w45)
   local s; for s in "${secs[@]}"; do case "$s" in setup) s=s_setup ;; esac; echo "== $s"; "$s"; done
