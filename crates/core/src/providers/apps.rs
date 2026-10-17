@@ -51,7 +51,7 @@ mod tests {
     /// Tab on an application row completes the field with the app's name (docs/QA.md 3.3.3b; it did nothing).
     #[test]
     fn application_rows_tab_complete_to_their_name() {
-        let (e, root) = engine("apps");
+        let (e, root) = engine("apps-tab");
         let r = e.query("saf");
         assert_eq!(r[0].title, "Safari");
         assert_eq!(r[0].autocomplete.as_deref(), Some("Safari"));
