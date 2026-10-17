@@ -223,8 +223,8 @@ impl Inner {
                 continue;
             }
             // A panicking source must not take the cache (or app) down.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| src.load()))
-                .unwrap_or_else(|_| Err(SourceError::other("source panicked")));
+            let result =
+                crate::recovery::catching(|| src.load()).unwrap_or_else(|_| Err(SourceError::other("source panicked")));
             let prev_same = matches!(&entries[i], Some(e) if e.fingerprint == fp && e.result == result);
             if !prev_same {
                 changed = true;

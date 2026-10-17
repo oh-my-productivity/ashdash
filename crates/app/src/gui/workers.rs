@@ -77,6 +77,8 @@ pub(super) fn spawn_query_worker(
             {
                 let (engine, query) = (Arc::clone(&engine), query.clone());
                 std::thread::spawn(move || {
+                    // a panic ends this query only: the worker sees the channel close (below)
+                    ashdash_core::recovery::mark_thread();
                     let _ = tx.send(engine.query(&query));
                 });
             }
@@ -184,10 +186,10 @@ impl LauncherApp {
         }
         self.glue.crash_checked = true;
         let paths = &self.engine.paths;
-        if let Some(name) = crate::crash::unseen(paths) {
-            crate::crash::mark_seen(paths, &name);
+        if let Some(unseen) = crate::crash::unseen_reports(paths) {
+            crate::crash::mark_seen(paths, &unseen.newest);
             if self.status.is_none() {
-                self.status = Some(crate::crash::footer_note().into());
+                self.status = Some(crate::crash::footer_note(unseen.fatal).into());
             }
         }
     }

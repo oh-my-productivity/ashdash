@@ -615,7 +615,11 @@ mod tests {
         let new = clock(2);
         let sel = t.replaced_with_rerun(&old, 1, reselect(Some(&old[1].id), 1, &new));
         assert_eq!(sel, 1, "the id is gone: the position stays");
-        assert_eq!(t.enter_target(sel, &new), Target::Row(1), "Return runs the selected row");
+        assert_eq!(
+            t.enter_target(sel, &new),
+            Target::Row(1),
+            "Return runs the selected row"
+        );
         assert_eq!(t.number_target(2, &new), Target::Row(2), "Cmd+3 runs the third row");
         assert_eq!(t.number_target(5, &new), Target::Nothing);
     }
@@ -629,7 +633,11 @@ mod tests {
         let sel = t.replaced_with_rerun(&old, 2, reselect(Some(&old[2].id), 2, &new));
         assert_eq!(sel, 1);
         assert_eq!(t.enter_target(sel, &new), Target::Row(1));
-        assert_eq!(t.number_target(2, &new), Target::Nothing, "there is no third row any more");
+        assert_eq!(
+            t.number_target(2, &new),
+            Target::Nothing,
+            "there is no third row any more"
+        );
         assert_eq!(t.enter_target(0, &[]), Target::Nothing, "an empty list has no row");
     }
 
@@ -662,7 +670,11 @@ mod tests {
         t.begin_frame(2, 1, &old); // the restored list, 'b' highlighted
         t.begin_frame(2, 2, &old); // the user moves down to 'c' while the query runs
         let new = items(&["a", "b", "c"]);
-        assert_eq!(t.replaced(&old, 2, &new, Some("b"), 1), 2, "the user's 'c', not the remembered 'b'");
+        assert_eq!(
+            t.replaced(&old, 2, &new, Some("b"), 1),
+            2,
+            "the user's 'c', not the remembered 'b'"
+        );
     }
 
     #[test]

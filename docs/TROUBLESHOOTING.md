@@ -141,13 +141,20 @@ Ad-hoc signed builds are not trusted by Gatekeeper: right-click > Open, or
 
 When the launcher or the preferences window panics, Ashdash writes a report to
 `~/Library/Application Support/ashdash/crashes/crash-<UTC time>.txt` (the newest 10 are kept; `ashdash paths` prints the folder and
-the newest file). The next time you open the launcher, its footer says "Ashdash quit unexpectedly · report in crashes/" once.
+the newest file). The next time you open the launcher, its footer says so once, in one of two ways:
 
-A report holds: Ashdash's version, which process it was (`launcher` or `prefs-window`), the thread, the panic message and its source
-location, and a backtrace. It does not contain what you typed in the launcher, clipboard content, file contents or your settings,
-and it is never sent anywhere. The panic message is text written by the code that panicked, so read the file before you attach it
-to an issue. A panic on a background thread also writes a report even if Ashdash kept running. A crash that is not a panic (the
-system killing the process, a crash inside macOS libraries) leaves no report here; look in Console.app > Crash Reports.
+* "Ashdash quit unexpectedly · report in crashes/": a *fatal* panic (the main thread, or a thread nothing recovers from). The report says `outcome:  fatal`.
+* "Ashdash hit an internal error and carried on · report in crashes/": a *recovered* panic, one Ashdash survived on purpose (a failing
+  bookmarks source, one query, one command-line connection). The report says `outcome:  recovered`. If it keeps coming back, attach the file to an issue.
+
+A report holds: Ashdash's version, which process it was (`launcher` or `prefs-window`), the process id, the thread, the outcome, the
+panic message and its source location, and a backtrace. Ashdash adds nothing from its own state (no query field, clipboard or
+settings) and never sends a report anywhere. **The panic message, however, is text written by the code that panicked, and Rust quotes the
+offending string in some of them** (for example slicing a word off a character boundary), so it may contain text the program was
+working on, such as a search or a file name. Ashdash keeps only the first line of the message and at most 200 characters, but read the
+file before you attach it to an issue. The backtrace has code locations only. The same panic repeating in one run (a loop) is counted in
+the report (`repeated: N times`) instead of filling the folder. A crash that is not a panic (the system killing the process, a crash
+inside macOS libraries) leaves no report here; look in Console.app > Crash Reports.
 
 ## Start over
 
