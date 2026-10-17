@@ -47,8 +47,8 @@ Rules:
 | `lab-gc [--max-age S]` | watchdog: delete `ashdash-run-*` VMs older than 30 min (`LAB_MAX_VM_AGE`). `lab-up` runs it first. |
 | `slot.py` | the two-slot semaphore (see below). `slot.py status` shows who holds what. |
 | `golden-setup.sh create|gui|verify|manual-steps|tcc-probe` | build and maintain the golden image. |
-| `smoke.sh` | the job that runs inside the VM. |
-| `guest/` | helpers copied into the golden image (`~/lab-guest`) and used from the synced tree: `gui-exec`, `provision.sh`, `check-golden.sh`, `tcc-probe.sh`. |
+| `smoke.sh` | the job that runs inside the VM. Grants TCC in the clone first (`LAB_AUTO_TCC=0` to skip, see "TCC grants"). |
+| `guest/` | helpers copied into the golden image (`~/lab-guest`) and used from the synced tree: `gui-exec`, `provision.sh`, `check-golden.sh`, `tcc-probe.sh`, `tcc-grant.sh`. |
 | `test/run-tests.sh` | host-side tests of all of the above against a fake `tart` and fake `ssh` (no VM; ~100 s). |
 | `lib.sh` | shared settings. Every knob is an environment variable (`LAB_*`, `TART_HOME`), see the top of the file. |
 
@@ -74,52 +74,65 @@ with different `TMPDIR`s and must all see the same files).
 
 ## Cost
 
-(Measured on this host, Apple M3 Pro, 12 cores, 36 GB RAM, macOS 26.5.2; see "Measurements" at the end.)
+(Measured on this host, Apple M3 Pro, 12 cores, 36 GB RAM, macOS 26.5.2, guest macOS 15.7.7; see "Measurements" at the end.)
 
 - Disk: the pulled base image and the golden image are full copies (tens of GB each); every `ashdash-run-*` clone is APFS copy-on-write and
   only grows by what the job writes, mainly the guest `target/` directory (a few GB after a first debug build). Clones are deleted by `lab-down`.
-- Time: clone is instant; boot to ssh takes a short while (measured below); the first `cargo build` in a fresh clone compiles every
+- Time: clone is instant; boot to ssh takes about 10 s (measured below); the first `cargo build` in a fresh clone compiles every
   dependency, later `lab-run` calls in the *same* VM are incremental. A one-shot `lab-smoke` therefore pays a full build each time
   (use `--quick`, or rebuild the golden image with a warm `~/.cargo/registry`, see below).
 - RAM: 8 GB and 4 CPUs per VM by default (`LAB_VM_MEMORY_MB`, `LAB_VM_CPU` at golden-build time), 16 GB for the two slots.
 
 ## TCC grants (Accessibility, Automation, Screen Recording)
 
-macOS asks for these interactively and attributes them to the *responsible* app. In the golden image that is **Terminal.app**:
-`tests/lab/guest/gui-exec -- <cmd>` opens a `.command` file with Terminal inside the logged-in GUI session, so one set of grants covers every
-test. Without the grants the lab still builds, runs tests, starts the app in the GUI session and drives it through its CLI/IPC/URL scheme;
-only System Events keystrokes (the global hotkey press) and full-desktop screenshots are skipped, and `smoke.sh` records that as `SKIP` with the reason.
+macOS asks for these interactively and attributes them to the *responsible* app. Two routes reach the logged-in GUI session:
+`tests/lab/guest/gui-exec -- <cmd>` opens a `.command` file with **Terminal.app** (responsible app: Terminal), and a plain ssh session
+(responsible app on macOS 15: `com.apple.sshd-session`). `smoke.sh` uses gui-exec to start the app and the ssh session to press keys and take
+screenshots (gui-exec brings no window to the front any more, but a launcher panel hides when it loses focus, so keys are sent from ssh).
 
-### Manual steps (once per golden image; cannot be scripted, see the result of the scripted attempt below)
+### Scripted grant (default, verified on the real guest)
+
+The cirruslabs base image ships with **SIP disabled** (`csrutil status` in the guest), so `TCC.db` is writable by root. `tests/lab/guest/tcc-grant.sh`
+writes Accessibility, Post-Event, Screen Recording (system DB) and Automation to System Events / Finder (user DB) for `com.apple.Terminal`,
+`com.apple.sshd-session`, `/usr/libexec/sshd-keygen-wrapper` and `/usr/bin/osascript`, seeds the macOS 15 "bypass the system private window picker"
+approvals (`~/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist`, next-ask date ten years out; the stock prompt returns every
+30 days) and restarts `tccd`/`replayd`. `smoke.sh` runs it **inside the throw-away clone** before its first System Events call; the golden image is not
+modified. `LAB_AUTO_TCC=0 tests/lab/lab-smoke ...` turns it off (then the hotkey stage SKIPs with the reason). Order matters: after a System Events call has
+already raised the consent dialog, granting afterwards did not recover (tccd/Terminal kept waiting), so grant first.
+On a guest with SIP on the script stops with an error and the manual route below is the only one.
+
+### Manual steps (optional: only if the golden image itself should carry the grants)
 
 ```sh
 tests/lab/golden-setup.sh gui          # opens the VM window; auto-login, password admin
 ```
 In the VM, System Settings > Privacy & Security:
 
-1. **Accessibility**: add and enable `Terminal` (and `/usr/libexec/sshd-keygen-wrapper`, press +, then Cmd+Shift+G to type the path).
-2. **Automation**: in Terminal run `osascript -e 'tell application "System Events" to keystroke ""'` and click OK on
-   "Terminal wants to control System Events".
-3. **Screen & System Audio Recording**: enable `Terminal` (screenshots would otherwise show only the wallpaper).
-4. Shut the VM down from the Apple menu, then `tests/lab/golden-setup.sh verify` prints a table of what works.
+1. **Accessibility**: press +, add `Terminal`, switch it on (`sshd-keygen-wrapper` and `osascript` are already granted in the base image).
+2. **Automation**: in Terminal run `osascript -e 'tell application "System Events" to keystroke ""'` and click OK on "Terminal wants to control System Events".
+3. **Screen & System Audio Recording**: switch `Terminal` on; then run `screencapture -x /tmp/t.png` in Terminal and click **Allow** on the macOS 15 prompt
+   "Terminal is requesting to bypass the system private window picker..." (without it screenshots show only the wallpaper and the call blocks the first time).
+4. The same prompt appears for commands run over ssh (`com.apple.sshd-session`): in Terminal run `ssh admin@localhost screencapture -x /tmp/s.png` (password `admin`) and click Allow.
+5. Shut the VM down from the Apple menu, then `tests/lab/golden-setup.sh verify` prints a table of what works (`=> TCC` row; the `screencapture` row only proves a file was written).
 
+macOS asks the prompt of step 3 again after 30 days, so a hand-made grant expires; that is the reason the scripted route is the default.
 `golden-setup.sh create` prints the same list when it finishes.
 
-### Scripted route: what was tried
+### What was tried (first real run, 2026-10-17)
 
-**Not yet measured on a real guest.** The probe is `tests/lab/golden-setup.sh tcc-probe` (runs `guest/tcc-probe.sh` in a throw-away clone). It reports
-SIP state, whether the user and system `TCC.db` are readable, whether `sudo sqlite3` can insert an Accessibility row for `com.apple.Terminal`, MDM enrolment, and `tccutil` (which can only reset).
-Expectation from Apple's design (unverified here): on a stock Cirrus Labs image SIP is *enabled*, so the system `TCC.db` is not writable even as root and the user database is
-protected by TCC itself (Full Disk Access needed to write it); writing it would also need `tccd` to reload it. The supported scripted route is an MDM
-PPPC profile, which needs an MDM-enrolled guest (out of scope). Until the probe has been run, treat the manual steps above as the only working route.
-Disabling SIP in the golden image (Recovery boot, `csrutil disable`, then writing `TCC.db`) is possible in principle with `tart run --recovery`, but is not attempted.
+`golden-setup.sh tcc-probe` in a clone: SIP **disabled**; both `TCC.db` files readable and writable with `sudo sqlite3` (inserts succeeded); no MDM
+enrolment; `tccutil` only has `reset`. The base image already contains Accessibility/Screen/Post-Event/Automation rows for `sshd-keygen-wrapper`,
+`osascript`, `tart-guest-agent` and `python` (so System Events works from ssh out of the box), but none for `com.apple.sshd-session` or Terminal. Without
+any grant: a first `screencapture` over ssh pops "com.apple.sshd-session is requesting to bypass the system private window picker" on the VM screen
+(shot is the wallpaper plus that dialog), and `osascript` System Events from Terminal blocks on the Automation dialog (gui-exec times out, rc 124).
+With `tcc-grant.sh` on a fresh clone: System Events from Terminal returns `Terminal`, screenshots from both Terminal and ssh show the windows, no dialog.
 
 ## Building / rebuilding the golden image
 
 ```sh
 ~/.local/bin/tart pull ghcr.io/cirruslabs/macos-sequoia-base:latest   # once; very large download (user `admin`, password `admin`, sshd on)
-tests/lab/golden-setup.sh create            # add --force to rebuild; ~15-30 min, mostly downloading CLT + rust
-# then the manual steps above, then
+tests/lab/golden-setup.sh create            # add --force to rebuild; about 1 min on the cirruslabs base (CLT already inside; rust download dominates)
+# manual steps above are optional (smoke.sh grants in the clone); then
 tests/lab/golden-setup.sh verify
 ```
 `create` does: clone base to `ashdash-golden` (4 CPUs, 8 GB); boot headless; install the lab ssh key (`~/.local/state/ashdash-lab/id_ed25519`) using
@@ -141,8 +154,12 @@ disabled (`StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null`) because ev
 | Job sits at "waiting for a VM slot" | both slots are busy: `python3 tests/lab/slot.py status`. Wait, or find the owner. A slot of a crashed job frees itself; a VM left behind is deleted after 30 min or by `tests/lab/lab-gc --max-age 0` (this deletes *all* run VMs, other agents' too: only when nothing runs). |
 | `VZErrorDomain ... The number of VMs exceeds the system limit` | a VM runs outside the lab (a stray `tart run`, UTM, Parallels). `tart list`; `tart stop <name>`. |
 | `tart list` shows `ashdash-run-*` leftovers | `tests/lab/lab-down <name>`; only SIGKILL of `lab-with-vm` can leave one, and the watchdog reaps it. |
-| `System Events got an error: ... not allowed assistive access` (1002) or `-1743` | TCC grants missing in the golden image: manual steps above. |
-| Screenshots only show the wallpaper | Screen Recording not granted to Terminal. |
+| `System Events got an error: ... not allowed assistive access` (1002), `-1743`, or `gui-exec: timed out` on an osascript call | TCC grant missing (the call waits on an invisible consent dialog): run `smoke.sh` (auto-grant) or `guest/tcc-grant.sh` first; do not retry in the same VM after a dialog appeared, use a fresh clone. |
+| `No application knows how to open URL ashdash://...` (-10814) | the app bundle lives under `$TMPDIR` (`/var/folders/...`); LaunchServices ignores it. Build it under the guest home (smoke.sh does). |
+| Launcher window vanishes between the hotkey and the check | something activated another app (every `gui-exec` call used to bring Terminal to the front); drive keys/screenshots from the ssh session. |
+| A "requesting to bypass the system private window picker" dialog in screenshots | macOS 15 screen-capture approval for Terminal / `com.apple.sshd-session`; `tcc-grant.sh` pre-seeds it. |
+| Screenshots only show the wallpaper | Screen Recording not granted to the responsible app (Terminal / `com.apple.sshd-session`): `tcc-grant.sh`. |
+| Many Terminal windows pile up in screenshots | each `gui-exec` job leaves its window (`[Process completed]`); harmless, the clone is deleted. |
 | `gui-exec` times out | nobody is logged in on the console (auto-login failed): `golden-setup.sh gui`, log in once, re-check `check-golden.sh`. |
 | rsync / ssh hangs in `lab-run` | VM crashed or IP changed: `lab-down <vm>` and start over. |
 | Disk is filling up | `tart list` for stray VMs; `tart prune --older-than 7` removes cached OCI images (never the golden image, but it would delete the pulled base). |
@@ -156,6 +173,39 @@ shellcheck -x -P SCRIPTDIR tests/lab/lab-* tests/lab/*.sh tests/lab/guest/* test
 
 ## Measurements
 
-Not yet measured against a real VM (the ~25 GB base image was still downloading when this was written); `tests/lab/accept.sh` produces the numbers
-(clone+boot+ssh+run+delete time for `uname -a`, queueing of a third job, leftover VMs, golden/clone disk use). Paste its report here after the first real run.
-Everything above about timing and disk is therefore a description of what the scripts do, not a measurement. Fake-tart tests (`test/run-tests.sh`, ~100 s) pass.
+Measured 2026-10-17 on the host above (Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2; Tart 2.41.0), guest macOS 15.7.7, 4 CPUs / 8 GB per VM, rustc 1.95.0.
+The host was **not idle**: other agents were building and testing the whole time (load average 3-6 without any VM), so the variance below is real.
+
+| What | Result |
+|---|---|
+| Base image `macos-sequoia-base:latest` | pulled earlier; `tart list`: disk 50 GB, size 33 GB; 31 GB on disk in `~/.tart/cache/OCIs` |
+| `golden-setup.sh create` (clone, boot, ssh key, provision, helpers, shutdown) | **54 s** (CLT were already in the image; the rustup + 1.95.0 download was the long part) |
+| Golden image disk | `tart list`: disk 50 GB, size 31 GB; `du`: 29 GB. Host `df` after golden + base: 477 GiB free of 926 GiB |
+| `lab-up` (APFS clone, headless boot, IP, ssh ready) | **10 s** (10.2 s measured) |
+| `lab-with-vm -- uname -a` end to end (clone + boot + ssh + run + delete) | **13.5 s** |
+| `golden-setup.sh verify` / `tcc-probe` end to end | 49 s / 13.5 s (verify includes two 30 s gui-exec timeouts before the TCC fix) |
+| Sync of the worktree (3.1 MB; first and second sync) | **0.6-0.7 s** including the ssh round trip |
+| Cold `cargo build -p ashdash` (debug, fresh clone, deps from crates.io) | **33 s** on a quiet moment, 46 s, 78 s and 114 s while other agents compiled on the host |
+| Warm no-op `cargo build` / after touching `crates/core/src/lib.rs` | 0.4 s / 1.3 s |
+| `scripts/check.sh` in the guest (fmt, clippy, all tests, after the cold build) | **92 s** (with `/tmp/x` present, see "Known failure" below) |
+| `build-app.sh` native bundle (cold / warm) | 76-78 s / 1 s |
+| `lab-smoke --quick` (everything incl. GUI stages) | 4 min 11 s - 4 min 32 s; two of them concurrently each took about the same |
+| `lab-smoke` (with `check.sh`) | 4 min 09 s |
+| `tests/lab/accept.sh` (one `uname`, three concurrent jobs on two slots, cleanup) | 91 s: the third job started 29 s after the second, never more than 2 VMs, no `ashdash-run-*` left, slots free |
+| Disk per run VM | clone is copy-on-write: `tart list` size 34 GB vs 31 GB golden after a full debug build + bundle (+3 GB; guest `target/` is 4.0 GB); `du` on a clone shows the logical 31 GB, ignore it. Gone after `lab-down` |
+| Guest root disk | 46 GiB total, 15 GiB free after the above |
+| Host load with two VMs compiling | load average 5 (baseline, other agents) rising to 9-10 on 12 cores while both guests built; `tart run` processes themselves show ~0 % CPU in `ps` (the work is accounted to the VM) |
+| RAM | 2 x 8 GB for two VMs; host stayed responsive |
+
+### Real-VM results of `smoke.sh` (this branch)
+
+With the scripted TCC grant: env, build, cli-query, bundle, gatekeeper (informational), gui-launch, cli-show, cli-search, url-scheme, tcc-grant,
+system-events, **hotkey** (Option+Shift+Space toggles the launcher: 0 -> 1 windows, window 700 x 264 at 162,154 with 4 results for "saf"),
+screenshot, login-item, quit: all PASS. Without it (`LAB_AUTO_TCC=0`): same, but hotkey and window-state are SKIP with
+"System Events denied ... gui-exec: timed out after 20s" and the job exits 0.
+
+### Known failure found by the lab (not a lab bug)
+
+`scripts/check.sh` fails in a clean guest: `engine::tests::universal_actions_are_never_written_to_usage` (`crates/core/src/engine.rs:1241`) asserts that
+`Action::Open("/tmp/x")` is learned, which only happens if `/tmp/x` exists. It passes on any host that happens to have that file and passes in the guest after
+`touch /tmp/x`. The test should create its own temp file.

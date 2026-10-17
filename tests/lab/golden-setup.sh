@@ -23,15 +23,24 @@ lab_need_tart
 manual_steps() {
   cat >&2 <<'STEPS'
 
-================================ MANUAL STEPS (cannot be scripted) ================================
-Run:   tests/lab/golden-setup.sh gui        (opens the VM window; log in is automatic, password: admin)
+================================ MANUAL STEPS (optional, see below) ================================
+The cirruslabs base image has SIP off, so smoke.sh grants everything below by script inside every throw-away
+clone (guest/tcc-grant.sh, LAB_AUTO_TCC=0 turns that off). Do the manual route only if you want the golden
+image itself to carry the grants.
+
+Run:   tests/lab/golden-setup.sh gui        (opens the VM window; auto-login as admin, password: admin)
 
 In the VM, System Settings > Privacy & Security:
-  1. Accessibility   -> add/enable  Terminal   (and /usr/libexec/sshd-keygen-wrapper: press + , Cmd+Shift+G)
-  2. Automation      -> run once in Terminal:  osascript -e 'tell application "System Events" to keystroke ""'
-                        and answer "OK" to the "Terminal wants to control System Events" prompt.
-  3. Screen & System Audio Recording -> enable Terminal (needed for screencapture to include windows).
-  4. Terminal > Settings > Profiles: "When the shell exits: Close if the shell exited cleanly" (optional).
+  1. Accessibility   -> press +, add Terminal (/System/Applications/Utilities/Terminal.app) and switch it on.
+                        (/usr/libexec/sshd-keygen-wrapper and /usr/bin/osascript are already granted in the base image.)
+  2. Automation      -> in Terminal run once:  osascript -e 'tell application "System Events" to keystroke ""'
+                        and click OK on "Terminal wants to control System Events".
+  3. Screen & System Audio Recording -> switch Terminal on. Then in Terminal run once:  screencapture -x /tmp/t.png
+                        and click Allow on the macOS 15 prompt '"Terminal" is requesting to bypass the system private window
+                        picker...'. That second prompt is not a Privacy switch; macOS asks it again every 30 days, so a
+                        hand-made grant expires, the scripted one (tcc-grant.sh) sets the next-ask date ten years out.
+  4. Same prompt for commands run over ssh: in Terminal run  ssh admin@localhost screencapture -x /tmp/s.png  (password admin)
+                        and click Allow for "com.apple.sshd-session".
   5. Quit the VM window (Apple menu > Shut Down). Then:  tests/lab/golden-setup.sh verify
 
 Why: osascript/System Events/screencapture are attributed to the responsible app. tests/lab/guest/gui-exec runs
