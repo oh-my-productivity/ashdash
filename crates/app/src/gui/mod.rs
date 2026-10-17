@@ -32,6 +32,8 @@ use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Pos2, Vec2};
 use global_hotkey::GlobalHotKeyManager;
 
+pub(crate) use window::wake_then_repaint;
+
 const WINDOW_TITLE: &str = "Ashdash";
 const VISIBLE_ROWS: usize = 9;
 const ROW_HEIGHT: f32 = 48.0;
@@ -57,6 +59,8 @@ struct LauncherApp {
 
     visible: bool,
     shown_at: Instant,
+    /// Frames drawn since the last `show()` (0 until the first fresh frame; see `reveal_if_drawn`).
+    frames_since_show: u32,
     want_focus: bool,
     last_height: f32,
     resize_retries: u8,
@@ -184,6 +188,7 @@ impl LauncherApp {
             scroll_to_selected: false,
             visible: false,
             shown_at: Instant::now(),
+            frames_since_show: 0,
             want_focus: false,
             last_height: 0.0,
             resize_retries: 0,
@@ -350,6 +355,7 @@ impl eframe::App for LauncherApp {
         self.poll_background(ctx);
         self.poll_menu(ctx);
         self.poll_automation(ctx);
+        self.reveal_if_drawn();
         self.poll_theme_epoch();
         self.hot_reload.poll(&mut prefs::reload::Host {
             paths: &self.engine.paths,
@@ -368,6 +374,11 @@ impl eframe::App for LauncherApp {
         let ctx = ui.ctx().clone();
         if !self.visible {
             return;
+        }
+        self.frames_since_show = self.frames_since_show.saturating_add(1);
+        if mac::is_cloaked() {
+            // the next frame lifts the transparent state (reveal_if_drawn)
+            ctx.request_repaint();
         }
 
         // Close when the window loses focus (after a short grace period while
