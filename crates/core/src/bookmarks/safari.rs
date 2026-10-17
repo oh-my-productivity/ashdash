@@ -12,7 +12,6 @@
 //! (History; ignored). The Reading List is a list titled
 //! `com.apple.ReadingList` and is skipped: its entries are not bookmarks.
 
-use std::io::Cursor;
 use std::path::PathBuf;
 
 use plist::{Dictionary, Value};
@@ -51,7 +50,7 @@ impl BookmarkSource for SafariSource {
         if bytes.iter().all(|b| b.is_ascii_whitespace()) {
             return Ok(Vec::new());
         }
-        let root = Value::from_reader(Cursor::new(bytes))
+        let root = crate::theme::parse_plist(&bytes)
             .map_err(|e| SourceError::other(format!("{}: not a valid property list ({e})", self.path.display())))?;
         let Some(root) = root.as_dictionary() else {
             return Err(SourceError::other(format!(

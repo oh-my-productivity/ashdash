@@ -244,7 +244,7 @@ pub fn parse_snippet_package<R: Read + Seek>(reader: R, name: &str) -> Result<(C
             bail!("archive is too large when unpacked");
         }
         if is_info {
-            if let Ok(plist::Value::Dictionary(d)) = plist::Value::from_reader(std::io::Cursor::new(&buf)) {
+            if let Ok(plist::Value::Dictionary(d)) = crate::theme::parse_plist(&buf) {
                 let get = |k: &str| d.get(k).and_then(|v| v.as_string()).unwrap_or("").to_string();
                 coll.keyword_prefix = get("snippetkeywordprefix");
                 coll.keyword_suffix = get("snippetkeywordsuffix");
