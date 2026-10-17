@@ -12,6 +12,8 @@
 #   scripts/qa/perf-gui.sh [path-to-release-ashdash]
 # Env: PERF_VARIANTS=empty,real,synth5000  PERF_REPS=3  PERF_IDLE_S=60  PERF_CYCLES=20  PERF_LAT_N=10
 #      PERF_REP_START=1 (first repetition number; the desktop lock is held for one invocation, keep it under ~5 min: one variant, one rep)
+#      PERF_MODE=latency|mem|gap (latency: hotkey and `ashdash show` -> window visible only; mem: footprint with the window shown only;
+#        each about 40 s per repetition; gap: latency vs. time hidden)
 #      PERF_OUT=<dir for results.jsonl and the summary>  (default: a new dir under /tmp)
 set -uo pipefail
 

@@ -153,6 +153,7 @@ def window_visible_after(since, timeout_ms=3000):
 
 
 LAST_POST = [0.0]
+LAST_POSTED_MS = [0.0]   # how long the probe itself needed to build and post the events (harness cost inside the latency)
 
 
 def hotkey_show(timeout_ms=3000):
@@ -161,6 +162,8 @@ def hotkey_show(timeout_ms=3000):
     m = re.search(r"latency_ms ([\d.]+)", out)
     p = re.search(r"post ([\d.]+)", out)
     LAST_POST[0] = float(p.group(1)) if p else 0.0
+    q = re.search(r"posted_ms ([\d.]+)", out)
+    LAST_POSTED_MS[0] = float(q.group(1)) if q else 0.0
     return float(m.group(1)) if (rc == 0 and m) else None
 
 
@@ -393,10 +396,53 @@ def gap_mode():
     shutil.rmtree(home, ignore_errors=True)
 
 
+def quick_mode(mode):
+    """PERF_MODE=latency | mem: one short run per variant/rep (about 40 s), so the desktop lock stays short.
+    latency: hotkey and `ashdash show` -> window visible. mem: footprint before, with the window shown (typed), and after hiding."""
+    for variant in VARIANTS:
+        for rep in range(REP_START, REP_START + REPS):
+            home = make_home(variant, f"q{rep}")
+            inst = None
+            try:
+                inst, res = start_timing(variant, rep, home, f"{mode}-start")
+                if inst.alive() and res.get("hotkey_ready_ms"):
+                    hide(inst)
+                    time.sleep(3)
+                    if mode == "latency":
+                        latency_block(inst, variant, rep)
+                    else:
+                        cycle_block_short(inst, variant, rep)
+                    hide(inst)
+            finally:
+                if inst is not None:
+                    inst.quit()
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def cycle_block_short(inst, variant, rep):
+    base = snapshot(inst, "before-show")
+    t_show = time.time()
+    hotkey_show()
+    time.sleep(0.5)
+    shown = snapshot(inst, "window-shown")
+    dump(inst, variant, rep, "mem-window-shown")
+    type_safely(inst, t_show, QUERY)
+    time.sleep(0.8)
+    typed = snapshot(inst, f"typed '{QUERY}'")
+    hide(inst)
+    time.sleep(1)
+    h1 = snapshot(inst, "hidden+1s")
+    time.sleep(10)
+    h10 = snapshot(inst, "hidden+11s")
+    log(kind="mem", variant=variant, rep=rep, snaps=[base, shown, typed, h1, h10])
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     if os.environ.get("PERF_MODE") == "gap":
         return gap_mode()
+    if os.environ.get("PERF_MODE") in ("latency", "mem"):
+        return quick_mode(os.environ["PERF_MODE"])
     rc, out = probe("trusted")
     log(kind="env", accessibility_trusted=out, bin=BIN, uptime=sh(["uptime"]).stdout.strip(),
         apps={v: count_apps(v) for v in VARIANTS})
