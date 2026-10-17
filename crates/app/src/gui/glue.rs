@@ -46,6 +46,8 @@ pub(super) struct Glue {
     /// Moves of the selection and replaced lists, for "the highlighted result stays" and
     /// "Return runs what you saw".
     pub track: SelectionTrack,
+    /// The start-up crash-report check has run (once, at the first showing).
+    pub crash_checked: bool,
 }
 
 impl Glue {
@@ -64,6 +66,7 @@ impl Glue {
             large_scroll: 0.0,
             cursor_to_end: false,
             track: SelectionTrack::default(),
+            crash_checked: false,
         }
     }
 

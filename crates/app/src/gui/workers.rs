@@ -162,6 +162,7 @@ impl LauncherApp {
                 }
             }
         }
+        self.announce_crash_report();
         while let Ok(msg) = self.glue.rx.try_recv() {
             self.apply_async(ctx, msg);
         }
@@ -170,6 +171,24 @@ impl LauncherApp {
         }
         while let Ok(outcome) = self.outcome_rx.try_recv() {
             self.present_outcome(ctx, outcome);
+        }
+    }
+}
+
+impl LauncherApp {
+    /// After a crash: the first time the launcher is shown, say so in the footer, once. The note
+    /// is a status message, so typing clears it; the report is marked seen when it is shown.
+    fn announce_crash_report(&mut self) {
+        if !self.visible || self.glue.crash_checked {
+            return;
+        }
+        self.glue.crash_checked = true;
+        let paths = &self.engine.paths;
+        if let Some(name) = crate::crash::unseen(paths) {
+            crate::crash::mark_seen(paths, &name);
+            if self.status.is_none() {
+                self.status = Some(crate::crash::footer_note().into());
+            }
         }
     }
 }
