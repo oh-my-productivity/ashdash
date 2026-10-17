@@ -32,8 +32,8 @@ packaging/make-dmg.sh                   # dist/Ashdash-<version>.dmg
 cp -R dist/Ashdash.app /Applications/
 ```
 
-An ad-hoc signed app is not trusted by Gatekeeper. If macOS refuses to open it: right-click the app, choose Open once, or run
-`xattr -dr com.apple.quarantine /Applications/Ashdash.app` ([RELEASING.md](RELEASING.md)). The x86_64 half of the universal
+An ad-hoc signed app is not trusted by Gatekeeper. If macOS refuses to open it (on macOS 15 and later the dialog only offers *Done* and *Move to Trash*): open System Settings > Privacy & Security, press *Open Anyway* next to the
+blocked app and confirm in the second dialog, or run `xattr -dr com.apple.quarantine /Applications/Ashdash.app` ([RELEASING.md](RELEASING.md)); right-click > Open is the route up to macOS 14. The x86_64 half of the universal
 binary and notarized builds are **unverified**. A Homebrew cask is rendered from `packaging/homebrew/ashdash.rb.template`
 but no tap exists yet, so `brew install --cask` does not work yet (**unverified**).
 

@@ -35,8 +35,8 @@ What `build-app.sh` checks for you: `codesign --verify --deep --strict`, and it 
 
 ### Running an ad-hoc build on another Mac
 
-Gatekeeper blocks it. Either right-click the app and choose Open once, or
-`xattr -dr com.apple.quarantine /Applications/Ashdash.app`. This is expected for unsigned/ad-hoc software.
+Gatekeeper blocks it. On macOS 15 and later the dialog only offers *Done* / *Move to Trash* (verified in the lab, `docs/qa-runs/2026-10-rc1.md` PKG-06..PKG-14): use System Settings > Privacy & Security > *Open Anyway* and confirm in the second dialog, or
+`xattr -dr com.apple.quarantine /Applications/Ashdash.app`. Right-click > Open is the route up to macOS 14. This is expected for unsigned/ad-hoc software.
 
 ## Signing and notarization (real releases)
 
