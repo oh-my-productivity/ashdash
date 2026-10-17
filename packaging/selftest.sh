@@ -56,6 +56,10 @@ check "only one URL scheme" equals "$(plutil -extract CFBundleURLTypes.0.CFBundl
 check "document types: 3" equals "$(plutil -extract CFBundleDocumentTypes raw -o - "$plist")" "3"
 check "documents never outrank the reference launcher" bash -c "[ \"\$(plutil -extract CFBundleDocumentTypes.0.LSHandlerRank raw -o - '$plist')\" = Alternate ]"
 check "AppleEvents usage string" plutil -extract NSAppleEventsUsageDescription raw -o - "$plist"
+check "AppleScript enabled (docs/AUTOMATION.md needs it)" equals "$(plutil -extract NSAppleScriptEnabled raw -o - "$plist")" "true"
+check "scripting definition named in Info.plist" equals "$(plutil -extract OSAScriptingDefinition raw -o - "$plist")" "Ashdash.sdef"
+check "the sdef that build-app.sh installs exists and is well-formed" bash -c "[ -s '$REPO_ROOT/crates/app/resources/Ashdash.sdef' ] && xmllint --noout --nonet '$REPO_ROOT/crates/app/resources/Ashdash.sdef'"
+check "build-app.sh installs the sdef into Resources" grep -q 'Ashdash.sdef' "$PACKAGING_DIR/build-app.sh"
 check "executable name" equals "$(plutil -extract CFBundleExecutable raw -o - "$plist")" "ashdash"
 check "entitlements valid" plutil -lint "$PACKAGING_DIR/entitlements.plist"
 

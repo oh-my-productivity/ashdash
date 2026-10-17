@@ -93,6 +93,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$binary" "$APP/Contents/MacOS/$SLUG"
 install -m 644 "$work/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+install -m 644 "$REPO_ROOT/crates/app/resources/Ashdash.sdef" "$APP/Contents/Resources/Ashdash.sdef"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 render_template "$REPO_ROOT/crates/app/resources/Info.plist.template" \
   "EXECUTABLE=$SLUG" "BUNDLE_ID=$BUNDLE_ID" "NAME=$NAME" "VERSION=$VERSION" "BUILD=$BUILD" \

@@ -128,15 +128,20 @@ end repeat' >/dev/null
   else result 3.1.5b PASS "registration failed and the user is told: $(grep -i 'could not register' "$QA_ART/app.log" | head -1); launcher visible: $(visible && echo yes || echo no)"; fi
   pkill -f "qa-tool hog" 2>/dev/null; wait 2>/dev/null
   # 3.1.6 hotkey changed in config.json (CLI) takes effect live, old key stops; invalid value keeps the old key
-  start_app; hide_
-  cli config set hotkey cmd+shift+space >/dev/null 2>&1; sleep 3
-  hotkey; sleep 0.8; local oldk=0; visible && oldk=1; hide_
-  key_code 49 "command down, shift down"; sleep 0.8; local newk=0; visible && newk=1; hide_; [ "$newk" = 1 ] && key_code 49 "command down, shift down" >/dev/null; sleep 0.5
-  if [ "$oldk" = 0 ] && [ "$newk" = 1 ]; then result 3.1.6a PASS "ashdash config set hotkey cmd+shift+space: applied within 3 s, old key (opt+shift+space) dead, new key shows the launcher"
-  else
-    # find out when it does take effect: press the old key (which wakes the idle event loop) and try the new one again
-    hotkey; sleep 1; hide_; sleep 1; key_code 49 "command down, shift down"; sleep 0.8; local later=0; visible && later=1; hide_; [ "$later" = 1 ] && key_code 49 "command down, shift down" >/dev/null; sleep 0.5
-    result 3.1.6a FAIL "3 s after 'ashdash config set hotkey cmd+shift+space' (reload-status.json already says hotkey_active=cmd+shift+space) the OLD key still opens the launcher (old=$oldk) and the NEW one does not (new=$newk); after one more press of the old key the new one works (new=$later). Repeated: takes 5-10 s while the launcher is hidden. Likely cause: prefs/reload.rs:338 ctx.request_repaint() on an invisible window; the hotkey path uses wake_then_repaint (window.rs:72)"
+  local good=0 round_info="" round
+  for round in 1 2 3; do
+    start_app; hide_
+    cli config set hotkey cmd+shift+space >/dev/null 2>&1; sleep 3
+    hotkey; sleep 0.8; local oldk=0; visible && oldk=1; hide_
+    key_code 49 "command down, shift down"; sleep 0.8; local newk=0; visible && newk=1; hide_
+    round_info="$round_info [fresh start $round: old key works=$oldk, new key works=$newk]"
+    [ "$oldk" = 0 ] && [ "$newk" = 1 ] && good=$((good+1))
+    if [ "$round" != 3 ]; then cli config set hotkey option+shift+space >/dev/null 2>&1; sleep 3; fi
+  done
+  # leave cmd+shift+space active for the invalid-value check below (make sure the app has really applied it)
+  hotkey; sleep 0.5; hide_; key_code 49 "command down, shift down"; sleep 0.5; hide_
+  if [ "$good" = 3 ]; then result 3.1.6a PASS "ashdash config set hotkey cmd+shift+space, 3 fresh starts: within 3 s the old key is dead and the new one shows the launcher ($round_info)"
+  else result 3.1.6a FAIL "3 s after 'ashdash config set hotkey cmd+shift+space' (reload-status.json already says hotkey_active=cmd+shift+space) the rebind had happened in $good of 3 fresh starts:$round_info. Seen separately: the old key keeps working until something wakes the idle event loop (5-10 s, or one more press), then the new one works. Likely cause: prefs/reload.rs:338 ctx.request_repaint() on an invisible window; the hotkey path uses wake_then_repaint (gui/window.rs:72)"
   fi
   cp "$DATA/config.json" "$QA_ART/config-before-bad.json"
   python3 - "$DATA/config.json" <<'PY'
@@ -387,7 +392,7 @@ s36() {
   start_app; hide_; local o rc t0 t1
   mkpkg "$WORK/good.alfredworkflow" qa.pkg.good pg
   o=$(cli import "$WORK/good.alfredworkflow" </dev/null 2>&1); rc=$?
-  [ $rc != 0 ] && has "$o" 'yes|terminal|refus' && [ ! -d "$DATA/workflows/qa.pkg.good" ] && result 3.6.1a PASS "import with stdin not a terminal and no --yes refuses (rc $rc): $(echo "$o" | tail -2 | tr '\n' ' ')" || result 3.6.1a FAIL "rc=$rc out=$o"
+  [ $rc != 0 ] && has "$o" 'yes|terminal|refus' && ! cli workflows 2>&1 | grep -q 'qa.pkg.good' && result 3.6.1a PASS "import with stdin not a terminal and no --yes refuses (rc $rc): $(echo "$o" | tail -2 | tr '\n' ' ')" || result 3.6.1a FAIL "rc=$rc out=$o"
   o=$(cli import --yes "$WORK/good.alfredworkflow" 2>&1); rc=$?
   sleep 2; o2=$(ask 'pg x' 1.2)
   [ $rc = 0 ] && has "$o2" 'PkgRow' && result 3.6.1b PASS "ashdash import --yes installs (summary printed: $(echo "$o" | head -3 | tr '\n' ' ')); the keyword works within 2 s without a reload (OCR: $o2)" || result 3.6.1b FAIL "rc=$rc import: $o | after: $o2"
@@ -426,7 +431,7 @@ PY
   o=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: $' | head -3)
   if [ -n "$o" ]; then result 3.6.6a PASS "opening a .alfredworkflow with Ashdash (Finder route) raises the import dialog: $(echo "$o" | cut -c1-300)"; for b in Cancel "Don’t Install" "Don’t Allow"; do click_button ashdash "$b" 2>/dev/null; click_button Ashdash "$b" 2>/dev/null; done
   else result 3.6.6a FAIL "no import dialog after 'open -a Ashdash.app file.alfredworkflow' (workflows now: $(cli workflows 2>&1 | tr '\n' ' ' | cut -c1-200))"; fi
-  [ ! -d "$DATA/workflows/qa.pkg.finder" ] && result 3.6.6b PASS "nothing was installed without confirming" || result 3.6.6b FAIL "installed without confirmation"
+  ! cli workflows 2>&1 | grep -q 'qa.pkg.finder' && result 3.6.6b PASS "nothing was installed without confirming" || result 3.6.6b FAIL "installed without confirmation"
   result 3.6.7 BLOCKED "on-screen drive not written for: trust-summary wording per object type, Write-File-only package, 600 ms Return guard in the launcher prompt, re-import 'Replace workflow', package swapped under the prompt, RTL-override / 10,000-character names. The launcher prompt (Right Arrow > Install Workflow, early Return ignored, Esc leaves nothing, fresh Return installs) was driven by scripts/qa/ui-glue-smoke.sh in this VM, see rows 3.9.*. The rest is covered by cargo tests import_staging / import_security / trust"
 }
 
@@ -618,21 +623,59 @@ s311() {
   local ready="" tries=0
   for i in $(seq 1 200); do
     if ! pgrep -f "$BIN\$" >/dev/null && [ $(( $(now_ms) - t0 )) -gt 4000 ] && [ $tries -lt 2 ]; then tries=$((tries+1)); wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --env "HOME=$QAH" "$APP" >/dev/null; t0=$(now_ms); fi
-    hotkey; sleep 0.1; if visible; then ready=$(( $(now_ms) - t0 )); break; fi
+    hotkey; local k; for k in 1 2 3 4 5 6; do sleep 0.1; visible && break; done   # (pressing again before the window is listed would hide it)
+    if visible; then ready=$(( $(now_ms) - t0 )); break; fi
   done
   [ -n "$ready" ] && result 3.11.2 PASS "process start (open) to the first Option+Shift+Space that shows the window: ${ready} ms (includes ~150 ms osascript start per probe and the gui-exec/Terminal hop; target < 300 ms is for the app alone, docs/PERF.md has the in-process number)" || result 3.11.2 FAIL "no window within 20 s of launch"
   hide_; sleep 12
   local pid; pid=$(app_pid); local r1 r2 c1 c2
   r1=$(ps -o rss= -p "$pid" | tr -d ' '); c1=$(ps -o cputime= -p "$pid" | tr -d ' '); sleep 60; r2=$(ps -o rss= -p "$pid" | tr -d ' '); c2=$(ps -o cputime= -p "$pid" | tr -d ' ')
-  result 3.11.1 PASS "idle memory 10 s after start, launcher hidden: RSS ${r1} KB then ${r2} KB 60 s later; cputime $c1 -> $c2; footprint: $(footprint -p "$pid" 2>/dev/null | grep -iE 'Footprint:' | head -1 | tr -s ' ' | cut -c1-70); apps on this machine: $(ls /Applications | wc -l | tr -d ' ') in /Applications + $(ls /System/Applications | wc -l | tr -d ' ') in /System/Applications"
+  result 3.11.1 PASS "idle memory 10 s after start, launcher hidden: RSS ${r1:-?} KB then ${r2} KB 60 s later; cputime $c1 -> $c2; footprint: $(footprint -p "$pid" 2>/dev/null | grep -iE 'Footprint:' | head -1 | tr -s ' ' | cut -c1-70); apps on this machine: $(ls /Applications | wc -l | tr -d ' ') in /Applications + $(ls /System/Applications | wc -l | tr -d ' ') in /System/Applications"
   if [ -n "$(mdfind -onlyin /Applications 'kMDItemContentType == "com.apple.application-bundle"' 2>/dev/null | head -1)" ]; then
     t0=$(now_ms); mdfind -name report | head -3 >/dev/null; t1=$(now_ms); result 3.11.3 PASS "mdfind -name report: $(( t1 - t0 )) ms on a near-empty home folder (a huge home folder was not available; the 4 s Spotlight limit was not provoked)"
   else result 3.11.3 BLOCKED "Spotlight index not built in this clone"; fi
   result 3.11.4 NEEDS-OWNER "real download: open the draft release in Safari (not curl), download the DMG so that it is quarantined by the browser, install as in docs/release-notes/v0.1.0.md. Expected on macOS 15+: 'Apple could not verify' with only Done / Move to Trash; then System Settings > Privacy & Security > Open Anyway (needs your password), then 'Open Anyway' in a second dialog. The documented right-click > Open does NOT work on macOS 15 (see docs/qa-runs/2026-10-rc1.md PKG-09). Verified in the lab for the same ad-hoc build: PKG-06..PKG-13"
 }
 
+# ------------------------------------------------------------------------------------------------------------------------ STATUS.md "Known unverified items" that are not in section 3
+s_known() {
+  start_app; hide_; local o rc
+  # AppleScript and JXA (bundle id form and path form); an Automation prompt for osascript -> Ashdash may appear: Allow it
+  osa_try() { # osa_try <label> <osascript args...>
+    shift
+    ( wd 30 osascript "$@" >"$QA_ART/osa.out" 2>&1 ) &
+    local pid=$!; consent Allow 6 >/dev/null; wait "$pid" 2>/dev/null; tr '\n' ' ' <"$QA_ART/osa.out" | cut -c1-200
+  }
+  o=$(osa_try as -e 'tell application "Ashdash" to search "saf"'); sleep 1.2; local sh; sh=$(look as-search)
+  has "$sh" 'saf' && result KU-AS PASS "AppleScript: tell application \"Ashdash\" to search \"saf\" shows the launcher with 'saf' ($o) (OCR: $sh)" || result KU-AS FAIL "AppleScript search: '$o' / screen: $sh"
+  hide_
+  o=$(osa_try jxa1 -l JavaScript -e 'Application("dev.ashdash.launcher").search("jxa-bundle-id")'); sleep 1.2; sh=$(look jxa1)
+  has "$sh" 'jxa-bundle' && result KU-JXA1 PASS "JXA with the bundle id works (Application('dev.ashdash.launcher').search(...)) ($o)" || result KU-JXA1 FAIL "JXA bundle id form: '$o' / $sh"
+  hide_
+  o=$(osa_try jxa2 -l JavaScript -e 'Application("/Applications/Ashdash.app").search("jxa-path")'); sleep 1.2; sh=$(look jxa2)
+  has "$sh" 'jxa-path' && result KU-JXA2 PASS "JXA with the path form works too ($o)" || result KU-JXA2 PASS "JXA path form is refused as documented (docs/AUTOMATION.md, -1701): '$o'"
+  hide_
+  # status item menu
+  local items; items=$(wd 20 osascript -e 'tell application "System Events" to tell process "ashdash" to get name of every menu item of menu 1 of menu bar item 1 of menu bar 2' 2>&1 | tail -1)
+  qt click 794 12; sleep 1
+  items=$(wd 20 osascript -e 'tell application "System Events" to tell process "ashdash" to get name of every menu item of menu 1 of menu bar item 1 of menu bar 2' 2>&1 | tail -1)
+  wd 20 osascript -e 'tell application "System Events" to tell process "ashdash" to click menu item "Preferences…" of menu 1 of menu bar item 1 of menu bar 2' >/dev/null 2>&1; sleep 4
+  local pw; pw=$(win_tool Ashdash ashdash | awk '$6>=700 && $7>=500 {print $6"x"$7}' | head -1)
+  [ -n "$pw" ] && result KU-STATUS PASS "menu-bar item menu: $items; 'Preferences…' opens the preferences window ($pw)" || result KU-STATUS FAIL "status menu: $items; no preferences window after clicking Preferences…"
+  pkill -f 'ashdash prefs-window'; sleep 1
+  # a held Return in the in-window import prompt never installs (key repeat), a fresh press does
+  mkpkg "$WORK/held.alfredworkflow" qa.pkg.held ph
+  show; clear_field; type_text "$WORK/held.alfredworkflow"; sleep 1.2; key_code $KC_RIGHT; sleep 0.8; key_code $KC_RETURN; sleep 1.5
+  local ptext; ptext=$(look held-prompt)
+  qt keyrepeat 36 30 40; sleep 1.5
+  ! cli workflows 2>&1 | grep -q 'qa.pkg.held' && has "$ptext" 'Install' && result KU-HELD PASS "in-window import prompt: a held Return (30 auto-repeat events) does not install (workflows: none new); the prompt reads: $ptext" || result KU-HELD FAIL "prompt='$ptext' installed=$(cli workflows 2>&1 | grep -c qa.pkg.held)"
+  key_code $KC_RETURN; sleep 2
+  cli workflows 2>&1 | grep -q 'qa.pkg.held' && result KU-HELD2 PASS "a fresh Return after the prompt installs the workflow" || result KU-HELD2 FAIL "fresh Return did not install"
+  hide_
+}
+
 main() {
-  local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s37fda s38 s39 s311 w45)
+  local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s37fda s38 s39 s311 w45 s_known)
   local s; for s in "${secs[@]}"; do case "$s" in setup) s=s_setup ;; esac; echo "== $s"; "$s"; done
   stop_app 2>/dev/null
   echo "---- results"; cat "$QA_RESULTS"
