@@ -1,6 +1,7 @@
 //! The launcher window (egui) plus the hotkey, clipboard watcher and
 //! background workers that feed it.
 
+mod focus;
 mod geometry;
 mod glue;
 pub(crate) mod importprompt;
@@ -66,6 +67,8 @@ struct LauncherApp {
     resize_retries: u8,
     last_pointer: Option<Pos2>,
     focus_seen: Option<bool>,
+    /// Decides when losing the key window hides the launcher (see `focus.rs`).
+    focus_watch: focus::FocusWatch,
 
     /// Set while the window is stretched over a monitor for Large Type.
     overlay: Option<geometry::Rect>,
@@ -194,6 +197,7 @@ impl LauncherApp {
             resize_retries: 0,
             last_pointer: None,
             focus_seen: None,
+            focus_watch: focus::FocusWatch::default(),
             overlay: None,
             quicklook: quicklook::QuickLook::default(),
             quicklook_for: None,
@@ -381,19 +385,24 @@ impl eframe::App for LauncherApp {
             ctx.request_repaint();
         }
 
-        // Close when the window loses focus (after a short grace period while
-        // the OS hands focus over). While a Quick Look preview is up, focus
-        // legitimately lives in the preview process.
+        // Close when the window loses focus (see `focus.rs` for the rule and why it needs a follow-up frame).
+        // While a Quick Look preview is up, focus legitimately lives in the preview process.
         let focused = ctx.input(|i| i.viewport().focused);
+        // (when a preview just ended this restarts `shown_at`: the launcher asks for its focus back and gets the grace period again)
+        self.tick_quicklook(&ctx);
+        let since = self.shown_at.elapsed();
         if focused != self.focus_seen {
             self.focus_seen = focused;
-            let since = self.shown_at.elapsed().as_millis();
-            trace::trace(|| format!("focus={focused:?} +{since}ms after show"));
+            trace::trace(|| format!("focus={focused:?} +{}ms after show", since.as_millis()));
         }
-        self.tick_quicklook(&ctx);
-        if focused == Some(false) && self.shown_at.elapsed() > Duration::from_millis(400) && !self.quicklook.is_open() {
-            self.hide(&ctx);
-            return;
+        trace::trace(|| format!("frame focused={focused:?} +{}ms after show", since.as_millis()));
+        match self.focus_watch.step(focused, since, self.quicklook.is_open()) {
+            focus::FocusStep::Hide => {
+                self.hide(&ctx);
+                return;
+            }
+            focus::FocusStep::Recheck(after) => ctx.request_repaint_after(after),
+            focus::FocusStep::Stay => {}
         }
 
         self.handle_keys(&ctx);
