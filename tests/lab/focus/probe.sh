@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-DIST=$HOME/focus-dist
+DIST=${FOCUS_DIST:-$HOME/focus-dist}
 APP=$DIST/Ashdash.app
 BIN=$APP/Contents/MacOS/ashdash
 QAH=$HOME/focus-home

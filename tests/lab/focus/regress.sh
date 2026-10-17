@@ -15,7 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 build=1 only=all
 while [ $# -gt 0 ]; do case "$1" in --no-build) build=0; shift ;; --only) only=$2; shift 2 ;; *) echo "unknown option $1" >&2; exit 2 ;; esac; done
 want() { [ "$only" = all ] || [ "$only" = "$1" ]; }
-DIST=$HOME/focus-dist APP=$HOME/focus-dist/Ashdash.app
+DIST=${FOCUS_DIST:-$HOME/focus-dist} APP=${FOCUS_DIST:-$HOME/focus-dist}/Ashdash.app
 BIN=$APP/Contents/MacOS/ashdash QAH=$HOME/focus-home LOG=$QA_ART/app.log
 alive() { pgrep -f "$BIN\$" >/dev/null; }
 app_pid() { pgrep -f "$BIN\$" | head -1; }
