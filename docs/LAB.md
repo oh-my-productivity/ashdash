@@ -183,7 +183,7 @@ The host was **not idle**: other agents were building and testing the whole time
 | Golden image disk | `tart list`: disk 50 GB, size 31 GB; `du`: 29 GB. Host `df` after golden + base: 477 GiB free of 926 GiB |
 | `lab-up` (APFS clone, headless boot, IP, ssh ready) | **10 s** (10.2 s measured) |
 | `lab-with-vm -- uname -a` end to end (clone + boot + ssh + run + delete) | **13.5 s** |
-| `golden-setup.sh verify` / `tcc-probe` end to end | 49 s / 13.5 s (verify includes two 30 s gui-exec timeouts before the TCC fix) |
+| `golden-setup.sh verify` / `tcc-probe` end to end | 49 s / 13.5 s (verify includes one 30 s gui-exec timeout before the TCC fix) |
 | Sync of the worktree (3.1 MB; first and second sync) | **0.6-0.7 s** including the ssh round trip |
 | Cold `cargo build -p ashdash` (debug, fresh clone, deps from crates.io) | **33 s** on a quiet moment, 46 s, 78 s and 114 s while other agents compiled on the host |
 | Warm no-op `cargo build` / after touching `crates/core/src/lib.rs` | 0.4 s / 1.3 s |
