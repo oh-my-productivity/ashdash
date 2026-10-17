@@ -6,16 +6,18 @@ mkdir -p "$home/vms"
 cmd=${1:-}; shift || true
 case "$cmd" in
   list)
-    fmt=text
+    fmt=text; src=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --format) fmt=$2; shift 2 ;;
-        --source) shift 2 ;;
+        --source) src=$2; shift 2 ;;
         -q|--quiet) shift ;;
         *) shift ;;
       esac
     done
     names=$(ls "$home/vms" 2>/dev/null)
+    # Like real tart: pulled OCI images (kept in $home/oci/<name>, "/" written as "%") are only listed without `--source local`.
+    if [ "$src" != local ]; then names="$names $(find "$home/oci" -mindepth 1 -maxdepth 1 -exec basename {} \; 2>/dev/null | tr % /)"; fi
     if [ "$fmt" = json ]; then
       printf '['
       sep=""

@@ -52,6 +52,9 @@ lab_check_run_name() {
 
 lab_vm_exists() { "$TART_BIN" list --source local --quiet 2>/dev/null | grep -Fxq -- "$1"; }
 
+# True for local VMs *and* pulled OCI images (the base image is only listed without `--source local`).
+lab_image_exists() { "$TART_BIN" list --quiet 2>/dev/null | grep -Fxq -- "$1"; }
+
 lab_vm_running() {
   "$TART_BIN" list --source local --format json 2>/dev/null |
     python3 -c '

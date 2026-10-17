@@ -7,7 +7,7 @@
 # Recording) are attributed to the "responsible" app, which for `--via terminal` (default) is Terminal.app:
 # grant it once in the golden image (docs/LAB.md, "Manual steps").
 #
-#   --via terminal  `open -a Terminal job.command`; output captured in a log, printed when done.
+#   --via terminal  `open -g -a Terminal job.command` (finished jobs leave a Terminal window behind; the clone is thrown away anyway); output captured in a log, printed when done.
 #   --via asuser    `launchctl asuser <uid>`; responsible process is the command itself (needs its own grants).
 #   --detach        do not wait; print the pid file / log path and return (for long-running apps).
 # Exit status: the command's (124 on timeout, 125 when the GUI session could not start it).
@@ -46,7 +46,7 @@ for a in "$@"; do quoted+=" $(printf %q "$a")"; done
 chmod 700 "$job"
 
 case "$via" in
-  terminal) open -a Terminal "$job" ;;
+  terminal) open -g -a Terminal "$job" ;;   # -g: do not bring Terminal to the front (a launcher panel hides when it loses focus)
   asuser) launchctl asuser "$(id -u)" /bin/bash "$job" & ;;
   *) echo "gui-exec: unknown --via $via" >&2; exit 2 ;;
 esac

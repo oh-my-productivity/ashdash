@@ -79,7 +79,7 @@ toolchain() {
 
 case "$cmd" in
   create)
-    lab_vm_exists "$LAB_BASE_IMAGE" || lab_die "base image $LAB_BASE_IMAGE is not pulled yet ('tart list'); run: $TART_BIN pull $LAB_BASE_IMAGE"
+    lab_image_exists "$LAB_BASE_IMAGE" || lab_die "base image $LAB_BASE_IMAGE is not pulled yet ('tart list'); run: $TART_BIN pull $LAB_BASE_IMAGE"
     if lab_vm_exists "$LAB_GOLDEN"; then
       [ "$force" = 1 ] || lab_die "$LAB_GOLDEN exists; use --force to rebuild it"
       "$TART_BIN" stop "$LAB_GOLDEN" --timeout 10 >/dev/null 2>&1 || true

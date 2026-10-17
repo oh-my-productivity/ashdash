@@ -53,7 +53,8 @@ quoted=""
 for a in "$@"; do quoted+=" $(printf %q "$a")"; done
 exports="export LAB_ARTIFACTS=\"\$HOME/$art_remote\" LAB_VM=$(printf %q "$vm") PATH=\"\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH\";"
 for e in "${envs[@]+"${envs[@]}"}"; do exports+=" export $(printf %q "$e");"; done
-script="$exports mkdir -p \"\$LAB_ARTIFACTS\" && cd $(printf %q "$work") &&$quoted"
+# mkdir -p the work dir too: with --no-sync on a fresh VM it does not exist yet.
+script="$exports mkdir -p \"\$LAB_ARTIFACTS\" $(printf %q "$work") && cd $(printf %q "$work") &&$quoted"
 
 rc=0
 lab_log "running in $vm: $*"

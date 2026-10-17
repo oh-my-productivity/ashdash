@@ -34,7 +34,8 @@ GUI_EXEC=$ROOT/tests/lab/guest/gui-exec
 cleanup() {
   if [ -n "${BIN:-}" ]; then HOME=$WORK/home "$BIN" quit >/dev/null 2>&1 || true; fi
   pkill -f "$WORK" 2>/dev/null || true
-  rm -rf "$WORK"
+  [ -n "${DIST:-}" ] && pkill -f "$DIST" 2>/dev/null || true
+  rm -rf "$WORK" "${DIST:-/nonexistent}"
 }
 trap cleanup EXIT
 
@@ -83,8 +84,11 @@ fi
 # ---- native bundle (needed for the URL scheme + login item) --------------------------------------
 APP=""
 t0=$(date +%s)
-if ARCHS=native SKIP_ICON=1 OUT_DIR=$WORK/dist packaging/build-app.sh >"$ART/bundle.log" 2>&1; then
-  APP=$WORK/dist/Ashdash.app
+# LaunchServices ignores apps under /var/folders ($TMPDIR): "No application knows how to open URL ashdash://..." (-10814).
+# The bundle therefore lives in the home directory of the (throw-away) guest user.
+DIST=$HOME/lab-smoke-dist
+if ARCHS=native SKIP_ICON=1 OUT_DIR=$DIST packaging/build-app.sh >"$ART/bundle.log" 2>&1; then
+  APP=$DIST/Ashdash.app
   rec PASS bundle "native Ashdash.app built and verified in $(( $(date +%s) - t0 )) s"
   spctl --assess --type execute "$APP" >"$ART/spctl.txt" 2>&1
   rec PASS gatekeeper "informational: spctl says: $(tr '\n' ' ' <"$ART/spctl.txt")"
@@ -131,24 +135,42 @@ else
 fi
 
 # Global hotkey + window state through System Events (needs Accessibility for Terminal; see docs/LAB.md)
-SE_PROBE=$("$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1)
-if echo "$SE_PROBE" | grep -Eq '1002|not allowed|assistive|not authorized|-1743'; then
+se_probe() { "$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1; }
+# A missing Automation grant makes osascript wait for a consent dialog nobody clicks; gui-exec then reports "timed out".
+se_denied() { echo "$1" | grep -Eq '1002|not allowed|assistive|not authorized|-1743|timed out'; }
+# The base image has SIP off, so the grants can be written into this throw-away clone (never into the golden image). Do it BEFORE the
+# first System Events call: a call that raised a consent dialog first leaves tccd/Terminal in a state that the grant does not clear.
+granted=0
+if [ "${LAB_AUTO_TCC:-1}" = 1 ] && csrutil status 2>&1 | grep -q disabled; then
+  bash "$ROOT/tests/lab/guest/tcc-grant.sh" >"$ART/tcc-grant.txt" 2>&1 && granted=1
+fi
+SE_PROBE=$(se_probe)
+if [ "$granted" = 1 ] && ! se_denied "$SE_PROBE"; then
+  rec PASS tcc-grant "tcc-grant.sh (SIP is off) granted Terminal/sshd in this clone only (LAB_AUTO_TCC=0 disables)"
+fi
+if se_denied "$SE_PROBE"; then
   rec SKIP hotkey "System Events denied (Accessibility/Automation not granted to Terminal in the golden image): $(echo "$SE_PROBE" | head -c 160)"
   rec SKIP window-state "same reason"
 else
   rec PASS system-events "System Events works; frontmost app before: $SE_PROBE"
-  "$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to key code 49 using {option down, shift down}' >"$ART/hotkey.txt" 2>&1
+  # The hotkey TOGGLES the launcher, and the url-scheme stage above may have left it visible: note the state, press, and require
+  # that the window count changed; if that hid it, press again and require it to be back.
+  # These steps run straight from the ssh session (its System Events / screencapture grants are in the clone), NOT through gui-exec:
+  # gui-exec activates Terminal, and a launcher that loses focus hides itself, which made the window vanish between press and check.
+  wd() { perl -e 'alarm shift; exec @ARGV' 20 "$@" 2>&1; }   # a missing grant blocks on a consent dialog: never wait forever
+  nwin() { wd osascript -e 'tell application "System Events" to tell process "ashdash" to get count of windows' | tail -1; }
+  press() { wd osascript -e 'tell application "System Events" to key code 49 using {option down, shift down}' >>"$ART/hotkey.txt"; sleep 2; }
+  w0=$(nwin); press; w1=$(nwin); w2=$w1
+  if [ "$w1" = 0 ]; then press; w2=$(nwin); fi
+  wd osascript -e 'tell application "System Events" to keystroke "saf"' >>"$ART/hotkey.txt"
   sleep 1
-  "$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to keystroke "saf"' >>"$ART/hotkey.txt" 2>&1
-  sleep 1
-  "$GUI_EXEC" --timeout 30 -- screencapture -x "$ART/hotkey-saf.png" >>"$ART/hotkey.txt" 2>&1
-  front=$("$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1)
-  wins=$("$GUI_EXEC" --timeout 20 -- osascript -e 'tell application "System Events" to tell process "ashdash" to get {name, position, size} of every window' 2>&1)
-  echo "frontmost after hotkey: $front" >"$ART/window-state.txt"; echo "ashdash windows: $wins" >>"$ART/window-state.txt"
-  if echo "$wins" | grep -Eq '[0-9]'; then
-    rec PASS hotkey "after Option+Shift+Space + 'saf': frontmost=$front; ashdash window {name,pos,size}=$wins"
+  wd screencapture -x "$ART/hotkey-saf.png" >>"$ART/hotkey.txt"
+  wins=$(wd osascript -e 'tell application "System Events" to tell process "ashdash" to get {name, position, size} of every window')
+  echo "windows before / after first press / after second: $w0 / $w1 / $w2; ashdash windows (name,x,y,w,h): $wins" >"$ART/window-state.txt"
+  if [ "$w0" != "$w1" ] && [ "$w2" -ge 1 ] 2>/dev/null; then
+    rec PASS hotkey "Option+Shift+Space toggles the launcher (windows $w0 -> $w1 -> $w2); window (name,x,y,w,h)=$wins"
   else
-    rec FAIL hotkey "no ashdash window reported after the hotkey: frontmost=$front windows='$wins' (screenshot: hotkey-saf.png)"
+    rec FAIL hotkey "hotkey did not toggle the launcher window (windows $w0 -> $w1 -> $w2; see window-state.txt, hotkey-saf.png)"
   fi
   [ -s "$ART/hotkey-saf.png" ] && rec PASS screenshot "hotkey-saf.png $(stat -f %z "$ART/hotkey-saf.png") bytes (artifact only; may show only the wallpaper without the Screen Recording grant)" || rec SKIP screenshot "screencapture produced no file: $(tail -1 "$ART/hotkey.txt")"
 fi

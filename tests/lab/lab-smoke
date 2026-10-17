@@ -17,6 +17,6 @@ done
 [ -n "$out" ] || out="$LAB_REPO_ROOT/lab-out/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
 rc=0
-"$LAB_DIR/lab-with-vm" --artifacts "$out" -- bash tests/lab/smoke.sh "${smoke_args[@]+"${smoke_args[@]}"}" || rc=$?
+"$LAB_DIR/lab-with-vm" --artifacts "$out" ${LAB_AUTO_TCC:+--env "LAB_AUTO_TCC=$LAB_AUTO_TCC"} -- bash tests/lab/smoke.sh "${smoke_args[@]+"${smoke_args[@]}"}" || rc=$?
 lab_log "artifacts in $out (screenshots: view, then delete; never commit)"
 exit "$rc"

@@ -92,6 +92,21 @@ ls_out=$(cat "$tmp/art/ls.txt" 2>/dev/null)
 echo "$ls_out" | grep -q '^keep$' && ok "worktree files synced" || bad "keep/ not synced: $ls_out"
 echo "$ls_out" | grep -Eq '^(target|\.worktrees|\.git|ignored\.log)$' && bad "excluded paths were synced: $ls_out" || ok "target/, .worktrees/, .git and .gitignore'd files are not synced"
 
+# --no-sync on a VM that never had a sync: the work dir must still exist (it used to fail with "cd: no such file or directory").
+# shellcheck disable=SC2016  # expanded in the (fake) guest
+"$lab/lab-with-vm" --src "$tmp/src" --no-sync -- sh -c 'pwd >"$HOME/nosync.pwd"' >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && [ -s "$FAKE_GUEST_HOME/nosync.pwd" ] && ok "--no-sync on a fresh VM still runs (work dir is created)" || bad "--no-sync on a fresh VM: rc=$rc"
+
+echo "== guest scripts"
+for f in tcc-grant.sh check-golden.sh tcc-probe.sh provision.sh; do check "guest/$f parses" bash -n "$lab/guest/$f"; done
+check "smoke.sh parses" bash -n "$lab/smoke.sh"
+# check-golden must treat a timed-out System Events call as NOT granted (it used to report "look granted")
+fake_guest="$tmp/fakeguest"; mkdir -p "$fake_guest/bin"
+cp "$lab/guest/check-golden.sh" "$fake_guest/check-golden.sh"
+printf '#!/bin/sh\necho "gui-exec: timed out after 30s" >&2; exit 124\n' >"$fake_guest/gui-exec"; chmod +x "$fake_guest/gui-exec"
+out=$(PATH="$fake_guest/bin:$PATH" bash "$fake_guest/check-golden.sh" 2>&1 | grep -F "=> TCC")
+echo "$out" | grep -q "NOT GRANTED" && ok "a timed-out System Events call is reported as NOT GRANTED" || bad "check-golden verdict: $out"
+
 echo "== idempotence and naming"
 "$lab/lab-down" ashdash-run-doesnotexist >/dev/null 2>&1 && ok "lab-down of a missing VM succeeds" || bad "lab-down not idempotent"
 "$lab/lab-down" ashdash-golden >/dev/null 2>&1 && bad "lab-down accepted the golden image" || ok "lab-down refuses non-run names"
@@ -122,6 +137,19 @@ t=()
 for n in 1 2 3; do t+=("$(head -1 "$tmp/conc$n.out" 2>/dev/null)"); done
 if [ -n "${t[2]}" ] && [ "${t[2]}" -ge "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then ok "third job started only after a slot freed (${t[*]})"; else bad "third job did not queue: ${t[*]}"; fi
 [ "$(run_vms)" = 0 ] && ok "all VMs cleaned up" || bad "VMs left over"
+
+echo "== base image lookup (OCI images are not 'local')"
+base_dir="$TART_HOME/oci/ghcr.io%cirruslabs%macos-sequoia-base:latest"
+export LAB_BASE_IMAGE=ghcr.io/cirruslabs/macos-sequoia-base:latest
+out=$("$lab/golden-setup.sh" create 2>&1); rc=$?
+[ $rc != 0 ] && echo "$out" | grep -q "is not pulled yet" && ok "create refuses when the base image is not pulled" || bad "create without base: rc=$rc"
+mkdir -p "$base_dir"
+out=$(bash -c ". '$lab/lib.sh'; lab_image_exists '$LAB_BASE_IMAGE' && ! lab_vm_exists '$LAB_BASE_IMAGE' && echo both" 2>&1)
+[ "$out" = both ] && ok "a pulled OCI image counts for lab_image_exists but is not a local VM" || bad "image lookup: $out"
+# create must get past the pulled-check (it then refuses because ashdash-golden exists and no --force)
+out=$("$lab/golden-setup.sh" create 2>&1); rc=$?
+[ $rc != 0 ] && echo "$out" | grep -q "use --force" && ok "create finds the pulled base image" || bad "create with pulled base: rc=$rc out=$out"
+rm -rf "$base_dir"
 
 echo
 if [ "$fails" = 0 ]; then echo "lab tests: OK"; else echo "lab tests: $fails FAILED"; exit 1; fi
