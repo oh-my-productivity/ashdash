@@ -697,4 +697,4 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   object from many places (147 bytes, 10 references per level, 8 levels = 10^8 values at depth 9, never returned). The counter is per call (thread-local, reset on entry). Test:
   `shared_references_cannot_make_the_parse_do_exponential_work` (the 147-byte plist is built in the test; returns an error in well under a second; a 5 s watchdog fails the test instead of hanging it),
   `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); the reference launcher's bundled templates are loaded by
-  `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time: a 4-16 MiB file that stays under it parses in well under a second.
+  `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
