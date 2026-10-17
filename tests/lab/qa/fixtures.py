@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Seed a throw-away Ashdash data folder for the lab QA run. usage: fixtures.py <HOME> <work dir>
 Everything is synthetic. Creates workflows (folders under <HOME>/Library/Application Support/ashdash/workflows):
-  qa.rerun   keyword `rr`  Script Filter rotating three rows (stable uids) every second (rerun 1); Return writes the row's arg to <work>/picked.txt
+  qa.rerun   keyword `rr`  Script Filter with rerun 1: rows A,B,C for its first two runs, then C,A,B (stable uids; counter file <work>/rr-count); Return writes the row's arg to <work>/picked.txt
   qa.slow    keyword `sl`  Script Filter that sleeps 3 s (runningsubtext "Slow..."), three rows; Return writes the arg to <work>/picked.txt
   qa.garbage keyword `gb`  prints garbage; qa.hang keyword `hg` sleeps 30 s
   qa.pick    keyword `pk`  twelve static rows Pick 01..12 (arg P01..P12); Return writes the arg to <work>/picked.txt
   qa.mods    keyword `md`  one row with cmd/alt/shift variants (subtitle + arg)
+  qa.copy    keywords `cp` (transient Copy to Clipboard), `cq` (plain copy), `nt` (notification)
   qa.trigger external trigger `go` -> Write File <work>/trigger.txt (arg); qa.url external trigger `u` -> Open URL (consent dialog)
 plus three snippets and one file tree under <work>/files.
 """
@@ -38,8 +39,10 @@ def run(uid, script):
 
 
 pick = f'printf "%s" "$1" > "{picked}"'
-rr = ('n=$(( $(date +%s) % 3 )); a=(A B C); out=""; for i in 0 1 2; do k=${a[$(( (i+n) % 3 ))]}; '
-      'out="$out{\\"uid\\":\\"row$k\\",\\"title\\":\\"Row $k\\",\\"subtitle\\":\\"pos $i\\",\\"arg\\":\\"$k\\"},"; done; '
+cnt = os.path.join(work, "rr-count")
+rr = (f'n=$(cat "{cnt}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{cnt}"; '
+      'if [ $n -lt 3 ]; then o="A B C"; else o="C A B"; fi; out=""; i=0; for k in $o; do '
+      'out="$out{\\"uid\\":\\"row$k\\",\\"title\\":\\"Row $k\\",\\"subtitle\\":\\"pos $i run $n\\",\\"arg\\":\\"$k\\"},"; i=$((i+1)); done; '
       'echo "{\\"rerun\\":1,\\"items\\":[${out%,}]}"')
 wf("qa.rerun", "QA rerun", "qa.rerun", [sf("S", "rr", rr), run("R", pick)], {"S": [{"destinationuid": "R", "modifiers": 0}]})
 slow = ('sleep 3; echo \'{"items":[{"uid":"s1","title":"Slow one","arg":"s1"},{"uid":"s2","title":"Slow two","arg":"s2"},'
@@ -61,6 +64,17 @@ wf("qa.url", "QA url", "qa.url",
    [{"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "u"}},
     {"uid": "U", "type": "alfred.workflow.action.openurl", "config": {"url": "https://example.invalid/{query}"}}],
    {"T": [{"destinationuid": "U", "modifiers": 0}]})
+
+def kw(uid, word, title):
+    return {"uid": uid, "type": "alfred.workflow.input.keyword",
+            "config": {"keyword": word, "withspace": True, "argumenttype": 1, "text": title, "subtext": "QA keyword"}}
+
+
+wf("qa.copy", "QA copy", "qa.copy",
+   [kw("K1", "cp", "Copy transient"), {"uid": "C1", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "TRANSIENT-{query}", "transient": True}},
+    kw("K2", "cq", "Copy plain"), {"uid": "C2", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "PLAINCOPY-{query}", "transient": False}},
+    kw("K3", "nt", "Notify"), {"uid": "N1", "type": "alfred.workflow.output.notification", "config": {"title": "QA", "text": "hello {query}"}}],
+   {"K1": [{"destinationuid": "C1", "modifiers": 0}], "K2": [{"destinationuid": "C2", "modifiers": 0}], "K3": [{"destinationuid": "N1", "modifiers": 0}]})
 
 # files for path browsing, file actions and the trash test
 files = os.path.join(work, "files")

@@ -32,49 +32,61 @@ type_text() { se "keystroke \"$1\""; }
 hotkey() { key_code 49 "option down, shift down"; }   # Option+Shift+Space (the default)
 KC_RETURN=36 KC_ESC=53 KC_TAB=48 KC_UP=126 KC_DOWN=125 KC_LEFT=123 KC_RIGHT=124 KC_DELETE=51 KC_SPACE=49
 
-# AX dump of every dialog-owning process: "process: window: static texts | buttons"
+# AX dump of every dialog-owning process: "process | window 'name': static texts // [buttons]" (one line per window)
 ax_dialogs() {
-  local p
-  for p in UserNotificationCenter CoreServicesUIAgent SecurityAgent universalAccessAuthWarn "System Settings" "System Preferences"; do
-    wd 15 osascript - "$p" <<'OSA' 2>/dev/null
-on run argv
-  set pn to item 1 of argv
-  tell application "System Events"
-    if not (exists process pn) then return ""
-    tell process pn
-      if (count of windows) is 0 then return ""
-      set out to ""
-      repeat with w in windows
-        set out to out & pn & " | window '" & (name of w as text) & "': "
-        set els to entire contents of w
-        repeat with e in els
-          set c to ""
-          try
-            set c to (class of e) as text
-          end try
-          if c is "static text" then
+  wd 40 osascript - <<'OSA' 2>/dev/null | grep -v '^$'
+set owners to {"UserNotificationCenter", "CoreServicesUIAgent", "SecurityAgent", "universalAccessAuthWarn", "System Settings", "System Preferences", "osascript"}
+tell application "System Events"
+  set out to ""
+  repeat with proc in (every process)
+    try
+      if (name of proc) is in owners and (count of windows of proc) > 0 then
+        repeat with w in windows of proc
+          set out to out & (name of proc as text) & " | window '" & (name of w as text) & "': "
+          set els to entire contents of w
+          repeat with e in els
+            set c to ""
             try
-              set out to out & (value of e as text) & " // "
+              set c to (class of e) as text
             end try
-          else if c is "button" then
-            try
-              set t to (name of e as text)
-              if t is not "missing value" then set out to out & "[" & t & "] "
-            end try
-          end if
+            if c is "static text" then
+              try
+                set out to out & (value of e as text) & " // "
+              end try
+            else if c is "button" then
+              try
+                set t to (name of e as text)
+                if t is not "missing value" then set out to out & "[" & t & "] "
+              end try
+            end if
+          end repeat
+          set out to out & linefeed
         end repeat
-        set out to out & linefeed
-      end repeat
-      return out
-    end tell
-  end tell
-end run
+      end if
+    end try
+  end repeat
+  return out
+end tell
 OSA
-  done | grep -v '^$'
 }
 
 # click_button <process> <button name>
-click_button() { wd 20 osascript -e "tell application \"System Events\" to tell process \"$1\" to click button \"$2\" of window 1" >/dev/null; }
+click_button() { # click_button <process> <button>: the first window of any process with that name that has the button
+  wd 30 osascript - "$1" "$2" >/dev/null <<'OSA'
+on run argv
+  tell application "System Events"
+    repeat with proc in (every process whose name is (item 1 of argv))
+      repeat with w in windows of proc
+        try
+          click button (item 2 of argv) of w
+          return "clicked"
+        end try
+      end repeat
+    end repeat
+  end tell
+end run
+OSA
+}
 
 # Windows of a process (owner name): "id layer order x y w h owner"; tool compiled on first use from scripts/qa/windows.swift
 win_tool() {

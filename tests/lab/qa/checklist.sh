@@ -358,6 +358,126 @@ s35() {
   result 3.5.11 NEEDS-OWNER "a real password manager: in 1Password/Bitwarden use 'copy password' (they set org.nspasteboard.ConcealedType), then open 'clip' and run: grep -c <part of the password> ~/Library/Application\\ Support/ashdash/clipboard.json  (expected 0, and no row). The pasteboard marker handling itself is verified above with the same type names"
 }
 
+# ------------------------------------------------------------------------------------------------------------------------ 3.6 workflows
+mkpkg() { # mkpkg <out.alfredworkflow> <bundle> <keyword> [extra zip entry name]
+  python3 - "$@" <<'PY'
+import plistlib, sys, zipfile
+out, bundle, kw = sys.argv[1:4]
+extra = sys.argv[4] if len(sys.argv) > 4 else None
+pkg = {"name": "Pkg " + bundle, "bundleid": bundle, "createdby": "QA", "description": "synthetic",
+       "objects": [{"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": kw, "withspace": True, "argumenttype": 1, "text": "PkgRow " + bundle, "subtext": "s"}},
+                   {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "pkg-{query}"}}],
+       "connections": {"K": [{"destinationuid": "C", "modifiers": 0}]}}
+with zipfile.ZipFile(out, "w") as z:
+    z.writestr("info.plist", plistlib.dumps(pkg))
+    if extra:
+        z.writestr(extra, "evil")
+PY
+}
+s36() {
+  start_app; hide_; local o rc t0 t1
+  mkpkg "$WORK/good.alfredworkflow" qa.pkg.good pg
+  o=$(cli import "$WORK/good.alfredworkflow" </dev/null 2>&1); rc=$?
+  [ $rc != 0 ] && has "$o" 'yes|terminal|refus' && [ ! -d "$DATA/workflows/qa.pkg.good" ] && result 3.6.1a PASS "import with stdin not a terminal and no --yes refuses (rc $rc): $(echo "$o" | tail -2 | tr '\n' ' ')" || result 3.6.1a FAIL "rc=$rc out=$o"
+  o=$(cli import --yes "$WORK/good.alfredworkflow" 2>&1); rc=$?
+  sleep 2; o2=$(ask 'pg x' 1.2)
+  [ $rc = 0 ] && has "$o2" 'PkgRow' && result 3.6.1b PASS "ashdash import --yes installs (summary printed: $(echo "$o" | head -3 | tr '\n' ' ')); the keyword works within 2 s without a reload (OCR: $o2)" || result 3.6.1b FAIL "rc=$rc import: $o | after: $o2"
+  mkpkg "$WORK/evil.alfredworkflow" qa.pkg.evil pe "../../../../../../tmp/qa-evil-escape.txt"
+  rm -f /tmp/qa-evil-escape.txt; o=$(cli import --yes "$WORK/evil.alfredworkflow" 2>&1); rc=$?
+  [ ! -e /tmp/qa-evil-escape.txt ] && [ ! -e "$HOME/tmp/qa-evil-escape.txt" ] && ! find "$QAH" -name 'qa-evil-escape*' | grep -q . && result 3.6.2 PASS "a package with a '../' entry: rc=$rc ($(echo "$o" | tail -1 | cut -c1-150)); nothing written outside workflows/" || result 3.6.2 FAIL "escape file exists, rc=$rc"
+  t0=$(now_ms); o=$(ask 'gb x' 1.5); has "$o" 'rror|invalid|could not|not valid|Script' && result 3.6.3a PASS "a Script Filter that prints garbage shows an error row, not a crash (OCR: $o)" || result 3.6.3a FAIL "no error row: $o"
+  show; clear_field; type_text "hg x"; t0=$(now_ms); local gave=""; for i in $(seq 1 30); do sleep 1; o=$(look hang); if has "$o" 'rror|timed out|too long|killed|did not'; then gave=$(( $(now_ms) - t0 )); break; fi; done
+  [ -n "$gave" ] && [ "$gave" -lt 16000 ] && result 3.6.3b PASS "a Script Filter that sleeps 30 s gives up after ~$((gave / 1000)) s with an error row (OCR: $o)" || result 3.6.3b FAIL "no timeout error within 30 s: $o"
+  # disabling a workflow removes its keywords (the `disabled` flag in info.plist is what Preferences writes)
+  python3 - "$DATA/workflows/qa.pick/info.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; d = plistlib.load(open(p, "rb")); d["disabled"] = True; plistlib.dump(d, open(p, "wb"))
+PY
+  sleep 3; o=$(ask 'pk ' 1.2); ! has "$o" 'Pick 01' && result 3.6.4a PASS "disabled workflow (info.plist disabled=true): its keyword stops listing rows within 3 s" || result 3.6.4a FAIL "still listed: $o"
+  python3 - "$DATA/workflows/qa.pick/info.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; d = plistlib.load(open(p, "rb")); d.pop("disabled", None); plistlib.dump(d, open(p, "wb"))
+PY
+  sleep 3
+  rm -f "$WORK/trigger.txt"; o=$(cli trigger qa.trigger go hello-trigger 2>&1); sleep 1
+  [ "$(cat "$WORK/trigger.txt" 2>/dev/null)" = hello-trigger ] && result 3.6.4b PASS "ashdash trigger qa.trigger go <arg> runs the external trigger (file content: $(cat "$WORK/trigger.txt"))" || result 3.6.4b FAIL "trigger did not run: $o"
+  # workflow_dirs live edit
+  mkdir -p "$WORK/extra"; cp -R "$DATA/workflows/qa.mods" "$WORK/extra/qa.extra"
+  python3 - "$WORK/extra/qa.extra/info.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; d = plistlib.load(open(p, "rb")); d["bundleid"] = "qa.extra"; d["objects"][0]["config"]["keyword"] = "ex"; plistlib.dump(d, open(p, "wb"))
+PY
+  cli config set workflow_dirs "[\"$WORK/extra\"]" >/dev/null 2>&1; sleep 3; o=$(ask 'ex x' 1.2)
+  has "$o" 'Mods row' && result 3.6.5a PASS "workflow_dirs edited in config.json: the new folder's keyword works within 3 s, no prompt (by design; SECURITY.md section 3) (OCR: $o)" || result 3.6.5a FAIL "$o"
+  cli config set workflow_dirs '[]' >/dev/null 2>&1; sleep 3; o=$(ask 'ex x' 1.2)
+  ! has "$o" 'Mods row' && result 3.6.5b PASS "removing the entry removes the keyword within 3 s" || result 3.6.5b FAIL "still listed: $o"
+  # import prompt through Finder (Open With / double click): the osascript dialog
+  mkpkg "$WORK/finder.alfredworkflow" qa.pkg.finder pf
+  wd 20 open -a "$APP" "$WORK/finder.alfredworkflow" >/dev/null 2>&1; sleep 4
+  o=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: $' | head -3)
+  if [ -n "$o" ]; then result 3.6.6a PASS "opening a .alfredworkflow with Ashdash (Finder route) raises the import dialog: $(echo "$o" | cut -c1-300)"; for b in Cancel "Don’t Install" "Don’t Allow"; do click_button ashdash "$b" 2>/dev/null; click_button Ashdash "$b" 2>/dev/null; done
+  else result 3.6.6a FAIL "no import dialog after 'open -a Ashdash.app file.alfredworkflow' (workflows now: $(cli workflows 2>&1 | tr '\n' ' ' | cut -c1-200))"; fi
+  [ ! -d "$DATA/workflows/qa.pkg.finder" ] && result 3.6.6b PASS "nothing was installed without confirming" || result 3.6.6b FAIL "installed without confirmation"
+  result 3.6.7 BLOCKED "on-screen drive not written for: trust-summary wording per object type, Write-File-only package, 600 ms Return guard in the launcher prompt, re-import 'Replace workflow', package swapped under the prompt, RTL-override / 10,000-character names. The launcher prompt (Right Arrow > Install Workflow, early Return ignored, Esc leaves nothing, fresh Return installs) was driven by scripts/qa/ui-glue-smoke.sh in this VM, see rows 3.9.*. The rest is covered by cargo tests import_staging / import_security / trust"
+}
+
+# ------------------------------------------------------------------------------------------------------------------------ Wave 4/5 behaviours
+w45() {
+  start_app; hide_; local o i
+  # the highlighted result keeps following its id when a rerun reorders the list: runs 1-2 give A,B,C, run 3 on gives C,A,B (a counter file)
+  local okc=0 detail="" p
+  for i in 1 2 3; do
+    hide_; rm -f "$WORK/rr-count"; clear_picked
+    show; clear_field; type_text "rr "; sleep 0.45; key_code $KC_DOWN       # highlight row 2 = B while the order is still A,B,C
+    sleep 4.5; local seen; seen=$(look rr-after | tr '|' '\n' | grep -E '^Row [ABC]' | tr '\n' ' ')
+    key_code $KC_RETURN; p=$(await_picked); detail="$detail [trial $i: moved to B, list later '$seen' -> Return ran '$p']"
+    [ "$p" = B ] && okc=$((okc+1))
+  done
+  [ $okc = 3 ] && result W5.1 PASS "Script Filter rerun re-orders the list under the cursor (A,B,C -> C,A,B): the row moved to stays highlighted by id and Return runs it, 3 of 3 trials:$detail" || result W5.1 FAIL "selection followed the id in $okc of 3 trials:$detail"
+  # slow filter: pending row, then the final list
+  hide_; sleep 0.8; show; clear_field; type_text "sl x"; sleep 1.0; local p1; p1=$(look slow-pending)
+  sleep 3.2; local p2; p2=$(look slow-final)
+  has "$p1" 'Slow' && has "$p2" 'Slow one' && result W5.2a PASS "slow Script Filter: a running row ('Slow…') first (OCR: $p1), the three rows after 3 s (OCR: $p2)" || result W5.2a FAIL "pending: $p1 / final: $p2"
+  clear_picked; key_code $KC_DOWN; key_code $KC_RETURN; p=$(await_picked)
+  [ "$p" = s2 ] && result W5.2b PASS "after the slow answer arrived, Down + Return runs the 2nd row that is on screen (picked=$p)" || result W5.2b FAIL "picked '$p', expected s2"
+  result W5.2c BLOCKED "'Return in the very frame in which a new list replaces the old one' needs sub-frame timing that a script cannot provoke; the logic is unit-tested (gui/schedule.rs: return_*, cmd_number_*, several_replacements_*), the id-tracking half is shown by W5.1/W5.2b"
+  # crash note
+  stop_app; mkdir -p "$DATA/crashes"; rm -f "$DATA"/crashes/*
+  printf 'ashdash crash report (synthetic QA fixture)\nversion: test\n' >"$DATA/crashes/crash-20261017T120102.345Z.txt"
+  start_app; show; sleep 1; o=$(look crash-note-1)
+  hide_; show; sleep 1; local o2; o2=$(look crash-note-2)
+  has "$o" 'quit unexpectedly' && ! has "$o2" 'quit unexpectedly' && result W5.3a PASS "a report newer than crashes/last-seen: the footer says 'Ashdash quit unexpectedly · report in crashes/' on the first show (OCR: $o), not on the second ($o2)" || result W5.3a FAIL "first show: $o / second show: $o2"
+  o=$(cli paths 2>&1 | grep -i crash | tr '\n' ' ')
+  has "$o" 'crash-20261017T120102' && result W5.3b PASS "ashdash paths names the report: $o" || result W5.3b FAIL "ashdash paths: $o"
+  # ashdash://search fills the field and runs nothing
+  hide_; open "ashdash://search?query=rr%20x"; sleep 2; o=$(look url-search)
+  has "$o" 'Text from a link' && ! has "$o" 'Row [ABC]' && result W5.4a PASS "ashdash://search?query=rr%20x fills the field and says 'Text from a link: edit it to search'; no Script Filter ran (no 'Row A/B/C' rows) (OCR: $o)" || result W5.4a FAIL "OCR: $o"
+  hide_
+  # URL consent dialogs: one per bundle at a time, a timeout stores nothing, an answer is remembered
+  rm -f "$DATA/url-trust.json"
+  open "ashdash://trigger?bundle=qa.trigger&name=go&arg=consent-1"; sleep 1; open "ashdash://trigger?bundle=qa.trigger&name=go&arg=consent-2"; sleep 3
+  o=$(ax_dialogs | grep 'wants to run the workflow'); local nd; nd=$(echo "$o" | grep -c 'qa.trigger')
+  [ "$nd" = 1 ] && result W5.4b PASS "first ashdash://trigger for a bundle: consent dialog 'A link or app wants to run the workflow \"QA trigger\" (qa.trigger) in Ashdash', default Don't Allow; two URLs in a row for the same bundle raise ONE dialog (dialogs for qa.trigger: $nd)" || result W5.4b FAIL "dialogs for qa.trigger: $nd ($o)"
+  sleep 66
+  o=$(ax_dialogs | grep -c 'wants to run the workflow'); local stored; stored=$(cat "$DATA/url-trust.json" 2>/dev/null)
+  [ "$o" = 0 ] && ! has "$stored" 'qa.trigger' && [ ! -s "$WORK/trigger.txt" -o "$(cat "$WORK/trigger.txt" 2>/dev/null)" != consent-1 ] && result W5.4c PASS "left alone for 60 s the dialog times out: nothing runs and nothing is stored (url-trust.json: '${stored:-absent}')" || result W5.4c FAIL "after the timeout: dialogs=$o stored='$stored' trigger.txt='$(cat "$WORK/trigger.txt" 2>/dev/null)'"
+  rm -f "$WORK/trigger.txt"; open "ashdash://trigger?bundle=qa.trigger&name=go&arg=consent-3"; sleep 3
+  ax_dialogs | grep -q 'wants to run the workflow' && result W5.4d PASS "after the timeout the next URL asks again" || result W5.4d FAIL "no second dialog"
+  click_button osascript "Allow"; sleep 2
+  [ "$(cat "$WORK/trigger.txt" 2>/dev/null)" = consent-3 ] && result W5.4e PASS "Allow runs the trigger (trigger.txt = $(cat "$WORK/trigger.txt")); url-trust.json now: $(tr -d '\n ' <"$DATA/url-trust.json" | cut -c1-120)" || result W5.4e FAIL "trigger.txt='$(cat "$WORK/trigger.txt" 2>/dev/null)'"
+  rm -f "$WORK/trigger.txt"; open "ashdash://trigger?bundle=qa.trigger&name=go&arg=consent-4"; sleep 3
+  ! ax_dialogs | grep -q 'wants to run the workflow' && [ "$(cat "$WORK/trigger.txt" 2>/dev/null)" = consent-4 ] && result W5.4f PASS "the answer is remembered: the next URL runs without asking" || result W5.4f FAIL "asked again or did not run"
+  open "ashdash://trigger?bundle=qa.url&name=u&arg=x"; sleep 3; click_button osascript "Don't Allow"; sleep 2
+  open "ashdash://trigger?bundle=qa.url&name=u&arg=y"; sleep 3
+  ! ax_dialogs | grep -q 'wants to run the workflow' && has "$(cat "$DATA/url-trust.json")" 'qa.url' && result W5.4g PASS "Don't Allow is remembered too (url-trust.json: $(tr -d '\n ' <"$DATA/url-trust.json" | cut -c1-120)); no further dialog" || result W5.4g FAIL "after Don't Allow: $(cat "$DATA/url-trust.json")"
+  # a transient workflow copy and a plain one
+  hide_; copy "SENTINEL-BEFORE"
+  ask 'cp zz' 1.2 >/dev/null; key_code $KC_RETURN; sleep 2; local pb; pb=$(pbpaste)
+  ask 'cq yy' 1.2 >/dev/null; key_code $KC_RETURN; sleep 2; local pb2; pb2=$(pbpaste)
+  o=$(ask 'clip' 1.5)
+  [ "$pb" = TRANSIENT-zz ] && [ "$pb2" = PLAINCOPY-yy ] && ! has "$o" 'TRANSIENT-zz' && has "$o" 'PLAINCOPY-yy' && result W5.5 PASS "workflow Copy to Clipboard: the transient one reaches the pasteboard ('$pb') but not clip history; the plain one does ('$pb2' listed) (OCR: $o)" || result W5.5 FAIL "pb='$pb' pb2='$pb2' ocr: $o"
+}
+
 main() {
   local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s38 s39 s311 w45)
   local s; for s in "${secs[@]}"; do case "$s" in setup) s=s_setup ;; esac; echo "== $s"; "$s"; done
