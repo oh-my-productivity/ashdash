@@ -703,3 +703,12 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   `set` moves the damaged file aside to `url-trust.json.bad` (`.bad.1`, `.bad.2`... if a copy is already there, so an earlier one is never replaced) before writing the in-memory map plus the new entry.
   A file that does not exist is still an empty map (deleting it forgets everything, as documented). Tests: `a_half_saved_consent_file_keeps_the_remembered_decisions_and_is_not_overwritten`,
   `a_consent_file_that_is_damaged_at_start_is_kept_until_the_first_answer`. Residual: an edit that keeps both modification time and length is not noticed; the warning is on stderr only (no on-screen message).
+- **SEC-R5-04 (item 4)** One rule for "is this a path" in the classifier (`trust.rs`) and the executor (`exec.rs`). A target that begins with `scheme:` before any `/` (`target_scheme`: letters, digits, `+ . -`, first
+  character a letter; `https://x`, `mailto:a@b.c`, `tel:1`) is a URL: `open_target` returns it unchanged (also when it arrives as the incoming argument of an empty file field) and the summary lists its scheme
+  under URL schemes instead of calling it a file shipped with the workflow. An application field is a path (`app_is_path(app, dir)`) when it contains a `/`, or ends in `.app` *and* that bundle exists in the
+  workflow folder (`symlink_metadata`); otherwise (`Safari.app`, `Safari`, `com.google.Chrome`) it is a name passed to `open -a` as written. A relative path (`Documents/y`, `payload.app` when shipped) is
+  still resolved against the workflow folder. This amends SEC-R4-01 (which called any `*.app` a path). The one disk look in the summary is that `symlink_metadata` on a bare `*.app` field.
+  Tests: `urls_given_to_open_file_are_urls_not_files_shipped_with_the_workflow`, `a_bare_app_name_ending_in_dot_app_is_a_name_unless_the_bundle_is_in_the_package` (trust.rs),
+  `urls_and_app_names_are_passed_to_open_unchanged` (exec.rs). Not run: a real `open -a` with these forms. Residual: a literal that contains a colon before its first slash (`notes:2024/x`) is taken for a URL.
+- **SEC-R5-05 (item 5)** `note_app` expands `~` and normalises `..` lexically before the "is it under the workflow folder" test, so `~/Library/Application Support/ashdash/workflows/<own folder>/payload.app` is
+  called shipped, and `<own folder>/../<other>/payload.app` is not. Test: `a_tilde_path_into_the_workflows_own_folder_is_shipped`.
