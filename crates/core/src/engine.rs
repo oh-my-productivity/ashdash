@@ -1236,19 +1236,21 @@ mod tests {
         let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
         assert!(!on_disk.contains("horse") && !on_disk.contains("act:"), "{on_disk}");
         // ...while an ordinary result is still learned
-        let open = Item::new("file:/tmp/x", "x").action(Action::Open(PathBuf::from("/tmp/x")));
-        let _ = e.execute(&open, "x", Mods::NONE, true);
-        assert!(e.paths.usage_file().exists() || e.usage.lock().unwrap().boost("x", "file:/tmp/x") > 0.0);
+        // (an item with no side effect: `Action::Open` would start the real `open` on the
+        // host, and only succeeds, and so is only learned, when the file exists)
+        let ordinary = Item::new("file:ordinary", "x");
+        assert_eq!(e.execute(&ordinary, "x", Mods::NONE, true), Outcome::Done);
+        assert!(e.usage.lock().unwrap().boost("x", "file:ordinary") > 0.0);
         // a Cmd variant that is Universal is not recorded either
-        let mut it = Item::new("file:/tmp/y", "y").action(Action::Open(PathBuf::from("/tmp/y")));
+        let mut it = Item::new("file:y", "y");
         it.cmd_action = Some(Action::Universal(actions::UniversalAction::LargeType("zzz".into())));
         let cmd = Mods {
             cmd: true,
             ..Mods::NONE
         };
-        let before = e.usage.lock().unwrap().boost("y", "file:/tmp/y");
+        let before = e.usage.lock().unwrap().boost("y", "file:y");
         let _ = e.execute(&it, "y", cmd, true);
-        assert_eq!(e.usage.lock().unwrap().boost("y", "file:/tmp/y"), before);
+        assert_eq!(e.usage.lock().unwrap().boost("y", "file:y"), before);
         let _ = std::fs::remove_dir_all(root);
     }
 
