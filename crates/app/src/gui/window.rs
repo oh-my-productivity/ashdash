@@ -94,6 +94,7 @@ impl LauncherApp {
         self.visible = true;
         self.frames_since_show = 0;
         self.focus_seen = None;
+        self.focus_watch.reset();
         self.shown_at = Instant::now();
         self.want_focus = true;
         self.query.clear();
