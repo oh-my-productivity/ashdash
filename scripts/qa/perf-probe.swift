@@ -10,7 +10,8 @@
 //       same, until no such window is on screen.
 //   perf-probe hotkey <keycode> <flags-csv> <owner> <min-width> <timeout-ms>
 //       post the key chord (flags: alt,shift,ctrl,cmd), then like "visible"; prints
-//       "post <t0>" and "visible <t1>" and "latency_ms <t1-t0>".
+//       "post <t0>", "posted_ms" (how long the post calls themselves took in this process: part of
+//       latency_ms, not of the app; building the events is done before t0) and "visible <t1>" and "latency_ms <t1-t0>".
 //   perf-probe key <keycode>            post one key down+up (53 = Esc)
 //   perf-probe type <text>              post the characters as unicode key events
 //   perf-probe bounds <owner>           print "x y w h layer" of every on-screen window of <owner>
@@ -26,7 +27,10 @@ func launcherOnScreen(owner: String, minWidth: Double) -> Bool {
     for w in list {
         guard (w[kCGWindowOwnerName as String] as? String) == owner else { continue }
         let b = w[kCGWindowBounds as String] as? [String: Double] ?? [:]
-        if (b["Width"] ?? 0) >= minWidth { return true }
+        // alpha: the launcher may order its window front fully transparent for a frame before it draws (gui/mac.rs
+        // wake_hidden_launcher); that is not "visible" to a user.
+        let alpha = (w[kCGWindowAlpha as String] as? Double) ?? 1
+        if (b["Width"] ?? 0) >= minWidth && alpha >= 0.99 { return true }
     }
     return false
 }
@@ -54,12 +58,19 @@ func flagsFrom(_ csv: String) -> CGEventFlags {
     return f
 }
 
-func post(key: CGKeyCode, flags: CGEventFlags) {
-    for down in [true, false] {
-        let e = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: key, keyDown: down)
+/// Build the key-down/key-up pair. Done before the clock starts: creating the events (and the event source) costs
+/// tens of ms in a fresh process and is not part of what the app does with the key.
+func makeChord(key: CGKeyCode, flags: CGEventFlags) -> [CGEvent] {
+    let src = CGEventSource(stateID: .hidSystemState)
+    return [true, false].compactMap { down in
+        let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down)
         e?.flags = flags
-        e?.post(tap: .cghidEventTap)
+        return e
     }
+}
+
+func post(key: CGKeyCode, flags: CGEventFlags) {
+    for e in makeChord(key: key, flags: flags) { e.post(tap: .cghidEventTap) }
 }
 
 let a = CommandLine.arguments
@@ -74,9 +85,12 @@ case "visible", "hidden":
     } else { print("timeout"); exit(1) }
 case "hotkey":
     guard a.count >= 7, let k = UInt16(a[2]), let w = Double(a[5]), let t = Double(a[6]) else { exit(2) }
+    let chord = makeChord(key: k, flags: flagsFrom(a[3]))
     let t0 = now()
-    post(key: k, flags: flagsFrom(a[3]))
+    for e in chord { e.post(tap: .cghidEventTap) }
+    let tPosted = now()
     print("post", String(format: "%.4f", t0))
+    print("posted_ms", String(format: "%.1f", (tPosted - t0) * 1000))
     if let t1 = poll(owner: a[4], minWidth: w, timeoutMs: t, wantVisible: true) {
         print("visible", String(format: "%.4f", t1))
         print("latency_ms", String(format: "%.1f", (t1 - t0) * 1000))

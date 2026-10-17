@@ -1,6 +1,8 @@
 //! AppKit glue (objc2). Everything here must run on the main thread; each
 //! function returns quietly when called from another thread.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
@@ -35,6 +37,94 @@ pub fn set_launcher_raised(title: &str, raised: bool) {
 pub fn hide_app() {
     if let Some(mtm) = MainThreadMarker::new() {
         NSApplication::sharedApplication(mtm).hide(None);
+    }
+}
+
+/// True while the launcher window has been woken natively (alpha 0) and has not been revealed yet.
+static CLOAKED: AtomicBool = AtomicBool::new(false);
+
+/// Make a hidden launcher window count as "visible" to winit/eframe *right now*, without showing anything,
+/// then run `then` (the repaint request) on the main thread.
+///
+/// Why: eframe throttles every repaint request of an invisible window to one per 100 ms
+/// (`INVISIBLE_WINDOW_REPAINT_INTERVAL`, eframe 0.36.2 `native/run.rs`), so a hotkey or `ashdash show`
+/// that only calls `Context::request_repaint` is seen by the app up to 100 ms late. A window that AppKit
+/// reports as visible is repainted at once. So the hotkey / IPC handler orders the window front fully
+/// transparent (alpha 0); the normal `show()` then runs on the next frame, and [`reveal`] makes it opaque
+/// after the first frame with the fresh content has been drawn (no flash of the previous query).
+/// Safe to call from any thread and when the window is already visible or does not exist (then only `then` runs).
+pub fn wake_hidden_launcher(title: &'static str, then: impl FnOnce() + Send + 'static) {
+    if MainThreadMarker::new().is_some() {
+        wake_on_main(title);
+        then();
+    } else {
+        run_on_main_queue(Box::new(move || {
+            wake_on_main(title);
+            then();
+        }));
+    }
+}
+
+type MainJob = Box<dyn FnOnce() + Send + 'static>;
+
+unsafe extern "C" {
+    // libdispatch is part of libSystem (always linked on macOS); no crate needed for these two symbols.
+    static _dispatch_main_q: std::ffi::c_void;
+    fn dispatch_async_f(
+        queue: *const std::ffi::c_void,
+        context: *mut std::ffi::c_void,
+        work: extern "C" fn(*mut std::ffi::c_void),
+    );
+}
+
+extern "C" fn run_main_job(context: *mut std::ffi::c_void) {
+    // SAFETY: `context` is the `Box<MainJob>` leaked by `run_on_main_queue`; libdispatch calls this exactly once.
+    let job = unsafe { Box::from_raw(context.cast::<MainJob>()) };
+    (*job)();
+}
+
+/// Run `job` asynchronously on the main dispatch queue (the AppKit main thread).
+fn run_on_main_queue(job: MainJob) {
+    let context = Box::into_raw(Box::new(job)).cast::<std::ffi::c_void>();
+    // SAFETY: `_dispatch_main_q` is the main queue object (what `dispatch_get_main_queue()` returns); the
+    // context is released in `run_main_job`.
+    unsafe { dispatch_async_f(std::ptr::addr_of!(_dispatch_main_q), context, run_main_job) };
+}
+
+fn wake_on_main(title: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(window) = find_window(mtm, title) else {
+        return;
+    };
+    if window.isVisible() {
+        return;
+    }
+    CLOAKED.store(true, Ordering::SeqCst);
+    window.setAlphaValue(0.0);
+    let app = NSApplication::sharedApplication(mtm);
+    if app.isHidden() {
+        app.unhideWithoutActivation();
+    }
+    window.orderFrontRegardless();
+}
+
+/// True between [`wake_hidden_launcher`] and [`reveal`].
+pub fn is_cloaked() -> bool {
+    CLOAKED.load(Ordering::SeqCst)
+}
+
+/// Make the launcher window opaque again (no-op unless it was woken by [`wake_hidden_launcher`]).
+pub fn reveal(title: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if !CLOAKED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(window) = find_window(mtm, title) {
+        window.setAlphaValue(1.0);
     }
 }
 

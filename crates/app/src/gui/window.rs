@@ -11,8 +11,13 @@ use eframe::egui::{self, Pos2, Vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
+use std::time::Duration;
+
 use super::statusitem::MenuCmd;
 use super::{LauncherApp, geometry, mac, style, trace};
+
+/// A woken window is made opaque after this long even if no frame was drawn (safety net, never expected).
+const REVEAL_DEADLINE: Duration = Duration::from_millis(300);
 
 /// Register the configured global hotkey. Returns the manager (which must be
 /// kept alive), the toggle channel and the registration error, if any.
@@ -28,11 +33,12 @@ pub(super) fn install_hotkey(
     {
         let ctx = ctx.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |ev: GlobalHotKeyEvent| {
+            trace::trace(|| "hotkey event".into());
             // Workflow hotkeys share this process-wide handler (crate::hotkeys).
             crate::hotkeys::route(&ev);
             if ev.id == super::prefs::hotkey::main_id() && ev.state == HotKeyState::Pressed {
                 let _ = toggle_tx.send(());
-                ctx.request_repaint();
+                wake_then_repaint(&ctx);
             }
         }));
     }
@@ -60,10 +66,33 @@ fn register_hotkey(spec: &str) -> Result<(GlobalHotKeyManager, u32)> {
     Ok((manager, hotkey.id()))
 }
 
+/// Ask the UI loop to run now. Used by whoever asks for the launcher from outside it (hotkey handler,
+/// IPC / URL / AppleScript events): a hidden window is first made "visible but transparent"
+/// ([`mac::wake_hidden_launcher`]) because eframe repaints invisible windows only every 100 ms.
+/// Does nothing special when the window is already up.
+pub(crate) fn wake_then_repaint(ctx: &egui::Context) {
+    let ctx = ctx.clone();
+    mac::wake_hidden_launcher(super::WINDOW_TITLE, move || ctx.request_repaint());
+}
+
 impl LauncherApp {
+    /// Called at the start of every frame: lifts the "woken but transparent" state of the window once the
+    /// first frame with the fresh content has been drawn. If the request turned out to be a hide, the window
+    /// stays transparent and is ordered out by `hide()`; the next `show()` reveals it.
+    pub(super) fn reveal_if_drawn(&mut self) {
+        if mac::is_cloaked()
+            && self.visible
+            && (self.frames_since_show > 0 || self.shown_at.elapsed() > REVEAL_DEADLINE)
+        {
+            trace::trace(|| "reveal".into());
+            mac::reveal(super::WINDOW_TITLE);
+        }
+    }
+
     pub(super) fn show(&mut self, ctx: &egui::Context) {
         trace::trace(|| "show".into());
         self.visible = true;
+        self.frames_since_show = 0;
         self.focus_seen = None;
         self.shown_at = Instant::now();
         self.want_focus = true;

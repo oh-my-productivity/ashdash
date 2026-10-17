@@ -51,10 +51,17 @@ pub struct EventSender {
 
 impl EventSink for EventSender {
     fn emit(&self, event: AppEvent) {
+        // Events that show the launcher also wake a hidden window (a hidden window is otherwise
+        // repainted only every 100 ms; see gui::wake_then_repaint).
+        let shows = matches!(event, AppEvent::Show | AppEvent::Search(_) | AppEvent::Prefill(_));
         // A closed receiver means the window is gone (quitting); nothing to do.
         let _ = self.tx.send(event);
         if let Some(ctx) = self.ctx.get() {
-            ctx.request_repaint();
+            if shows {
+                crate::gui::wake_then_repaint(ctx);
+            } else {
+                ctx.request_repaint();
+            }
         }
     }
 }
