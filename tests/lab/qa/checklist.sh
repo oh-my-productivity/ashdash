@@ -252,9 +252,9 @@ s33() {
   hide_
   # Large Type with text longer than the screen scrolls (numbered words: the first word on screen must change)
   ask 'lt ' 1.5 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
-  local lt0 lt1 lt2; lt0=$(look lt-top | cut -c1-40)
-  key_code 121; key_code 121; sleep 0.6; lt1=$(look lt-pgdn | cut -c1-40)
-  key_code 125; key_code 125; key_code 125; sleep 0.6; lt2=$(look lt-down | cut -c1-40)
+  local lt0 lt1 lt2; lt0=$(look lt-top | tr '|' '\n' | head -1 | cut -c1-40)
+  key_code 121; key_code 121; sleep 0.6; lt1=$(look lt-pgdn | tr '|' '\n' | head -1 | cut -c1-40)
+  key_code 125; key_code 125; key_code 125; sleep 0.6; lt2=$(look lt-down | tr '|' '\n' | head -1 | cut -c1-40)
   [ -n "$lt0" ] && [ "$lt0" != "$lt1" ] && [ "$lt1" != "$lt2" ] && result 3.3.6c PASS "Large Type text taller than the screen scrolls with Page Down and the arrow keys (first words on screen: '$lt0' -> '$lt1' -> '$lt2')" || result 3.3.6c FAIL "Large Type did not scroll: '$lt0' / '$lt1' / '$lt2'"
   key_code $KC_ESC; sleep 0.6; hide_
   # held Return on a confirmation: never confirms by repeating. Real target: Empty Trash with a file in the trash.
