@@ -466,7 +466,7 @@ pub fn set_workflow_enabled(paths: &Paths, dir: &Path, enabled: bool) -> Result<
     if !std::fs::symlink_metadata(&file)?.is_file() {
         bail!("info.plist is not a regular file");
     }
-    let mut doc = plist::Value::from_file(&file).context("reading info.plist")?;
+    let mut doc = crate::workflow::read_info_plist(&dir).context("reading info.plist")?;
     let Some(d) = doc.as_dictionary_mut() else {
         bail!("info.plist is not a dictionary");
     };
@@ -492,7 +492,12 @@ pub fn set_workflow_enabled(paths: &Paths, dir: &Path, enabled: bool) -> Result<
 /// found again if the workflow is reinstalled).
 pub fn remove_workflow(paths: &Paths, dir: &Path) -> Result<()> {
     let dir = owned_workflow_dir(paths, dir)?;
-    std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))
+    std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+    // A previous version that an import left beside it would be put back by the start-up sweep.
+    if let (Some(root), Some(name)) = (dir.parent(), dir.file_name()) {
+        crate::workflow::remove_swap_leftovers_of(root, &name.to_string_lossy());
+    }
+    Ok(())
 }
 
 /// The configuration sheet of `wf` with each entry's current value (`Engine::workflow_settings`

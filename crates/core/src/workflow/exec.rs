@@ -152,6 +152,10 @@ pub enum Effect {
     },
     Reveal(PathBuf),
     Copy(String),
+    /// Copy to Clipboard with the object's "transient" box ticked: the text is placed on the
+    /// pasteboard with the `org.nspasteboard.TransientType` marker, so no clipboard manager
+    /// (this one included) records it.
+    CopyTransient(String),
     Notify {
         title: String,
         text: String,
@@ -314,7 +318,7 @@ fn with_uuid(path: &Path) -> PathBuf {
 
 /// Remove `.` and resolve `..` textually (no disk access, so it also works for paths that do
 /// not exist yet).
-fn lexical_normalize(p: &Path) -> PathBuf {
+pub(super) fn lexical_normalize(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -371,6 +375,11 @@ impl Workflow {
     /// rather than left to `open`, which would use the launcher's working directory. The trust
     /// summary reports a relative literal as shipped with the workflow (`trust.rs`).
     fn open_target(&self, s: &str) -> PathBuf {
+        // `https://...`, `mailto:...` (a URL handed to Open File, or arriving as its argument)
+        // is not a path: `open` gets it as written.
+        if super::trust::target_scheme(s.trim()).is_some() {
+            return PathBuf::from(s);
+        }
         let p = expand_tilde(s);
         if p.is_relative() {
             lexical_normalize(&self.dir.join(p))
@@ -385,7 +394,7 @@ impl Workflow {
         if app.is_empty() {
             return None;
         }
-        if !super::trust::app_is_path(app) {
+        if !super::trust::app_is_path(app, &self.dir) {
             return Some(app.to_string());
         }
         Some(self.open_target(app).display().to_string())
@@ -663,7 +672,12 @@ impl Workflow {
                 });
             }
             "alfred.workflow.output.clipboard" => {
-                fx.push(Effect::Copy(rend(st, &node.s("clipboardtext"))));
+                let text = rend(st, &node.s("clipboardtext"));
+                fx.push(if node.b("transient") {
+                    Effect::CopyTransient(text)
+                } else {
+                    Effect::Copy(text)
+                });
             }
             "alfred.workflow.output.largetype" => {
                 fx.push(Effect::LargeType(rend(st, &node.s("largetypetext"))));
@@ -1074,6 +1088,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn urls_and_app_names_are_passed_to_open_unchanged() {
+        // Review item 4: only a *relative file* is resolved against the workflow folder.
+        let (paths, root) = temp_paths("openurl");
+        let doc = json!({
+            "name": "R", "bundleid": "r",
+            "objects": [
+                {"uid": "A", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "https://example.com/x", "openwith": "Safari.app"}},
+                {"uid": "B", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "", "openwith": "com.google.Chrome"}},
+                {"uid": "C", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "Documents/y", "openwith": "payload.app"}},
+                {"uid": "L", "type": "alfred.workflow.action.launchfiles",
+                 "config": {"paths": ["mailto:a@b.c", "sub/z"]}},
+                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "Chrome.app"}},
+            ],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "r", &doc);
+        std::fs::create_dir_all(wf.dir.join("payload.app")).unwrap(); // shipped, no slash
+        let at = |uid: &str, arg: &str| {
+            let node = wf.nodes.iter().find(|n| n.uid == uid).unwrap();
+            let mut fx = Vec::new();
+            let mut st = State {
+                arg: arg.into(),
+                vars: BTreeMap::new(),
+            };
+            wf.process(node, &mut st, &mut None, &paths, &mut fx);
+            fx
+        };
+        let d = wf.dir.clone();
+        let open = |path: PathBuf, with: Option<&str>| Effect::OpenPath {
+            path,
+            with: with.map(String::from),
+        };
+        // a URL in the file field, a bare `X.app` that is not in the package: both as written
+        assert_eq!(
+            at("A", ""),
+            [open(PathBuf::from("https://example.com/x"), Some("Safari.app"))]
+        );
+        // a URL arriving as the argument of an empty field; a bundle id stays a name
+        assert_eq!(
+            at("B", "https://example.com/q?a=b"),
+            [open(
+                PathBuf::from("https://example.com/q?a=b"),
+                Some("com.google.Chrome")
+            )]
+        );
+        assert_eq!(
+            at("B", "mailto:a@b.c"),
+            [open(PathBuf::from("mailto:a@b.c"), Some("com.google.Chrome"))]
+        );
+        // a relative path is the workflow's; `payload.app` exists in the package, so it is a path
+        assert_eq!(
+            at("C", ""),
+            [open(
+                d.join("Documents/y"),
+                Some(&d.join("payload.app").display().to_string())
+            )]
+        );
+        assert_eq!(
+            at("B", "Documents/y"),
+            [open(d.join("Documents/y"), Some("com.google.Chrome"))]
+        );
+        assert_eq!(
+            at("L", ""),
+            [open(PathBuf::from("mailto:a@b.c"), None), open(d.join("sub/z"), None)]
+        );
+        assert_eq!(
+            at("U", ""),
+            [Effect::OpenUrl {
+                url: "https://x.test".into(),
+                browser: Some("Chrome.app".into())
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn write_file_workflow(tag: &str, filename: &str, mode: i64) -> (Workflow, Paths, PathBuf) {
         let (paths, root) = temp_paths(tag);
         let doc = json!({
@@ -1163,5 +1257,41 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(wf.dir.join("real.txt")).unwrap(), "a\nPWNED\n");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_to_clipboard_honours_the_transient_box_and_only_that() {
+        let (paths, root) = temp_paths("copy-transient");
+        let doc = json!({
+            "name": "T", "bundleid": "t",
+            "objects": [
+                {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
+                {"uid": "A", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "plain {query}", "transient": false}},
+                {"uid": "B", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "secret {query}", "transient": true}},
+                {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "unset {query}"}},
+            ],
+            "connections": {"J": [
+                {"destinationuid": "A", "modifiers": 0},
+                {"destinationuid": "B", "modifiers": 0},
+                {"destinationuid": "C", "modifiers": 0},
+            ]}
+        });
+        let wf = load_via_plist(&root, "t", &doc);
+        let act = WorkflowAction {
+            workflow: wf.id.clone(),
+            from_uid: "J".into(),
+            arg: "x".into(),
+            ..Default::default()
+        };
+        let fx = wf.run(&act, Mods::NONE, &paths);
+        let _ = std::fs::remove_dir_all(root);
+        assert_eq!(
+            fx,
+            vec![
+                Effect::Copy("plain x".into()),
+                Effect::CopyTransient("secret x".into()),
+                Effect::Copy("unset x".into()),
+            ]
+        );
     }
 }

@@ -196,7 +196,7 @@ fn main() -> Result<()> {
                 bail!("usage: ashdash theme <file>")
             };
             let file = std::fs::canonicalize(file).with_context(|| format!("cannot read {file}"))?;
-            let theme = Theme::load(&file)?;
+            let theme = Theme::load_for_install(&file)?;
             match ipc::send(&socket_path(&paths), &ipc::Request::Theme { file }, CONTROL_TIMEOUT) {
                 Ok(resp) => report_response(resp),
                 Err(ipc::ClientError::NotRunning) => {

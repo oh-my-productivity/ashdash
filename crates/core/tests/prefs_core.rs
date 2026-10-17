@@ -270,6 +270,78 @@ fn workflows_are_listed_disabled_and_removed_only_inside_the_managed_folder() {
 }
 
 #[test]
+fn removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version() {
+    // Review wave4b item 7: a `.import-old-*` copy that a swap failed to delete is put back by
+    // the next `load_all` once the installed folder is gone and the leftover is an hour old.
+    let env = Env::new("wf-remove-leftover", &[]);
+    let own = env.install_workflow("user.workflow.gone", &keyword_workflow("Gone", "gone.b", "g"));
+    let keep = env.install_workflow("user.workflow.kept", &keyword_workflow("Kept", "kept.b", "k"));
+    let root = env.paths.workflows_dir();
+    let leftover = |name: &str| {
+        let d = root.join(format!(".import-old-1000-1-1-0-{name}"));
+        std::fs::create_dir_all(&d).unwrap();
+        common::write_info_plist(&d, &keyword_workflow("Old", "old.b", "o"));
+        d
+    };
+    let (gone_old, kept_old) = (leftover("user.workflow.gone"), leftover("user.workflow.kept"));
+
+    sv::remove_workflow(&env.paths, &own).unwrap();
+    assert!(!own.exists() && !gone_old.exists(), "its leftover goes with it");
+    assert!(kept_old.exists(), "another workflow's leftover is not touched");
+
+    let loaded = ashdash_core::workflow::load_all(std::slice::from_ref(&root));
+    assert!(!own.exists(), "the sweep did not restore the removed workflow");
+    assert_eq!(
+        loaded.len(),
+        1,
+        "{:?}",
+        loaded.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
+    assert!(keep.exists());
+}
+
+#[test]
+fn only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs() {
+    // Review wave4b item 10: roots from `workflow_dirs` (a synced reference launcher folder) belong to someone
+    // else; a reload must not rename or delete anything in them, writable or not.
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new("wf-sweep-own", &[]);
+    let stale = |root: &std::path::Path| {
+        let d = root.join(".import-old-1000-1-1-0-user.workflow.lost");
+        std::fs::create_dir_all(&d).unwrap();
+        common::write_info_plist(&d, &keyword_workflow("Lost", "lost.b", "lost"));
+        d
+    };
+    let own_root = env.paths.workflows_dir();
+    std::fs::create_dir_all(&own_root).unwrap();
+    let own_leftover = stale(&own_root);
+    let writable = env.root.join("extra-writable");
+    let readonly = env.root.join("extra-readonly");
+    std::fs::create_dir_all(&writable).unwrap();
+    std::fs::create_dir_all(&readonly).unwrap();
+    let (w_left, r_left) = (stale(&writable), stale(&readonly));
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let engine = ashdash_core::Engine::new(
+        env.paths.clone(),
+        ashdash_core::Config {
+            workflow_dirs: vec![writable.clone(), readonly.clone()],
+            ..env.config()
+        },
+    );
+    engine.reload_content();
+
+    // load_all alone changes nothing anywhere
+    let _ = ashdash_core::workflow::load_all(&[writable.clone(), readonly.clone()]);
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(w_left.exists(), "the extra writable root was swept");
+    assert!(r_left.exists(), "the read-only root was touched");
+    assert!(!writable.join("user.workflow.lost").exists());
+    // the app's own folder is still recovered: the lost workflow is put back
+    assert!(own_root.join("user.workflow.lost").exists() && !own_leftover.exists());
+}
+
+#[test]
 fn disabling_a_workflow_takes_effect_after_a_content_reload() {
     let env = Env::new("wf-disable-live", &[]);
     let dir = env.install_workflow("user.workflow.k", &keyword_workflow("K", "k.b", "kwk"));

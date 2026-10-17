@@ -138,7 +138,8 @@ pub(super) fn scopes(node: &Node) -> Vec<PathBuf> {
 const MAX_HITS: usize = MAX_RESULTS * 4;
 /// A generous bound for one path in `mdfind` output: with [`MAX_HITS`] it caps the bytes read, so
 /// a types-only predicate (an empty argument) that matches half the disk is killed after a few
-/// hundred kilobytes instead of printing for seconds.
+/// hundred kilobytes. That bounds the output, not the time: `mdfind` itself takes seconds to start,
+/// so the run is bounded by the search budget's timeout (4 s by default), not cheap.
 const PATH_BYTES: usize = 1024;
 
 /// The real Spotlight search: `mdfind` through the bounded runner with the file-search budget

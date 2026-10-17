@@ -15,8 +15,10 @@ pub type Records = BTreeMap<PathBuf, Record>;
 
 /// Faceless helpers (System Events, ...) are not launchable by users.
 pub(crate) fn is_background_only(app: &Path) -> bool {
-    plist::Value::from_file(app.join("Contents/Info.plist"))
+    // Bounded like `apps::icns_path`: a hostile bundle's Info.plist must not abort the scan.
+    crate::theme::read_limited(&app.join("Contents/Info.plist"), 4 * 1024 * 1024)
         .ok()
+        .and_then(|bytes| crate::theme::parse_plist(&bytes).ok())
         .and_then(|v| v.as_dictionary()?.get("LSBackgroundOnly")?.as_boolean())
         .unwrap_or(false)
 }

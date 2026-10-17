@@ -137,7 +137,7 @@ stated; **no** = not run (the object is skipped, the stream stops there with a w
 | `action.script`, `output.script` | works | bash / zsh / php / ruby / python3 / perl / osascript / JXA or a script file. 60 s limit, output capped at 8 MiB, the whole process group is killed on timeout. `{query}` escaping mask: bits 2, 4, 32, 64 (backquote, double quote, dollar, backslash) inferred; 1, 8, 16 (brackets, semicolon, space) unverified. |
 | `action.applescript` | works | Runs through `osascript`. Needs Automation for the app it controls. |
 | `action.openurl` | works | `utf8` and `spaces` options, `{query}` and `{var:…}`; optional browser. Any URL scheme is opened: see security. |
-| `action.openfile`, `action.launchfiles`, `action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument; a relative path (file, `openwith`, `browser`) is resolved against the workflow's own folder. |
+| `action.openfile`, `action.launchfiles`, `action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument; a relative path (file, `openwith`, `browser`) is resolved against the workflow's own folder; a target that starts with `scheme:` before any `/` (`https://...`, `mailto:...`) is a URL and is passed on as written, and an application written as a bare `Name.app` is an app name unless such a bundle exists in the workflow folder. |
 | `action.terminalcommand` | works | Runs in Terminal. |
 | `action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
 | `action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
@@ -208,7 +208,7 @@ What Ashdash does for you:
   * the **URL schemes** of its Open URL objects (`{dynamic}` when the scheme is decided by data);
   * **files outside its folder** it refers to (literal absolute, `~` or `..` paths in Open File, Launch Files and script files);
   * **files opened at run time**: an Open File object with an empty file field (it opens the incoming argument) or a path with a `{placeholder}`, which can be an app or script shipped inside the package;
-  * **applications launched**: the application of an Open File (`openwith`) or Open URL / web search (`browser`) object, marked "shipped with the workflow" when it is a path inside the workflow's own folder, and **files shipped with the workflow** that Open File / Launch Files open (a relative path is resolved against the workflow's folder);
+  * **applications launched**: the application of an Open File (`openwith`) or Open URL / web search (`browser`) object, marked "shipped with the workflow" when it is a path inside the workflow's own folder, and **files shipped with the workflow** that Open File / Launch Files open (a relative path is resolved against the workflow's folder; a literal `https:`/`mailto:` target is listed as a URL scheme instead);
   * its **External Triggers** (what another workflow or an `ashdash://` link can start);
   * a replacement notice and the saved-settings warning when the bundle id is already installed (see above).
   "Runs no scripts and no terminal commands." is printed only when none of the above applies (`TrustSummary::is_passive()`); a workflow that

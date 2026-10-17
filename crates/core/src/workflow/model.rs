@@ -106,10 +106,22 @@ pub(super) fn str_map(v: Option<&Value>) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// A workflow's `info.plist` holds its scripts, so it can be big; one over this is not read.
+pub const MAX_INFO_PLIST_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read `<dir>/info.plist` the only safe way: bounded in size, nesting and number of values
+/// ([`crate::theme::parse_plist`]). `plist::Value::from_file` builds and drops its tree
+/// recursively, so a few KB of nested arrays in a downloaded package aborts the process.
+/// Every reader of a workflow's `info.plist` goes through here.
+pub fn read_info_plist(dir: &Path) -> Result<plist::Value> {
+    let file = dir.join("info.plist");
+    let bytes = crate::theme::read_limited(&file, MAX_INFO_PLIST_BYTES)?;
+    crate::theme::parse_plist(&bytes).with_context(|| format!("parsing {}", file.display()))
+}
+
 impl Workflow {
     pub fn load(dir: &Path) -> Result<Workflow> {
-        let v = plist::Value::from_file(dir.join("info.plist"))
-            .with_context(|| format!("reading {}/info.plist", dir.display()))?;
+        let v = read_info_plist(dir).with_context(|| format!("reading {}/info.plist", dir.display()))?;
         let id = dir
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -241,12 +253,13 @@ impl Workflow {
 ///
 /// Hidden folders (a name starting with `.`) are not workflows: the importer keeps staging
 /// folders, the new tree and the previous version of a workflow being replaced there
-/// (`.import-*`), and a reload during an install must not see a second copy of it. Leftovers of
-/// an interrupted install are cleaned up first (`package::sweep_interrupted_installs`).
+/// (`.import-*`), and a reload during an install must not see a second copy of it. This only
+/// reads: a root may belong to someone else (a synced reference launcher folder, read-only), so cleaning up
+/// after an interrupted install is [`sweep_interrupted_installs`], called for the app's own
+/// workflows folder only.
 pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {
     let mut out = Vec::new();
     for root in roots {
-        super::package::sweep_interrupted_installs(root, super::package::STALE_SWAP);
         let Ok(rd) = std::fs::read_dir(root) else { continue };
         let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         dirs.sort();
@@ -261,4 +274,11 @@ pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {
         }
     }
     out
+}
+
+/// Clean up what an interrupted install left in the app's **own** workflows folder `own_root`
+/// (see `package::sweep_interrupted_installs`: staging and half-made copies are removed, a lost
+/// previous version is put back). Never call it for a folder from `workflow_dirs`.
+pub fn sweep_interrupted_installs(own_root: &Path) {
+    super::package::sweep_interrupted_installs(own_root, super::package::STALE_SWAP);
 }

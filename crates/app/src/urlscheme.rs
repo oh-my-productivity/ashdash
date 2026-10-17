@@ -299,12 +299,20 @@ fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
     Some((md.modified().ok()?, md.len()))
 }
 
-fn read_decisions(path: &std::path::Path) -> BTreeMap<String, Decision> {
+/// The decisions in the file. A file that is not there is an empty map; one that is there but is
+/// not a JSON object (a half-saved edit) is `Err` with the reason, and the caller keeps what it had.
+fn read_decisions(path: &std::path::Path) -> Result<BTreeMap<String, Decision>, String> {
     let mut decisions = BTreeMap::new();
-    if let Ok(text) = fs::read_to_string(path)
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-        && let Some(map) = v.get("bundles").and_then(|b| b.as_object())
-    {
+    let text = match fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| "it is not valid UTF-8".to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(decisions),
+        Err(e) => return Err(format!("it cannot be read ({e})")),
+    };
+    let v = serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("it is not valid JSON ({e})"))?;
+    if !v.is_object() {
+        return Err("it is not a JSON object".into());
+    }
+    if let Some(map) = v.get("bundles").and_then(|b| b.as_object()) {
         for (k, v) in map {
             match v.as_str() {
                 Some("allow") => decisions.insert(k.clone(), Decision::Allow),
@@ -313,7 +321,7 @@ fn read_decisions(path: &std::path::Path) -> BTreeMap<String, Decision> {
             };
         }
     }
-    decisions
+    Ok(decisions)
 }
 
 /// Remembered per-bundle-id consent for URL-triggered workflows.
@@ -326,21 +334,79 @@ pub struct TrustStore {
     path: PathBuf,
     decisions: BTreeMap<String, Decision>,
     stamp: Option<FileStamp>,
+    /// Why the file on disk cannot be used, while it cannot. `decisions` is then the last good map.
+    damaged: Option<String>,
 }
 
 impl TrustStore {
     pub fn load(path: PathBuf) -> Self {
-        let stamp = file_stamp(&path);
-        let decisions = read_decisions(&path);
-        TrustStore { path, decisions, stamp }
+        let mut store = TrustStore {
+            stamp: file_stamp(&path),
+            path,
+            decisions: BTreeMap::new(),
+            damaged: None,
+        };
+        store.reload();
+        store
     }
 
-    /// Re-read the file when it changed (or appeared, or vanished) since we last looked.
+    /// Re-read the file when it changed (or appeared, or vanished) since we last looked. A file
+    /// that does not parse is *not* taken for an empty one: the last good decisions stay in
+    /// memory (so a remembered "deny" is not forgotten), [`TrustStore::warning`] says so, and
+    /// [`TrustStore::set`] moves the file aside before it writes.
     pub fn refresh(&mut self) {
         let now = file_stamp(&self.path);
         if now != self.stamp {
-            self.decisions = read_decisions(&self.path);
             self.stamp = now;
+            self.reload();
+        }
+    }
+
+    fn reload(&mut self) {
+        match read_decisions(&self.path) {
+            Ok(map) => {
+                self.decisions = map;
+                self.damaged = None;
+            }
+            Err(why) => {
+                let msg = format!(
+                    "{} is damaged ({why}); the remembered decisions stay in memory and the file is moved aside to {} before the next answer is saved",
+                    self.path.display(),
+                    self.bad_path().display()
+                );
+                eprintln!("ashdash: {msg}");
+                self.damaged = Some(msg);
+            }
+        }
+    }
+
+    /// Set while the file on disk is damaged (cannot be parsed); the in-memory decisions are used.
+    /// The running app reports it on stderr; this accessor is what the tests read.
+    #[cfg(test)]
+    pub fn warning(&self) -> Option<&str> {
+        self.damaged.as_deref()
+    }
+
+    fn bad_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".bad");
+        self.path.with_file_name(name)
+    }
+
+    /// Move a damaged file out of the way without overwriting an earlier `.bad` copy.
+    fn move_damaged_aside(&self) -> std::io::Result<()> {
+        let mut target = self.bad_path();
+        let mut n = 0u32;
+        while fs::symlink_metadata(&target).is_ok() {
+            n += 1;
+            let mut name = self.bad_path().file_name().unwrap_or_default().to_os_string();
+            name.push(format!(".{n}"));
+            target = self.path.with_file_name(name);
+        }
+        match fs::rename(&self.path, &target) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
         }
     }
 
@@ -358,6 +424,10 @@ impl TrustStore {
     /// added to the file by hand since we last read it are kept.
     pub fn set(&mut self, bundle: &str, d: Decision) -> std::io::Result<()> {
         self.refresh();
+        if self.damaged.is_some() {
+            self.move_damaged_aside()?;
+            self.damaged = None;
+        }
         self.decisions.insert(bundle.to_string(), d);
         let bundles: serde_json::Map<String, serde_json::Value> = self
             .decisions
@@ -1212,6 +1282,71 @@ mod tests {
         assert_eq!(t.get("a"), Some(Decision::Allow));
         assert_eq!(t.get("b"), None);
         assert_eq!(t.get("c"), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_half_saved_consent_file_keeps_the_remembered_decisions_and_is_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("al-trust-half-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("url-trust.json");
+        let mut t = TrustStore::load(p.clone());
+        t.set("a.allowed", Decision::Allow).unwrap();
+        t.set("b.denied", Decision::Deny).unwrap();
+        assert!(t.warning().is_none());
+
+        // the user's editor saves half of a longer file
+        let half = r#"{"version":1,"bundles":{"a.allowed":"allow","b.den"#;
+        fs::write(&p, half).unwrap();
+        assert_eq!(t.lookup("b.denied"), Some(Decision::Deny), "the last good map is kept");
+        assert_eq!(t.lookup("a.allowed"), Some(Decision::Allow));
+        assert!(
+            t.warning().is_some_and(|w| w.contains("url-trust.json")),
+            "{:?}",
+            t.warning()
+        );
+        assert_eq!(fs::read_to_string(&p).unwrap(), half, "reading never changes the file");
+
+        // a new answer moves the damaged file aside once and writes everything we know
+        t.set("c.new", Decision::Allow).unwrap();
+        let bad = dir.join("url-trust.json.bad");
+        assert_eq!(fs::read_to_string(&bad).unwrap(), half);
+        let after = TrustStore::load(p.clone());
+        assert_eq!(after.get("a.allowed"), Some(Decision::Allow));
+        assert_eq!(after.get("b.denied"), Some(Decision::Deny));
+        assert_eq!(after.get("c.new"), Some(Decision::Allow));
+        assert!(t.warning().is_none(), "the file is sound again");
+
+        // a second damage does not destroy the first copy
+        fs::write(&p, "{{{").unwrap();
+        t.set("d.new", Decision::Deny).unwrap();
+        assert_eq!(fs::read_to_string(&bad).unwrap(), half);
+        assert_eq!(TrustStore::load(p).get("d.new"), Some(Decision::Deny));
+        assert_eq!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().contains(".bad"))
+                .count(),
+            2
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_consent_file_that_is_damaged_at_start_is_kept_until_the_first_answer() {
+        let dir = std::env::temp_dir().join(format!("al-trust-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("url-trust.json");
+        fs::write(&p, "[1,2").unwrap();
+        let mut t = TrustStore::load(p.clone());
+        assert_eq!(t.get("x"), None);
+        assert!(t.warning().is_some());
+        t.set("x", Decision::Allow).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("url-trust.json.bad")).unwrap(), "[1,2");
+        assert_eq!(TrustStore::load(p).get("x"), Some(Decision::Allow));
         let _ = fs::remove_dir_all(&dir);
     }
 }

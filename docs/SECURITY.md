@@ -81,7 +81,7 @@ Low = hardening, robustness, privacy details.
 | SEC-R4-09 | Low | A cross-volume install removed the old version before a long copy, and `load_all` read the hidden `.import-*` folders, so a reload or crash could show a phantom duplicate; leftovers were never swept | `workflow/package.rs`, `workflow/model.rs` | `load_all_skips_dot_directories_so_a_swap_in_progress_is_not_a_second_workflow`, `the_old_version_stays_visible_until_the_new_copy_is_complete`, `interrupted_installs_are_swept_and_a_lost_workflow_is_put_back`, `staging_a_package_sweeps_the_workflows_folder`, `a_failed_same_volume_install_gives_the_staged_tree_back` (package.rs) | Fixed (W4-R1), see 9e |
 | SEC-R4-10 | Low | `config set web_searches '<array>'` compared the number of bad entries, so a new list with a different bad entry passed when an old bad entry existed | `settings_view.rs` | `replacing_the_whole_web_search_list_checks_every_entry_not_the_count` | Fixed (W4-R1), see 9e |
 | SEC-R4-14 | Low | The spawn guard test matched only the one-line form `Command::new("name")`; `system_program`'s behaviour for a missing tool was undocumented | `tests/system_programs.rs`, `actions.rs` | `no_bare_system_tool_names_are_spawned`, `the_scan_sees_calls_the_old_line_match_missed`, `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path` | Tightened and documented (W4-R1), see 9e |
-| SEC-50 | Medium | A ~2 MB property list of nested `<array>` elements (a theme opened from Finder, `ashdash theme`, an app's `Info.plist`) overflowed the stack inside the `plist` crate and aborted the launcher | `theme.rs`, `apps.rs`, `mac/opendocs.rs` | `a_deeply_nested_theme_is_refused_not_a_stack_overflow`, `nesting_up_to_the_cap_parses_and_one_more_level_does_not`, `binary_plists_are_checked_too`, `every_kind_of_value_passes_the_probe_in_both_encodings` (theme.rs); `a_hostile_info_plist_is_ignored_not_fatal` (apps.rs); `a_deeply_nested_theme_is_refused_not_fatal` (opendocs.rs) | Fixed (W4-R2), see 9e |
+| SEC-50 | Medium | A ~2 MB property list of nested `<array>` elements (a theme opened from Finder, `ashdash theme`, an app's `Info.plist`) overflowed the stack inside the `plist` crate and aborted the launcher | `theme.rs`, `apps.rs`, `mac/opendocs.rs` | `a_deeply_nested_theme_is_refused_not_a_stack_overflow`, `nesting_up_to_the_cap_parses_and_one_more_level_does_not`, `binary_plists_are_checked_too`, `every_kind_of_value_passes_the_probe_in_both_encodings` (theme.rs); `a_hostile_info_plist_is_ignored_not_fatal` (apps.rs); `a_deeply_nested_theme_is_refused_not_fatal` (opendocs.rs) | Fixed (W4-R2), see 9e; workflow `info.plist` and the value bound added by W4-R3 (SEC-R5-01, SEC-R5-02, 9g) |
 | SEC-51 | Medium | `ashdash://search` typed attacker text into the launcher *and ran it*, so a web page could start a workflow's Script Filter with `{query}` chosen by the page, with no consent dialog | `urlscheme.rs`, `events.rs`, `gui/glue.rs`, `gui/mod.rs` | `search_from_a_url_never_becomes_a_query` (urlscheme.rs); the GUI side is on-screen only (QA) | Fixed (W4-R2): the URL only fills the field, see 9e and section 6 |
 | SEC-52 | Low | URL consent dialog: one dialog per link (a page could stack dozens, each living up to 60 s); a timeout was stored as a permanent "deny"; `url-trust.json` was read once, so "delete the entry to be asked again" needed a restart and a hand edit was overwritten | `urlscheme.rs` | `only_one_question_per_bundle_is_open_at_a_time`, `the_claim_is_released_when_the_question_fails`, `a_timeout_or_dismissed_dialog_is_not_a_decision`, `the_dialog_result_maps_to_an_answer`, `edits_to_the_consent_file_are_seen_without_a_restart` | Fixed (W4-R2), see 9e |
 | SEC-53 | Medium | Snippet auto-paste went through the pasteboard (`pbcopy`, no marker type), so a snippet holding a token or password was recorded in `clipboard.json` in clear text | `clipboard/{command,history,watch,filter}.rs` | `a_snippet_pasted_by_ashdash_is_not_recorded_but_the_users_own_copies_are`, `an_old_note_does_not_hide_a_later_copy`, `markers_still_win_over_the_own_paste_note` (watch.rs); `snippet_pastes_are_noted_for_the_watcher_but_history_pastes_are_not`, `a_failed_snippet_copy_leaves_no_note_behind` (command.rs) | Fixed (W4-R2); live pasteboard not run, see 9e |
@@ -328,7 +328,7 @@ arbitrary bytes, wrong JSON types, truncated and mangled JSON never panics.
 ## 5. Other items reviewed without a finding
 
 - `mdfind -onlyin <home> -name <q>`: `q` is its own argv element after `-name`, so a leading `-` is data.
-- `copy_to_clipboard` uses `pbcopy` with stdin; no shell.
+- `copy_to_clipboard` uses `pbcopy` with stdin; no shell. `copy_to_clipboard_transient` (workflow Copy to Clipboard with "transient" ticked, SEC-R5-10) runs `osascript -l JavaScript` with the text as an argument after `--`.
 - `Command::new` is always given a program path or fixed name; `PATH` hijacking of `open`, `osascript`,
   `pbcopy`, `mdfind`, `sips`, `pmset` was possible only if the launcher's own environment is hostile. Fixed: every such tool
   is started by absolute path (`actions::system_command`, guarded by `tests/system_programs.rs`; see the fix logs below).
@@ -349,7 +349,7 @@ hostile-input boundary from day one:
    per-workflow, user-visible allow setting (default: ask once, remember per bundle id). At most one question per bundle id is on
    screen (further links for it are dropped, W4-R2); only "Allow" and "Don't Allow" are stored, a timeout or dismissed dialog is
    not (the next link asks again); `url-trust.json` is re-read when its modification time or size changes, and `set` merges over the
-   current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten. Residual: different
+   current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten (a file that does not parse keeps the last good decisions in memory and is moved to `url-trust.json.bad` before the next write, SEC-R5-03). Residual: different
    bundle ids can each have their own dialog open (bounded by the 6-per-10-s limiter and the number of installed workflows with an External Trigger).
 3. The argument is data: pass it through argv/stdin, never as `{query}` source substitution, and never
    through the mode-0 path. Cap its length (e.g. 4 KiB) before it reaches the engine (SEC-08/09).
@@ -645,7 +645,7 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   still be rewritten (disclosed in the prompt as "Can modify its own files").
 - **SEC-R4-04 (review 4)** File Filter's `mdfind` goes through `Os::output_bounded` with the file-search budget from `config.file_search` (time limit
   `mdfind_timeout_ms`, output limit `mdfind_max_bytes`), additionally capped at 200 hits x 1 KiB (about 200 KB), so a types-only predicate (an empty argument) is
-  killed after a few hundred kilobytes instead of printing for seconds. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
+  killed after a few hundred kilobytes instead of printing for seconds. *Wording corrected (W4-R3, SEC-R5-06):* it is **bounded**, not cheap - see below. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
   dropped. `WorkflowProvider` takes the engine's `Os` (`registry_for` wires it); `Workflow::keyword_results` (no `Os` argument) keeps the real OS and the default budget for callers outside the engine.
   Residual: the search still runs on the single query worker, bounded by the budget (default 4 s) rather than gone.
 - **SEC-R4-09 (review 9)** `load_all` skips folders whose name starts with `.` (so `.import-*` staging, copy and previous-version folders are never loaded as a second
@@ -669,8 +669,9 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   fails at nesting depth 64 (`MAX_PLIST_DEPTH`, the workflow parser's cap), so its own recursion is bounded; only then is the tree built.
   Works for XML, binary and ASCII input. Files are read through `theme::read_limited` (themes 2 MiB, `Info.plist` 4 MiB). Measured before the
   fix: a 1.9 MB nested file aborted the test binary ("has overflowed its stack"). Not covered: a binary plist nested >64 levels *and* large enough to
-  matter was only tested at 70 levels (written by the library, which cannot write much deeper); the workflow importer's own
-  `plist::Value::from_file(info.plist)` in `workflow/package.rs` (the `text` closure) is not part of this change - it runs after the capped workflow parser has accepted the same file.
+  matter was only tested at 70 levels (written by the library, which cannot write much deeper). *Correction (review `wave4b.md`, item 1):* an earlier version of this entry said the
+  workflow importer's `plist::Value::from_file(info.plist)` ran "after the capped workflow parser"; that was wrong (the 64-level cap is in the Script Filter XML parser, `xml.rs`, which never sees
+  `info.plist`), and a 2.9 KB package aborted the process at staging. Fixed in 9g (SEC-R5-01).
 - **SEC-51 `ashdash://search`** see section 6, item 1. New event `AppEvent::Prefill`; `LauncherApp::show_with_prefill` shows the window, sets the field and a footer note, and does not call `request_query`.
 - **SEC-52 consent dialog** `Prompter::confirm` returns `Answer::{Allow, Deny, Unanswered}`; `dialog_answer` maps the `osascript` result (empty button after "giving up after 60", a
   dismissed dialog, or a failed `osascript` are `Unanswered`, which is reported and never stored). `UrlDispatcher::begin_asking` allows one open question per bundle id; `TrustStore::{refresh, lookup, set}` re-read by (mtime, length).
@@ -680,3 +681,56 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
 - **SEC-54..56** multibyte-safe scheme check (`url.get(..prefix.len())`); `ConnectionSlot` drop guard in `ipc.rs`; AppleScript `search` capped at `MAX_SEARCH` (4096 bytes), `run trigger` argument at `MAX_ARG` (4096 bytes) and empty ids refused;
   Finder import notifications and `display_name` use `importprompt::clean` (format characters, blank-looking characters, one line, 240 / 80 characters); theme install reads the file once (`install_theme_with`), validates those bytes and writes the same bytes.
 - **`ashdash --version` / `-V` / `version`** prints `ashdash <crate version>` (first word only), exit 0, before the data folder or settings are touched.
+
+## 9g. Fix log (wave 4 round 3, W4-R3, branch `fix/w4-r3`): items 1-10 of `docs/reviews/wave4b.md`
+
+The ids `SEC-R5-nn` are the item numbers of that review.
+
+- **SEC-R5-01 (item 1, MUST)** Every reader of a workflow's `info.plist` goes through `workflow::read_info_plist(dir)` (`model.rs`): `theme::read_limited` (16 MiB,
+  `MAX_INFO_PLIST_BYTES`) and `theme::parse_plist` (64 levels, see SEC-R5-02). Used by `Workflow::load` (so by `load_all`, the hotkey registry and the CLI), the importer
+  (`stage_in` and its `text` closure) and `settings_view::set_workflow_enabled`; the app scan's `is_background_only` (`index/scan.rs`) uses the same bounded reader for
+  an app's `Info.plist`. A package whose `info.plist` nests too deeply is refused at staging with "nested more than 64 levels" and nothing is left in the staging folder; a deep
+  `info.plist` already in a workflows root is skipped by `load_all` with the existing "skipping workflow" warning on stderr. Tests: `a_package_with_a_deeply_nested_info_plist_is_refused_not_a_stack_overflow`
+  (2.9 KB package, 120 000 levels, 2 MiB test thread; it aborted the process before) and `load_all_skips_a_deep_info_plist_and_keeps_the_rest` (package.rs).
+  Not covered: `plist::Value::from_file`/`to_file_xml` are still used on trees the code itself built (`settings_view`, writing back what was just parsed); the `plist_to_json` conversion is recursive but only sees trees that passed the probe.
+- **SEC-R5-02 (item 2)** `theme::parse_plist`'s probe also counts the values it visits (keys included) and fails at `MAX_PLIST_VALUES` = 500 000, because a binary plist can refer to one
+  object from many places (147 bytes, 10 references per level, 8 levels = 10^8 values at depth 9, never returned). The counter is per call (thread-local, reset on entry). Test:
+  `shared_references_cannot_make_the_parse_do_exponential_work` (the 147-byte plist is built in the test; returns an error in well under a second; a 5 s watchdog fails the test instead of hanging it),
+  `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); the reference launcher's bundled templates are loaded by
+  `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
+- **SEC-R5-03 (item 3)** `TrustStore` (`urlscheme.rs`): a `url-trust.json` that is there but does not parse (not UTF-8, not JSON, not an object; a half-saved hand edit) is no longer read as an
+  empty file. `refresh` keeps the last good in-memory map (a remembered "deny" still denies), prints a warning to stderr once per change of the file, and `TrustStore::warning()` (test builds) returns it.
+  `set` moves the damaged file aside to `url-trust.json.bad` (`.bad.1`, `.bad.2`... if a copy is already there, so an earlier one is never replaced) before writing the in-memory map plus the new entry.
+  A file that does not exist is still an empty map (deleting it forgets everything, as documented). Tests: `a_half_saved_consent_file_keeps_the_remembered_decisions_and_is_not_overwritten`,
+  `a_consent_file_that_is_damaged_at_start_is_kept_until_the_first_answer`. Residual: an edit that keeps both modification time and length is not noticed; the warning is on stderr only (no on-screen message).
+- **SEC-R5-04 (item 4)** One rule for "is this a path" in the classifier (`trust.rs`) and the executor (`exec.rs`). A target that begins with `scheme:` before any `/` (`target_scheme`: letters, digits, `+ . -`, first
+  character a letter; `https://x`, `mailto:a@b.c`, `tel:1`) is a URL: `open_target` returns it unchanged (also when it arrives as the incoming argument of an empty file field) and the summary lists its scheme
+  under URL schemes instead of calling it a file shipped with the workflow. An application field is a path (`app_is_path(app, dir)`) when it contains a `/`, or ends in `.app` *and* that bundle exists in the
+  workflow folder (`symlink_metadata`); otherwise (`Safari.app`, `Safari`, `com.google.Chrome`) it is a name passed to `open -a` as written. A relative path (`Documents/y`, `payload.app` when shipped) is
+  still resolved against the workflow folder. This amends SEC-R4-01 (which called any `*.app` a path). The one disk look in the summary is that `symlink_metadata` on a bare `*.app` field.
+  Tests: `urls_given_to_open_file_are_urls_not_files_shipped_with_the_workflow`, `a_bare_app_name_ending_in_dot_app_is_a_name_unless_the_bundle_is_in_the_package` (trust.rs),
+  `urls_and_app_names_are_passed_to_open_unchanged` (exec.rs). Not run: a real `open -a` with these forms. Residual: a literal that contains a colon before its first slash (`notes:2024/x`) is taken for a URL.
+- **SEC-R5-05 (item 5)** `note_app` expands `~` and normalises `..` lexically before the "is it under the workflow folder" test, so `~/Library/Application Support/ashdash/workflows/<own folder>/payload.app` is
+  called shipped, and `<own folder>/../<other>/payload.app` is not. Test: `a_tilde_path_into_the_workflows_own_folder_is_shipped`.
+- **SEC-R5-06 (item 6)** Wording only. The File Filter `mdfind` is *bounded by the budget* (4 s by default, `mdfind_timeout_ms`, and 200 hits / about 200 KB of output), not "cheap": `mdfind` spends about 2.3 s
+  starting up before it prints, so a types-only predicate (empty argument) still holds the single query worker for that long on a cold run (one run on one machine, `docs/reviews/wave4b.md`; not re-measured here), and
+  a slow or hung `mdfind` for up to the timeout. The output cap shortens neither. No code change; lowering `mdfind_timeout_ms` shortens the worst case at the cost of missed results on a slow index.
+- **SEC-R5-07 (item 7)** Removing a workflow (`settings_view::remove_workflow`, the preferences window's "Remove...") also removes the `.import-old-*` previous-version leftovers that name that folder
+  (`package::remove_swap_leftovers_of`; exact folder-name match, empty or path-like names remove nothing), so the sweep can no longer put the old copy back once the installed folder is gone.
+  `.import-copy-*` leftovers name no workflow and are only ever deleted by the sweep, never restored, so they are not touched. This closes the residual in 9e for removals made through the app; a folder
+  deleted in Finder still leaves a leftover (hidden `.import-old-*`) that is restored an hour later - delete it with the workflow. Tests: `removing_a_workflow_removes_its_previous_version_leftovers_and_only_those`
+  (package.rs), `removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version` (tests/prefs_core.rs).
+- **SEC-R5-08 (item 10)** `load_all` no longer sweeps. `workflow::sweep_interrupted_installs(own_root)` is called by the engine's content reload for the app's own workflows folder only (first root, built by
+  `Engine::reload_job`) and by `stage_package` (as before); roots from `workflow_dirs` (a synced reference launcher folder, a read-only share) are only read. Amends 9e, which said the sweep ran on every `load_all` of a folder.
+  Test: `only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs` (tests/prefs_core.rs: a writable and a read-only extra root keep their stale leftovers, the own folder's lost workflow is put back).
+- **SEC-R5-09 (item 8)** `Theme::load` (the `theme` setting, `<data>/themes/`, the daemon applying a theme, `ashdash://theme?name=`) reads up to `MAX_INSTALLED_THEME_BYTES` = 8 MiB; `Theme::load_for_install`
+  (`ashdash theme <file>` on the command line) and the Finder/`import_theme` paths (`read_limited(.., MAX_THEME_BYTES)`) keep 2 MiB. The probe (SEC-50, SEC-R5-02) bounds nesting and the number of values, so the larger allowance
+  adds memory (at most 8 MiB read, then the parsed tree) but no new way to exhaust the stack. Test: `an_installed_theme_may_be_bigger_than_one_offered_for_installation`. Upgrade note: `CHANGELOG.md`, `docs/release-notes/v0.1.0.md`.
+- **SEC-R5-10 (item 9)** Copy to Clipboard in a workflow. The reference launcher's own templates carry a `transient` key on `alfred.workflow.output.clipboard` (checked in the installed reference launcher bundles: `Paste as plain text from hotkey`
+  and `Paste text clip from hotkey` have `transient: true`, `Clipboard` and `Snippet Triggers` have `false`). It is now honoured: `transient: true` gives `Effect::CopyTransient`, applied by
+  `engine::copy_to_clipboard_transient`, which writes the text as `public.utf8-plain-text` together with `org.nspasteboard.TransientType`, so the clipboard watcher (and any other clipboard manager) skips it
+  (`concealed_and_transient_entries_are_never_recorded`). Without the key, or with `false`, the copy is a plain `pbcopy` and **is recorded in clipboard history like a copy made by the user**, as the reference launcher does;
+  a workflow that copies a secret should tick "transient". The text reaches the JXA as an argument after `--`, never in the script source. `A::CopyText` (the "Copy" universal action on a row: a path, a URL,
+  a calculator result) is a user action and stays a plain `pbcopy`, recorded like any user copy. Tests: `copy_to_clipboard_honours_the_transient_box_and_only_that` (exec.rs),
+  `a_transient_copy_carries_the_marker_and_the_text_only_as_an_argument` (engine.rs), `A::CopyText` -> `pbcopy` with stdin in the `actions.rs` command table. Checked live once by hand: the pasteboard held
+  the text and the `org.nspasteboard.TransientType` type, and the text with quotes and a leading `-e` arrived unchanged (the previous clipboard text was restored); not run in the test suite, which must not touch the real pasteboard.

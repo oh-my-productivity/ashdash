@@ -219,6 +219,31 @@ fn sweep_stale(root: &Path) {
     }
 }
 
+/// Split the name of a previous-version leftover into (start time, installed folder name).
+fn parse_old_leftover(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix(OLD_PREFIX)?;
+    let mut parts = rest.splitn(5, '-');
+    let (secs, dest) = (parts.next()?, parts.nth(3)?);
+    Some((secs, dest))
+}
+
+/// Remove the `.import-old-*` previous-version leftovers of the workflow folder `dest_name`
+/// (the user is removing that workflow: the sweep must not put an old copy back once the
+/// installed folder is gone). `.import-copy-*` leftovers do not name a workflow and are only
+/// ever deleted by the sweep, never restored, so they are left to it. Best effort.
+pub(crate) fn remove_swap_leftovers_of(root: &Path, dest_name: &str) {
+    if dest_name.is_empty() || dest_name.contains('/') {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if parse_old_leftover(&name).is_some_and(|(_, dest)| dest == dest_name) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Clean up what an interrupted install left in a workflows folder `root`: `.import-*` staging
 /// folders older than a day, a half-made `.import-copy-*` tree, and an `.import-old-*` previous
 /// version -- which is put back if its installed folder is missing (the crash fell between the
@@ -237,9 +262,8 @@ pub(super) fn sweep_interrupted_installs(root: &Path, stale_after: std::time::Du
             secs.parse::<u64>()
                 .is_ok_and(|s| now.saturating_sub(s) >= stale_after.as_secs())
         };
-        if let Some(rest) = name.strip_prefix(OLD_PREFIX) {
-            let mut parts = rest.splitn(5, '-');
-            let (secs, dest) = (parts.next().unwrap_or(""), parts.nth(3).unwrap_or(""));
+        if name.starts_with(OLD_PREFIX) {
+            let (secs, dest) = parse_old_leftover(&name).unwrap_or(("", ""));
             if !started_before(secs) || dest.is_empty() || dest.contains('/') {
                 continue;
             }
@@ -285,7 +309,7 @@ fn stage_in(package: &Path, staging_root: &Path, dest_root: &Path, paths: Option
     let dest = dest_root.join(&dest_name);
 
     let text = |key: &str| -> String {
-        plist::Value::from_file(staging.path.join("info.plist"))
+        super::model::read_info_plist(&staging.path)
             .ok()
             .and_then(|v| v.into_dictionary())
             .and_then(|d| d.get(key).and_then(|v| v.as_string().map(str::to_owned)))
@@ -1029,6 +1053,102 @@ mod tests {
             std::fs::read_dir(&staging_root).unwrap().count(),
             0,
             "failed attempts leave nothing behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A valid `info.plist` with one extra key holding `depth` nested arrays.
+    fn deep_info_plist(depth: usize) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>name</key><string>Deep</string><key>bundleid</key><string>test.deep</string><key>objects</key><array/><key>x</key>{}{}</dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        )
+    }
+
+    fn deep_package(path: &Path, depth: usize) {
+        use std::io::Write;
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        z.start_file("info.plist", options).unwrap();
+        z.write_all(deep_info_plist(depth).as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn a_package_with_a_deeply_nested_info_plist_is_refused_not_a_stack_overflow() {
+        let root = std::env::temp_dir().join(format!("oa-deep-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pkg = root.join("deep.alfredworkflow");
+        deep_package(&pkg, 120_000);
+        assert!(std::fs::metadata(&pkg).unwrap().len() < 10_000, "a small download");
+        let paths = Paths::under(&root);
+        // Test threads have a 2 MiB stack, like the Finder-open and drop paths.
+        let err = match stage_package(&paths, &pkg) {
+            Ok(_) => panic!("a package with a 120 000-level info.plist was staged"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(err.contains("nested"), "{err}");
+        let staging_root = paths.data.join(STAGING_DIR);
+        assert_eq!(
+            std::fs::read_dir(&staging_root).unwrap().count(),
+            0,
+            "nothing is left behind"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_all_skips_a_deep_info_plist_and_keeps_the_rest() {
+        let root = std::env::temp_dir().join(format!("oa-deep-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (bad, good) = (root.join("bad"), root.join("good"));
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(bad.join("info.plist"), deep_info_plist(120_000)).unwrap();
+        std::fs::write(
+            good.join("info.plist"),
+            deep_info_plist(2).replace("<key>x</key><array><array></array></array>", ""),
+        )
+        .unwrap();
+        let all = crate::workflow::load_all(std::slice::from_ref(&root));
+        assert_eq!(all.len(), 1, "{:?}", all.iter().map(|w| &w.name).collect::<Vec<_>>());
+        assert_eq!(all[0].name, "Deep");
+        assert!(Workflow::load(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn removing_a_workflow_removes_its_previous_version_leftovers_and_only_those() {
+        let root = std::env::temp_dir().join(format!("oa-rm-leftovers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mine = ".import-old-1000-77-1-0-user.workflow.t.mine";
+        let mine_again = ".import-old-2000-78-2-1-user.workflow.t.mine";
+        let other = ".import-old-1000-77-1-0-user.workflow.t.other";
+        let other_suffix = ".import-old-1000-77-1-0-xuser.workflow.t.mine"; // a different folder name
+        let copy = ".import-copy-1000-77-1";
+        let plain = "user.workflow.t.mine-notes"; // not a leftover
+        for n in [mine, mine_again, other, other_suffix, copy, plain] {
+            std::fs::create_dir_all(root.join(n)).unwrap();
+            std::fs::write(root.join(n).join("info.plist"), "x").unwrap();
+        }
+        remove_swap_leftovers_of(&root, "user.workflow.t.mine");
+        assert!(!root.join(mine).exists() && !root.join(mine_again).exists());
+        for n in [other, other_suffix, copy, plain] {
+            assert!(root.join(n).exists(), "{n} belongs to someone else");
+        }
+        remove_swap_leftovers_of(&root, "");
+        remove_swap_leftovers_of(&root, "a/b");
+        assert!(root.join(other).exists(), "an empty or path-like name removes nothing");
+        // without the removal, the sweep puts the previous version back once the folder is gone
+        std::fs::create_dir_all(root.join(mine)).unwrap();
+        sweep_interrupted_installs(&root, std::time::Duration::from_secs(0));
+        assert!(
+            root.join("user.workflow.t.mine").exists(),
+            "the residual the removal closes"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

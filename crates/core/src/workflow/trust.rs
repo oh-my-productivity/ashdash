@@ -4,7 +4,9 @@
 //! The engine keeps the reference launcher's semantics (a workflow is a program the user chose to run: SEC-03,
 //! SEC-13, SEC-14), so it cannot make an untrusted workflow safe. What it can do is describe the
 //! workflow precisely enough that the UI can ask first. [`Workflow::trust_summary`] only reads the
-//! parsed `info.plist`; it never runs anything and never touches the disk.
+//! parsed `info.plist`; it never runs anything and writes nothing. (It looks at the disk in one
+//! place: whether a bare `Something.app` application field names an app shipped in the workflow
+//! folder, see [`app_is_path`].)
 
 use std::collections::BTreeSet;
 
@@ -223,12 +225,17 @@ fn note_opened(
     runtime: &mut BTreeSet<String>,
     files: &mut BTreeSet<String>,
     shipped: &mut BTreeSet<String>,
+    schemes: &mut BTreeSet<String>,
 ) {
     let t = template.trim();
     if t.is_empty() {
         runtime.insert(INCOMING_ARGUMENT.into());
     } else if t.contains('{') {
         runtime.insert(t.to_string());
+    } else if let Some(scheme) = target_scheme(t) {
+        // `https://...`, `mailto:...`: handed to `open` as written, so it opens a URL (a path
+        // would be resolved against the workflow folder, a URL is not).
+        schemes.insert(scheme.to_ascii_lowercase());
     } else if is_external(t) {
         files.insert(t.to_string());
     } else {
@@ -236,10 +243,26 @@ fn note_opened(
     }
 }
 
+/// The `scheme` of a target that starts with `scheme:` before any `/` (`https://x`, `mailto:a@b.c`,
+/// `tel:1`). Such a target is a URL, not a path: the executor hands it to `open` unchanged and
+/// the summary lists the scheme. A plain relative path (`Documents/y`) has none.
+pub(super) fn target_scheme(target: &str) -> Option<&str> {
+    let (scheme, _) = target.split_once(':')?;
+    let mut chars = scheme.chars();
+    (chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some(scheme)
+}
+
 /// An application field (`openwith`, `browser`) is a path rather than an app name when it has a
-/// `/` or ends in `.app`; the executor resolves a relative one against the workflow folder.
-pub(super) fn app_is_path(app: &str) -> bool {
-    app.contains('/') || app.to_ascii_lowercase().ends_with(".app")
+/// `/`, or ends in `.app` *and* such a bundle exists in the workflow folder `dir`. A bare
+/// `Safari.app` that is not shipped is a name, passed to `open -a` as written; a path is resolved
+/// by the executor against the workflow folder. The classifier and the executor both call this.
+pub(super) fn app_is_path(app: &str, dir: &std::path::Path) -> bool {
+    if app.contains('/') {
+        return true;
+    }
+    app.to_ascii_lowercase().ends_with(".app") && std::fs::symlink_metadata(dir.join(app)).is_ok()
 }
 
 /// Record the application field of an Open File / Open URL object.
@@ -249,8 +272,11 @@ fn note_app(app: &str, dir: &std::path::Path, apps: &mut BTreeSet<LaunchedApp>) 
         return;
     }
     let literal = !a.contains('{');
-    let relative = app_is_path(a) && !a.starts_with('/') && !a.starts_with('~');
-    let under_dir = a.starts_with('/') && std::path::Path::new(a).starts_with(dir);
+    let relative = app_is_path(a, dir) && !a.starts_with('/') && !a.starts_with('~');
+    // `~/Library/.../workflows/<this folder>/payload.app` is as shipped as an absolute path; the
+    // path is expanded and normalised first so `..` cannot make something else look shipped.
+    let expanded = super::exec::lexical_normalize(&crate::files::expand_tilde(a));
+    let under_dir = expanded.is_absolute() && expanded.starts_with(super::exec::lexical_normalize(dir));
     apps.insert(LaunchedApp {
         app: a.to_string(),
         shipped: literal && (relative || under_dir),
@@ -403,13 +429,13 @@ impl Workflow {
                     s.terminal_commands.push(t);
                 }
                 "alfred.workflow.action.openfile" => {
-                    note_opened(&n.s("sourcefile"), &mut runtime, &mut files, &mut shipped);
+                    note_opened(&n.s("sourcefile"), &mut runtime, &mut files, &mut shipped, &mut schemes);
                     note_app(&n.s("openwith"), &self.dir, &mut apps);
                 }
                 "alfred.workflow.action.launchfiles" => {
                     for p in n.config.get("paths").and_then(|p| p.as_array()).into_iter().flatten() {
                         if let Some(p) = p.as_str() {
-                            note_opened(p, &mut runtime, &mut files, &mut shipped);
+                            note_opened(p, &mut runtime, &mut files, &mut shipped, &mut schemes);
                         }
                     }
                 }
@@ -645,12 +671,16 @@ mod tests {
     fn open_file_openwith_and_open_url_browser_are_launched_applications() {
         // Review item 1: Keyword -> Open File ("."), `openwith` an app inside the package. No
         // script, no external file, no URL: it still launches shipped code.
-        let s = wf(json!([
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go"}},
-            {"uid": "O", "type": "alfred.workflow.action.openfile",
-             "config": {"sourcefile": ".", "openwith": "payload.app"}},
-        ]))
-        .trust_summary();
+        let (w, dir) = wf_in(
+            "launched",
+            json!([
+                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go"}},
+                {"uid": "O", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": ".", "openwith": "payload.app"}},
+            ]),
+        );
+        let s = w.trust_summary();
+        let _ = std::fs::remove_dir_all(dir);
         assert!(!s.runs_code());
         assert!(!s.is_passive(), "{s:?}");
         assert_eq!(
@@ -709,6 +739,110 @@ mod tests {
         assert!(!s.is_passive());
         assert_eq!(s.opens_shipped_files, ["payload.app", "tools/run.command"]);
         assert!(s.external_files.is_empty() && s.opens_at_run_time.is_empty());
+    }
+
+    /// A workflow whose folder really exists (`payload.app` is a bundle inside it).
+    fn wf_in(tag: &str, objects: serde_json::Value) -> (Workflow, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("oa-trust-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("payload.app/Contents")).unwrap();
+        let doc = json!({"name": "T", "bundleid": "t.trust", "objects": objects, "connections": {}});
+        (Workflow::from_json(&dir, "t", &doc).unwrap(), dir)
+    }
+
+    #[test]
+    fn a_bare_app_name_ending_in_dot_app_is_a_name_unless_the_bundle_is_in_the_package() {
+        let (w, dir) = wf_in(
+            "apps",
+            json!([
+                {"uid": "A", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": ".", "openwith": "payload.app"}},
+                {"uid": "B", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": ".", "openwith": "Safari.app"}},
+                {"uid": "C", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "com.google.Chrome"}},
+                {"uid": "D", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "sub/Tool.app"}},
+            ]),
+        );
+        let s = w.trust_summary();
+        let shipped = |name: &str| s.launched_apps.iter().find(|a| a.app == name).map(|a| a.shipped);
+        assert_eq!(shipped("payload.app"), Some(true), "{s:?}");
+        assert_eq!(
+            shipped("Safari.app"),
+            Some(false),
+            "an app name, not <workflow>/Safari.app"
+        );
+        assert_eq!(shipped("com.google.Chrome"), Some(false));
+        assert_eq!(
+            shipped("sub/Tool.app"),
+            Some(true),
+            "a relative path is the workflow's own"
+        );
+        assert!(!s.is_passive());
+        // the executor reads the same fields the same way (see exec.rs tests)
+        assert!(app_is_path("payload.app", &dir));
+        assert!(!app_is_path("Safari.app", &dir));
+        assert!(!app_is_path("Safari", &dir));
+        assert!(app_is_path("sub/Tool.app", &dir));
+        assert!(app_is_path("/Applications/Safari.app", &dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn urls_given_to_open_file_are_urls_not_files_shipped_with_the_workflow() {
+        let s = wf(json!([
+            {"uid": "A", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "https://example.com/x"}},
+            {"uid": "B", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "mailto:a@b.c"}},
+            {"uid": "C", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["tel:12345", "Documents/y"]}},
+        ]))
+        .trust_summary();
+        assert_eq!(s.open_url_schemes, ["https", "mailto", "tel"]);
+        assert_eq!(s.opens_shipped_files, ["Documents/y"]);
+        assert!(s.external_files.is_empty());
+        assert!(!s.is_passive());
+        assert_eq!(target_scheme("https://example.com/x"), Some("https"));
+        assert_eq!(target_scheme("mailto:a@b.c"), Some("mailto"));
+        assert_eq!(target_scheme("Documents/y"), None);
+        assert_eq!(target_scheme("dir/a:b"), None, "a colon after a slash is a file name");
+        assert_eq!(target_scheme(":x"), None);
+        assert_eq!(target_scheme("1a:x"), None);
+    }
+
+    #[test]
+    fn a_tilde_path_into_the_workflows_own_folder_is_shipped() {
+        let home = dirs::home_dir().unwrap();
+        let dir = home.join("Library/Application Support/ashdash/workflows/user.workflow.t.own");
+        let doc = |app: &str| {
+            json!({"name": "T", "bundleid": "t.own", "connections": {}, "objects": [
+                {"uid": "O", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "Applications", "openwith": app}}]})
+        };
+        let launched = |app: &str| {
+            Workflow::from_json(&dir, "t", &doc(app))
+                .unwrap()
+                .trust_summary()
+                .launched_apps
+        };
+        let own = "~/Library/Application Support/ashdash/workflows/user.workflow.t.own/payload.app";
+        assert_eq!(
+            launched(own),
+            [LaunchedApp {
+                app: own.into(),
+                shipped: true
+            }]
+        );
+        // the same folder spelled out
+        let abs = format!("{}/payload.app", dir.display());
+        assert!(launched(&abs)[0].shipped);
+        // another workflow's folder, `..` back out of this one, or the home folder are not
+        for other in [
+            "~/Library/Application Support/ashdash/workflows/user.workflow.t.other/payload.app",
+            "~/Library/Application Support/ashdash/workflows/user.workflow.t.own/../user.workflow.t.other/payload.app",
+            "~/payload.app",
+        ] {
+            assert!(!launched(other)[0].shipped, "{other}");
+        }
     }
 
     #[test]
