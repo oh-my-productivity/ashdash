@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # QA item 3: docs/QA.md section 3 (except 3.10) and the Wave 4/5 behaviours, scripted, INSIDE a lab VM with the lab-tool grants
 # (tests/lab/guest/tcc-grant.sh; none of them names Ashdash). Usage (from the synced worktree in the guest):
-#   bash tests/lab/qa/checklist.sh [section ...]     sections: setup s31 s32 s33 s34 s35 s36 s37 s38 s39 s311 w45 (default: all)
+#   bash tests/lab/qa/checklist.sh [section ...]     sections: s_setup s31 s32 s33 s34 s35 s36 s37 s37fda s38 s39 s311 w45 (default: all)
 # The app under test is the packaged bundle (APP=/Applications/Ashdash.app, or $APP) started with HOME=$QA_HOME (a seeded throw-away data
 # folder, tests/lab/qa/fixtures.py) so its TCC identity is the bundle's. Results go to $QA_RESULTS (tsv); screenshots to $QA_ART.
 # shellcheck disable=SC2015,SC2016,SC2034
@@ -618,7 +618,7 @@ s311() {
 }
 
 main() {
-  local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s38 s39 s311 w45)
+  local secs=("$@"); [ ${#secs[@]} = 0 ] && secs=(s_setup s31 s32 s33 s34 s35 s36 s37 s37fda s38 s39 s311 w45)
   local s; for s in "${secs[@]}"; do case "$s" in setup) s=s_setup ;; esac; echo "== $s"; "$s"; done
   stop_app 2>/dev/null
   echo "---- results"; cat "$QA_RESULTS"
