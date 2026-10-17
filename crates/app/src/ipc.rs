@@ -56,6 +56,10 @@ pub enum Request {
     },
     Reload,
     Quit,
+    /// Open the preferences window.
+    Prefs,
+    /// Forget everything learned from earlier picks (the launcher holds it in memory).
+    ClearUsage,
     /// Absolute path of an `.alfredappearance` file.
     Theme {
         file: PathBuf,
@@ -91,7 +95,7 @@ impl Response {
     }
     pub fn from_outcome(o: Outcome) -> Self {
         match o {
-            Outcome::Done => Response::ok(""),
+            Outcome::Done | Outcome::ShowLauncher(_) => Response::ok(""),
             Outcome::LargeType(t) => Response {
                 large: true,
                 ..Response::ok(t)
@@ -133,6 +137,8 @@ impl Request {
             }
             Request::Reload => json!({"cmd": "reload"}),
             Request::Quit => json!({"cmd": "quit"}),
+            Request::Prefs => json!({"cmd": "prefs"}),
+            Request::ClearUsage => json!({"cmd": "clear-usage"}),
             Request::Theme { file } => json!({"cmd": "theme", "file": file.to_string_lossy()}),
         };
         format!("{v}\n")
@@ -160,6 +166,8 @@ impl Request {
             "show" => Request::Show,
             "reload" => Request::Reload,
             "quit" => Request::Quit,
+            "prefs" => Request::Prefs,
+            "clear-usage" => Request::ClearUsage,
             "search" => {
                 let text = field("text", true)?;
                 if text.len() > MAX_SEARCH {
@@ -198,6 +206,8 @@ impl Request {
 pub trait Backend: Send + Sync {
     fn run_trigger(&self, bundle: &str, id: &str, arg: &str) -> Outcome;
     fn validate_theme(&self, file: &Path) -> Result<(), String>;
+    /// Forget what the launcher learned from earlier picks.
+    fn clear_usage(&self) {}
 }
 
 pub trait Handler: Send + Sync {
@@ -230,8 +240,21 @@ impl Handler for AppHandler {
                 self.sink.emit(AppEvent::Quit);
                 Response::ok("")
             }
+            Request::Prefs => {
+                self.sink.emit(AppEvent::Preferences);
+                Response::ok("")
+            }
+            Request::ClearUsage => {
+                self.backend.clear_usage();
+                Response::ok("")
+            }
             Request::Trigger { bundle, id, arg } => {
-                Response::from_outcome(self.backend.run_trigger(&bundle, &id, &arg))
+                let outcome = self.backend.run_trigger(&bundle, &id, &arg);
+                // an Open Launcher object: show the window as `search` does
+                if let Outcome::ShowLauncher(query) = &outcome {
+                    self.sink.emit(AppEvent::Search(query.clone()));
+                }
+                Response::from_outcome(outcome)
             }
             Request::Theme { file } => match self.backend.validate_theme(&file) {
                 Ok(()) => {
@@ -359,6 +382,24 @@ pub struct Server {
     _lock: File,
 }
 
+/// One of the `MAX_CONNECTIONS` connection slots; frees itself on drop (also while unwinding).
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Take a slot, or `None` when `MAX_CONNECTIONS` connections are already being served.
+fn admit(active: &Arc<AtomicUsize>) -> Option<ConnectionSlot> {
+    if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+        active.fetch_sub(1, Ordering::SeqCst);
+        return None;
+    }
+    Some(ConnectionSlot(Arc::clone(active)))
+}
+
 /// Start answering requests on a background thread.
 pub fn serve(primary: Primary, handler: Arc<dyn Handler>, uid: u32) -> Server {
     let Primary { _lock, listener, path } = primary;
@@ -372,19 +413,19 @@ pub fn serve(primary: Primary, handler: Arc<dyn Handler>, uid: u32) -> Server {
                     break;
                 }
                 let Ok(stream) = conn else { continue };
-                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    active.fetch_sub(1, Ordering::SeqCst);
+                let Some(slot) = admit(&active) else {
                     let mut s = stream;
                     let _ = s.write_all(Response::err("too many connections").encode().as_bytes());
                     continue;
-                }
+                };
                 let handler = Arc::clone(&handler);
-                let active = Arc::clone(&active);
                 std::thread::spawn(move || {
+                    // Released when this closure ends, however it ends (a panicking handler
+                    // included): sixteen panics must not lock the socket out until restart.
+                    let _slot = slot;
                     if let Err(e) = handle_connection(stream, handler.as_ref(), uid) {
                         eprintln!("ashdash: ipc connection: {e}");
                     }
-                    active.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         })
@@ -514,6 +555,8 @@ mod tests {
                 .push((bundle.into(), id.into(), arg.into()));
             if id == "big" {
                 Outcome::LargeType("HELLO".into())
+            } else if id == "browse" {
+                Outcome::ShowLauncher("open docs".into())
             } else if id == "missing" {
                 Outcome::Error("no such trigger".into())
             } else {
@@ -556,6 +599,8 @@ mod tests {
             Request::Show,
             Request::Reload,
             Request::Quit,
+            Request::Prefs,
+            Request::ClearUsage,
             Request::Search {
                 text: "saf \"quoted\"\n é".into(),
             },
@@ -613,6 +658,26 @@ mod tests {
     }
 
     #[test]
+    fn an_open_launcher_trigger_shows_the_window_with_its_query() {
+        let (h, sink, _) = handler(true);
+        let r = h.handle(Request::Trigger {
+            bundle: "b".into(),
+            id: "browse".into(),
+            arg: String::new(),
+        });
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sink.take(), vec![AppEvent::Search("open docs".into())]);
+        // a trigger that only shows Large Type opens nothing
+        let r = h.handle(Request::Trigger {
+            bundle: "b".into(),
+            id: "big".into(),
+            arg: String::new(),
+        });
+        assert!(r.large);
+        assert!(sink.take().is_empty());
+    }
+
+    #[test]
     fn handler_maps_requests_to_events_and_engine_calls() {
         let (h, sink, backend) = handler(true);
         assert_eq!(h.handle(Request::Ping), Response::ok("pong"));
@@ -620,6 +685,7 @@ mod tests {
         assert!(h.handle(Request::Search { text: "saf".into() }).ok);
         assert!(h.handle(Request::Reload).ok);
         assert!(h.handle(Request::Quit).ok);
+        assert!(h.handle(Request::Prefs).ok);
         assert!(h.handle(Request::Theme { file: "/x".into() }).ok);
         assert_eq!(
             sink.take(),
@@ -628,6 +694,7 @@ mod tests {
                 AppEvent::Search("saf".into()),
                 AppEvent::Reload,
                 AppEvent::Quit,
+                AppEvent::Preferences,
                 AppEvent::Theme("/x".into())
             ]
         );
@@ -720,6 +787,72 @@ mod tests {
         assert!(matches!(send(&path, &Request::Ping, t), Err(ClientError::NotRunning)));
         assert!(matches!(acquire(&path, uid).unwrap(), Acquired::Primary(_)));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Panics on `show`, answers everything else.
+    struct PanickyHandler;
+    impl Handler for PanickyHandler {
+        fn handle(&self, req: Request) -> Response {
+            if req == Request::Show {
+                panic!("handler bug (expected in this test)");
+            }
+            Response::ok("pong")
+        }
+    }
+
+    #[test]
+    fn panicking_handlers_do_not_use_up_the_connection_slots() {
+        let dir = temp("panic");
+        let uid = current_uid();
+        let path = dir.join("run").join("ipc.sock");
+        let Acquired::Primary(primary) = acquire(&path, uid).unwrap() else {
+            panic!("expected to become primary")
+        };
+        let server = serve(primary, Arc::new(PanickyHandler), uid);
+        let t = Duration::from_secs(5);
+        // Well over MAX_CONNECTIONS panics; each one used to leak a slot for good.
+        for _ in 0..(MAX_CONNECTIONS * 2) {
+            assert!(send(&path, &Request::Show, t).is_err());
+        }
+        // The handler threads release their slot while unwinding, which can trail the client's
+        // error by a moment: give them a bounded time.
+        let start = Instant::now();
+        loop {
+            let r = send(&path, &Request::Ping, t).unwrap();
+            if r.ok {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the socket stayed locked out: {}",
+                r.error
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(server);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_connection_slot_is_released_when_its_guard_drops_even_while_unwinding() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let guard = admit(&active).expect("a free slot");
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        let a = Arc::clone(&active);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("boom (expected in this test)");
+        }));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let held: Vec<_> = (0..MAX_CONNECTIONS).map(|_| admit(&a).expect("free")).collect();
+        assert!(
+            admit(&a).is_none(),
+            "the {}th connection is refused",
+            MAX_CONNECTIONS + 1
+        );
+        assert_eq!(a.load(Ordering::SeqCst), MAX_CONNECTIONS, "a refusal takes no slot");
+        drop(held);
+        assert_eq!(a.load(Ordering::SeqCst), 0);
     }
 
     #[test]

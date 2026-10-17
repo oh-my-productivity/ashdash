@@ -43,6 +43,10 @@ pub struct WriteFile {
     pub mode: WriteMode,
     pub create_dirs: bool,
     pub allow_empty: bool,
+    /// A file this write must never change, whatever the path is spelled like: the workflow's
+    /// own `info.plist`. Checked on the opened file (device and inode), so a symlink, a hard
+    /// link or a link created after the executor looked at the path cannot get around it.
+    pub protect: Option<PathBuf>,
 }
 
 impl WriteFile {
@@ -56,21 +60,47 @@ impl WriteFile {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let ctx = || format!("writing {}", self.path.display());
+        let mut opts = std::fs::OpenOptions::new();
         match self.mode {
-            WriteMode::Overwrite => std::fs::write(&self.path, &self.contents).with_context(ctx),
-            WriteMode::Append => {
-                let mut f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.path)
-                    .with_context(ctx)?;
+            // `fs::write` truncates on open; do it after the identity check instead.
+            WriteMode::Overwrite => opts.write(true).create(true),
+            WriteMode::Append => opts.append(true).create(true),
+            WriteMode::Prepend => opts.read(true).write(true).create(true),
+        };
+        let mut f = opts.open(&self.path).with_context(ctx)?;
+        self.refuse_protected(&f)?;
+        match self.mode {
+            WriteMode::Overwrite => {
+                f.set_len(0).with_context(ctx)?;
                 f.write_all(self.contents.as_bytes()).with_context(ctx)
             }
+            WriteMode::Append => f.write_all(self.contents.as_bytes()).with_context(ctx),
             WriteMode::Prepend => {
-                let old = std::fs::read_to_string(&self.path).unwrap_or_default();
-                std::fs::write(&self.path, format!("{}{old}", self.contents)).with_context(ctx)
+                use std::io::{Read, Seek, SeekFrom};
+                let mut old = String::new();
+                // Unreadable (not UTF-8) content counts as empty, like before.
+                let _ = f.read_to_string(&mut old);
+                f.seek(SeekFrom::Start(0)).with_context(ctx)?;
+                f.set_len(0).with_context(ctx)?;
+                f.write_all(format!("{}{old}", self.contents).as_bytes())
+                    .with_context(ctx)
             }
         }
+    }
+
+    fn refuse_protected(&self, opened: &std::fs::File) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let Some(p) = &self.protect else { return Ok(()) };
+        let (Ok(a), Ok(b)) = (opened.metadata(), std::fs::metadata(p)) else {
+            return Ok(());
+        };
+        if (a.dev(), a.ino()) == (b.dev(), b.ino()) {
+            anyhow::bail!(
+                "refusing to write {}: it is the workflow's own info.plist",
+                self.path.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -122,6 +152,10 @@ pub enum Effect {
     },
     Reveal(PathBuf),
     Copy(String),
+    /// Copy to Clipboard with the object's "transient" box ticked: the text is placed on the
+    /// pasteboard with the `org.nspasteboard.TransientType` marker, so no clipboard manager
+    /// (this one included) records it.
+    CopyTransient(String),
     Notify {
         title: String,
         text: String,
@@ -282,8 +316,89 @@ fn with_uuid(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Remove `.` and resolve `..` textually (no disk access, so it also works for paths that do
+/// not exist yet).
+pub(super) fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Is `path` the `info.plist` of the workflow folder `dir`? Compared textually (after
+/// resolving `.`/`..`) and, when the paths exist, by real location *including the file itself*
+/// (a package symlink `notes.txt -> info.plist` resolves to it); the file name ignores case
+/// because the default macOS volume does. [`WriteFile::perform`] repeats the check on the opened
+/// file, which also covers hard links and links made after this call.
+fn is_info_plist_of(dir: &Path, path: &Path) -> bool {
+    let is_info = |p: &Path| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("info.plist"))
+    };
+    let norm = lexical_normalize(path);
+    if is_info(&norm)
+        && let Some(parent) = norm.parent()
+    {
+        if parent == lexical_normalize(dir) {
+            return true;
+        }
+        if let (Ok(a), Ok(b)) = (parent.canonicalize(), dir.canonicalize())
+            && a == b
+        {
+            return true;
+        }
+    }
+    // The final component may be a link (or the path may go through linked folders).
+    if let (Ok(real), Ok(base)) = (path.canonicalize(), dir.canonicalize()) {
+        return is_info(&real) && real.parent() == Some(base.as_path());
+    }
+    false
+}
+
 fn rend(st: &State, t: &str) -> String {
     render(t, &st.arg, &st.vars)
+}
+
+impl Workflow {
+    /// The file an Open File / Launch Files object opens: `~` expanded, and a relative path
+    /// resolved against the workflow's own folder (the reference launcher's working directory for a workflow)
+    /// rather than left to `open`, which would use the launcher's working directory. The trust
+    /// summary reports a relative literal as shipped with the workflow (`trust.rs`).
+    fn open_target(&self, s: &str) -> PathBuf {
+        // `https://...`, `mailto:...` (a URL handed to Open File, or arriving as its argument)
+        // is not a path: `open` gets it as written.
+        if super::trust::target_scheme(s.trim()).is_some() {
+            return PathBuf::from(s);
+        }
+        let p = expand_tilde(s);
+        if p.is_relative() {
+            lexical_normalize(&self.dir.join(p))
+        } else {
+            p
+        }
+    }
+
+    /// The application of Open File (`openwith`) / Open URL (`browser`): an app *name* is passed
+    /// on as is, a path is expanded and resolved like [`Self::open_target`].
+    fn open_app(&self, app: &str) -> Option<String> {
+        if app.is_empty() {
+            return None;
+        }
+        if !super::trust::app_is_path(app, &self.dir) {
+            return Some(app.to_string());
+        }
+        Some(self.open_target(app).display().to_string())
+    }
 }
 
 impl Workflow {
@@ -482,7 +597,7 @@ impl Workflow {
                     q.replace("%20", &spaces)
                 };
                 let url = render(&node.s("url"), &q, &st.vars);
-                let browser = Some(node.s("browser")).filter(|b| !b.is_empty());
+                let browser = self.open_app(&node.s("browser"));
                 fx.push(Effect::OpenUrl { url, browser });
             }
             "alfred.workflow.action.openfile" => {
@@ -492,9 +607,9 @@ impl Workflow {
                 if src.is_empty() {
                     src = st.arg.clone();
                 }
-                let with = Some(node.s("openwith")).filter(|w| !w.is_empty());
+                let with = self.open_app(&node.s("openwith"));
                 fx.push(Effect::OpenPath {
-                    path: expand_tilde(&src),
+                    path: self.open_target(&src),
                     with,
                 });
             }
@@ -502,7 +617,7 @@ impl Workflow {
                 for p in node.config.get("paths").and_then(Value::as_array).into_iter().flatten() {
                     if let Some(s) = p.as_str() {
                         fx.push(Effect::OpenPath {
-                            path: expand_tilde(&rend(st, s)),
+                            path: self.open_target(&rend(st, s)),
                             with: None,
                         });
                     }
@@ -534,7 +649,7 @@ impl Workflow {
                 if node.i("searcher") == 1_635_215_215 {
                     fx.push(Effect::OpenUrl {
                         url: format!("https://www.google.com/search?q={}", percent_encode(&st.arg)),
-                        browser: Some(node.s("browser")).filter(|b| !b.is_empty()),
+                        browser: self.open_app(&node.s("browser")),
                     });
                 } else {
                     self.warn(fx, format!("web search engine {} is not mapped", node.i("searcher")));
@@ -557,7 +672,12 @@ impl Workflow {
                 });
             }
             "alfred.workflow.output.clipboard" => {
-                fx.push(Effect::Copy(rend(st, &node.s("clipboardtext"))));
+                let text = rend(st, &node.s("clipboardtext"));
+                fx.push(if node.b("transient") {
+                    Effect::CopyTransient(text)
+                } else {
+                    Effect::Copy(text)
+                });
             }
             "alfred.workflow.output.largetype" => {
                 fx.push(Effect::LargeType(rend(st, &node.s("largetypetext"))));
@@ -581,6 +701,15 @@ impl Workflow {
                 if node.b("adduuid") {
                     path = with_uuid(&path);
                 }
+                // The import prompt describes the objects that are in the package. A workflow
+                // that could overwrite its own info.plist could add objects (scripts) later, so
+                // that one file is off limits. Other files in the folder stay writable (the reference launcher
+                // semantics), and a script can of course still write anywhere it wants: this
+                // closes the declarative loophole, it is not a sandbox (SEC-30).
+                if is_info_plist_of(&self.dir, &path) {
+                    self.warn(fx, "Write File refuses to change the workflow's own info.plist");
+                    return Flow::Stop;
+                }
                 let mode = match node.i("type") {
                     1 => WriteMode::Append,
                     2 => WriteMode::Prepend,
@@ -596,6 +725,7 @@ impl Workflow {
                         .get("allowemptyfiles")
                         .and_then(Value::as_bool)
                         .unwrap_or(true),
+                    protect: Some(self.dir.join("info.plist")),
                 }));
                 // "The resolved path is outputted from this object."
                 st.arg = path.display().to_string();
@@ -879,5 +1009,289 @@ mod tests {
         let fx = wf.run(&act, Mods::NONE, &paths);
         assert!(matches!(fx.last(), Some(Effect::Warn(_))));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relative_open_targets_and_apps_resolve_against_the_workflow_folder() {
+        // Review item 1: the classifier (trust.rs) calls a relative literal "shipped with the
+        // workflow", so the executor must not leave it to the launcher's working directory.
+        let (paths, root) = temp_paths("openrel");
+        let doc = json!({
+            "name": "R", "bundleid": "r",
+            "objects": [
+                {"uid": "F", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "payload.app", "openwith": "tools/Viewer.app"}},
+                {"uid": "G", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "/tmp/x", "openwith": "Safari"}},
+                {"uid": "H", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "~/y", "openwith": "/Applications/Safari.app"}},
+                {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["sub/a", "/abs/b"]}},
+                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "./B.app"}},
+            ],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "r", &doc);
+        let at = |uid: &str| {
+            let node = wf.nodes.iter().find(|n| n.uid == uid).unwrap();
+            let mut fx = Vec::new();
+            let mut st = State {
+                arg: String::new(),
+                vars: BTreeMap::new(),
+            };
+            wf.process(node, &mut st, &mut None, &paths, &mut fx);
+            fx
+        };
+        let d = wf.dir.clone();
+        let s = |p: PathBuf| p.display().to_string();
+        assert_eq!(
+            at("F"),
+            [Effect::OpenPath {
+                path: d.join("payload.app"),
+                with: Some(s(d.join("tools/Viewer.app")))
+            }]
+        );
+        assert_eq!(
+            at("G"),
+            [Effect::OpenPath {
+                path: PathBuf::from("/tmp/x"),
+                with: Some("Safari".into())
+            }]
+        );
+        assert_eq!(
+            at("H"),
+            [Effect::OpenPath {
+                path: expand_tilde("~/y"),
+                with: Some("/Applications/Safari.app".into())
+            }]
+        );
+        assert_eq!(
+            at("L"),
+            [
+                Effect::OpenPath {
+                    path: d.join("sub/a"),
+                    with: None
+                },
+                Effect::OpenPath {
+                    path: PathBuf::from("/abs/b"),
+                    with: None
+                },
+            ]
+        );
+        assert_eq!(
+            at("U"),
+            [Effect::OpenUrl {
+                url: "https://x.test".into(),
+                browser: Some(s(d.join("B.app")))
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn urls_and_app_names_are_passed_to_open_unchanged() {
+        // Review item 4: only a *relative file* is resolved against the workflow folder.
+        let (paths, root) = temp_paths("openurl");
+        let doc = json!({
+            "name": "R", "bundleid": "r",
+            "objects": [
+                {"uid": "A", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "https://example.com/x", "openwith": "Safari.app"}},
+                {"uid": "B", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "", "openwith": "com.google.Chrome"}},
+                {"uid": "C", "type": "alfred.workflow.action.openfile",
+                 "config": {"sourcefile": "Documents/y", "openwith": "payload.app"}},
+                {"uid": "L", "type": "alfred.workflow.action.launchfiles",
+                 "config": {"paths": ["mailto:a@b.c", "sub/z"]}},
+                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                 "config": {"url": "https://x.test", "browser": "Chrome.app"}},
+            ],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "r", &doc);
+        std::fs::create_dir_all(wf.dir.join("payload.app")).unwrap(); // shipped, no slash
+        let at = |uid: &str, arg: &str| {
+            let node = wf.nodes.iter().find(|n| n.uid == uid).unwrap();
+            let mut fx = Vec::new();
+            let mut st = State {
+                arg: arg.into(),
+                vars: BTreeMap::new(),
+            };
+            wf.process(node, &mut st, &mut None, &paths, &mut fx);
+            fx
+        };
+        let d = wf.dir.clone();
+        let open = |path: PathBuf, with: Option<&str>| Effect::OpenPath {
+            path,
+            with: with.map(String::from),
+        };
+        // a URL in the file field, a bare `X.app` that is not in the package: both as written
+        assert_eq!(
+            at("A", ""),
+            [open(PathBuf::from("https://example.com/x"), Some("Safari.app"))]
+        );
+        // a URL arriving as the argument of an empty field; a bundle id stays a name
+        assert_eq!(
+            at("B", "https://example.com/q?a=b"),
+            [open(
+                PathBuf::from("https://example.com/q?a=b"),
+                Some("com.google.Chrome")
+            )]
+        );
+        assert_eq!(
+            at("B", "mailto:a@b.c"),
+            [open(PathBuf::from("mailto:a@b.c"), Some("com.google.Chrome"))]
+        );
+        // a relative path is the workflow's; `payload.app` exists in the package, so it is a path
+        assert_eq!(
+            at("C", ""),
+            [open(
+                d.join("Documents/y"),
+                Some(&d.join("payload.app").display().to_string())
+            )]
+        );
+        assert_eq!(
+            at("B", "Documents/y"),
+            [open(d.join("Documents/y"), Some("com.google.Chrome"))]
+        );
+        assert_eq!(
+            at("L", ""),
+            [open(PathBuf::from("mailto:a@b.c"), None), open(d.join("sub/z"), None)]
+        );
+        assert_eq!(
+            at("U", ""),
+            [Effect::OpenUrl {
+                url: "https://x.test".into(),
+                browser: Some("Chrome.app".into())
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn write_file_workflow(tag: &str, filename: &str, mode: i64) -> (Workflow, Paths, PathBuf) {
+        let (paths, root) = temp_paths(tag);
+        let doc = json!({
+            "name": "W", "bundleid": "w",
+            "objects": [{"uid": "W", "type": "alfred.workflow.output.writefile", "config": {
+                "filename": filename, "filetext": "PWNED\n", "type": mode, "relativepathmode": 2}}],
+            "connections": {}
+        });
+        let wf = load_via_plist(&root, "w", &doc);
+        (wf, paths, root)
+    }
+
+    fn write_effects(wf: &Workflow, paths: &Paths) -> Vec<Effect> {
+        let node = wf.nodes.iter().find(|n| n.uid == "W").unwrap();
+        let mut fx = Vec::new();
+        let mut st = State {
+            arg: String::new(),
+            vars: BTreeMap::new(),
+        };
+        wf.process(node, &mut st, &mut None, paths, &mut fx);
+        fx
+    }
+
+    #[test]
+    fn write_file_does_not_follow_a_package_symlink_to_info_plist() {
+        // Review item 2: `notes.txt -> info.plist` inside the package.
+        let (wf, paths, root) = write_file_workflow("wfsym", "notes.txt", 0);
+        let plist = std::fs::read(wf.dir.join("info.plist")).unwrap();
+        std::os::unix::fs::symlink("info.plist", wf.dir.join("notes.txt")).unwrap();
+        let fx = write_effects(&wf, &paths);
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::WriteFile(_))),
+            "the executor resolves the link and refuses: {fx:?}"
+        );
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Warn(m) if m.contains("info.plist"))),
+            "{fx:?}"
+        );
+        assert_eq!(std::fs::read(wf.dir.join("info.plist")).unwrap(), plist);
+
+        // A hard link or a link made between the check and the write is caught by identity
+        // when the file is opened, in every write mode.
+        std::fs::remove_file(wf.dir.join("notes.txt")).unwrap();
+        let fx = write_effects(&wf, &paths);
+        let Some(Effect::WriteFile(w)) = fx.iter().find(|e| matches!(e, Effect::WriteFile(_))) else {
+            panic!("a plain path is written: {fx:?}")
+        };
+        for (i, link) in [("hard", true), ("sym", false)].into_iter().enumerate() {
+            let p = wf.dir.join(format!("late{i}.txt"));
+            if link.1 {
+                std::fs::hard_link(wf.dir.join("info.plist"), &p).unwrap();
+            } else {
+                std::os::unix::fs::symlink("info.plist", &p).unwrap();
+            }
+            for mode in [WriteMode::Overwrite, WriteMode::Append, WriteMode::Prepend] {
+                let raced = WriteFile {
+                    path: p.clone(),
+                    mode,
+                    ..w.clone()
+                };
+                let err = raced.perform().expect_err(link.0);
+                assert!(format!("{err:#}").contains("info.plist"), "{err:#}");
+                assert_eq!(
+                    std::fs::read(wf.dir.join("info.plist")).unwrap(),
+                    plist,
+                    "{} {mode:?}",
+                    link.0
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_file_still_writes_through_a_link_to_an_ordinary_file() {
+        // A dotfile that is a symlink into a dotfiles repository keeps working (the reference launcher semantics).
+        let (wf, paths, root) = write_file_workflow("wfok", "notes.txt", 1);
+        std::fs::write(wf.dir.join("real.txt"), "a\n").unwrap();
+        std::os::unix::fs::symlink("real.txt", wf.dir.join("notes.txt")).unwrap();
+        for e in write_effects(&wf, &paths) {
+            if let Effect::WriteFile(w) = e {
+                w.perform().unwrap();
+            } else {
+                panic!("{e:?}");
+            }
+        }
+        assert_eq!(std::fs::read_to_string(wf.dir.join("real.txt")).unwrap(), "a\nPWNED\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_to_clipboard_honours_the_transient_box_and_only_that() {
+        let (paths, root) = temp_paths("copy-transient");
+        let doc = json!({
+            "name": "T", "bundleid": "t",
+            "objects": [
+                {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
+                {"uid": "A", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "plain {query}", "transient": false}},
+                {"uid": "B", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "secret {query}", "transient": true}},
+                {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "unset {query}"}},
+            ],
+            "connections": {"J": [
+                {"destinationuid": "A", "modifiers": 0},
+                {"destinationuid": "B", "modifiers": 0},
+                {"destinationuid": "C", "modifiers": 0},
+            ]}
+        });
+        let wf = load_via_plist(&root, "t", &doc);
+        let act = WorkflowAction {
+            workflow: wf.id.clone(),
+            from_uid: "J".into(),
+            arg: "x".into(),
+            ..Default::default()
+        };
+        let fx = wf.run(&act, Mods::NONE, &paths);
+        let _ = std::fs::remove_dir_all(root);
+        assert_eq!(
+            fx,
+            vec![
+                Effect::Copy("plain x".into()),
+                Effect::CopyTransient("secret x".into()),
+                Effect::Copy("unset x".into()),
+            ]
+        );
     }
 }

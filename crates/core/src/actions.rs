@@ -155,8 +155,59 @@ impl<T: Os + ?Sized> Os for Arc<T> {
 /// The real thing: spawns processes with no shell involved.
 pub struct RealOs;
 
+/// macOS tools the launcher runs by name, with their fixed locations. A bare name would be
+/// looked up through `PATH`, which a launcher started from a shell, a login item or a
+/// workflow-modified environment does not control: these never are.
+const SYSTEM_PROGRAMS: &[(&str, &str)] = &[
+    ("open", "/usr/bin/open"),
+    ("osascript", "/usr/bin/osascript"),
+    ("osacompile", "/usr/bin/osacompile"),
+    ("ditto", "/usr/bin/ditto"),
+    ("qlmanage", "/usr/bin/qlmanage"),
+    ("sips", "/usr/bin/sips"),
+    ("mdfind", "/usr/bin/mdfind"),
+    ("unzip", "/usr/bin/unzip"),
+    ("tar", "/usr/bin/tar"),
+    ("pbcopy", "/usr/bin/pbcopy"),
+    ("pbpaste", "/usr/bin/pbpaste"),
+    ("pmset", "/usr/bin/pmset"),
+    ("screencapture", "/usr/sbin/screencapture"),
+];
+
+/// The absolute path of a known macOS system tool given by bare name; anything else (a path,
+/// or a program that is not one of ours) is returned unchanged.
+///
+/// What happens when the file is not there (decided in the Wave 4 fixes, SECURITY.md SEC-R4-14):
+/// * a **known** tool is always its fixed absolute path, whether or not the file exists. A
+///   missing `/usr/bin/open` is not looked for on `PATH`: the spawn fails with an explicit
+///   "starting \"/usr/bin/open\"" error from [`RealOs`] / the caller. There is no `PATH` fallback
+///   for these names, on purpose (a `PATH` fallback is what the table exists to prevent);
+/// * a name that is **not** in the table (`echo`, a user's script, `zip` in test code) is passed
+///   on unchanged, so `Command` looks it up on `PATH`. The source guard
+///   `crates/core/tests/system_programs.rs` makes every such spawn site in the sources an
+///   explicit, listed exception.
+pub fn system_program(program: &std::ffi::OsStr) -> OsString {
+    SYSTEM_PROGRAMS
+        .iter()
+        .find(|(name, _)| program == *name)
+        .map(|(_, path)| OsString::from(path))
+        .unwrap_or_else(|| program.to_os_string())
+}
+
+/// The bare names [`system_program`] knows.
+pub fn system_program_names() -> Vec<&'static str> {
+    SYSTEM_PROGRAMS.iter().map(|(n, _)| *n).collect()
+}
+
+/// A `Command` for a macOS tool given by bare name (`osascript`, `pmset`, `open`, `mdfind`,
+/// `pbcopy`, ...), started from its fixed absolute location. Use this instead of
+/// `Command::new("osascript")` anywhere a process is built directly.
+pub fn system_command(program: &str) -> Command {
+    Command::new(system_program(std::ffi::OsStr::new(program)))
+}
+
 fn build(cmd: &Cmd) -> Command {
-    let mut c = Command::new(&cmd.program);
+    let mut c = Command::new(system_program(&cmd.program));
     c.args(&cmd.args);
     c
 }
@@ -1604,6 +1655,8 @@ mod tests {
     fn trash_refuses_a_symlink_that_points_at_a_protected_place() {
         let t = Tree::new("trash-evil-link");
         let home = dirs::home_dir().unwrap();
+        // A throw-away HOME has no ~/Library, and a dangling link is trashed by design: make it.
+        std::fs::create_dir_all(home.join("Library")).unwrap();
         let os = FakeOs::default();
         // a harmless-looking name for: the home folder, its parent, a system folder, /, ~/Library
         let mut victims = vec![
@@ -1941,6 +1994,32 @@ mod tests {
             "{:?}",
             titles(&v)
         );
+    }
+
+    #[test]
+    fn system_tools_are_run_by_absolute_path() {
+        use std::ffi::OsStr;
+        for name in [
+            "open",
+            "osascript",
+            "ditto",
+            "qlmanage",
+            "sips",
+            "mdfind",
+            "unzip",
+            "screencapture",
+        ] {
+            let abs = system_program(OsStr::new(name));
+            assert!(std::path::Path::new(&abs).is_absolute(), "{name} resolved to {abs:?}");
+            assert_eq!(build(&Cmd::new(name)).get_program(), abs.as_os_str());
+        }
+        // anything else is left alone: explicit paths, and programs that are not ours
+        assert_eq!(system_program(OsStr::new("/bin/echo")), OsString::from("/bin/echo"));
+        assert_eq!(system_program(OsStr::new("sleep")), OsString::from("sleep"));
+        // every table entry exists on this machine (the table is not guesswork)
+        for (name, path) in SYSTEM_PROGRAMS {
+            assert!(std::path::Path::new(path).exists(), "{name}: {path} is missing");
+        }
     }
 
     #[test]

@@ -2,32 +2,45 @@ name: release
 
 # Runs when a version tag is pushed (v0.1.0). Signs with a Developer ID certificate and
 # notarizes when the secrets below exist; otherwise produces an ad-hoc signed, clearly
-# labelled pre-release. See docs/RELEASING.md.
+# labelled pre-release. The GitHub release is always created as a DRAFT, with the notes from
+# docs/release-notes/<tag>.md; a maintainer reads it and presses Publish. See docs/RELEASING.md.
+#
+# Third-party actions are pinned by commit SHA (the comment names the release).
 on:
   push:
     tags: ["v*"]
   # Manual runs build and upload artifacts but never create a release (only tags do).
   workflow_dispatch:
 
+# Least privilege: the build job (which runs third-party actions and the build scripts) cannot
+# write to the repository. Only the small publish job below gets `contents: write`.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: macos-14
     timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.mode.outputs.signed }}
     env:
       # Secrets cannot be tested in `if:` directly; expose only their presence.
       HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' && secrets.CODESIGN_IDENTITY != '' }}
       HAVE_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check the tag matches the crate version
         id: version
@@ -38,6 +51,24 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match crates/app/Cargo.toml version $version" >&2
             exit 1
+          fi
+
+      - name: Check the release notes and changelog exist (tags only)
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          [ -s "$notes" ] || { echo "missing or empty $notes" >&2; exit 1; }
+          grep -q "^## \[${GITHUB_REF_NAME#v}\]" CHANGELOG.md || { echo "CHANGELOG.md has no '## [${GITHUB_REF_NAME#v}]' section" >&2; exit 1; }
+
+      - name: Signing mode
+        id: mode
+        run: |
+          if [ "$HAVE_CERT" = "true" ] && [ "$HAVE_NOTARY" = "true" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No (complete) signing secrets: this build is ad-hoc signed and not notarized."
           fi
 
       - name: Packaging self-test
@@ -59,8 +90,14 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
           rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
-          # Put the temporary keychain first in the search list.
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Put the temporary keychain first in the search list (bash 3.2 compatible, no word splitting).
+          args=("$keychain")
+          while IFS= read -r k; do
+            k="${k//\"/}"
+            k="${k#"${k%%[![:space:]]*}"}"
+            if [ -n "$k" ]; then args+=("$k"); fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${args[@]}"
           echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
 
       - name: Store notarization credentials
@@ -84,6 +121,7 @@ jobs:
           set -euo pipefail
           packaging/build-app.sh
 
+      # notarize.sh is a no-op (exit 0) while NOTARY_PROFILE is unset.
       - name: Notarize the app
         run: packaging/notarize.sh dist/Ashdash.app
 
@@ -93,19 +131,23 @@ jobs:
         run: packaging/make-dmg.sh dist/Ashdash.app
 
       - name: Notarize the DMG
-        run: packaging/notarize.sh "dist/Ashdash-${{ steps.version.outputs.version }}.dmg"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: packaging/notarize.sh "dist/Ashdash-${VERSION}.dmg"
 
       - name: Refresh the checksum and render the Homebrew cask
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          dmg="dist/Ashdash-${{ steps.version.outputs.version }}.dmg"
+          dmg="dist/Ashdash-${VERSION}.dmg"
           # Stapling rewrites the DMG, so the checksum must be taken last.
           (cd dist && shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256")
           cat "$dmg.sha256"
           packaging/homebrew/render-cask.sh --dmg "$dmg" --repo "$GITHUB_REPOSITORY" --output dist/ashdash.rb
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ashdash-${{ steps.version.outputs.version }}
           path: |
@@ -114,19 +156,47 @@ jobs:
             dist/ashdash.rb
           if-no-files-found: error
 
-      - name: Publish the GitHub release
-        if: github.ref_type == 'tag'
+      - name: Remove the temporary keychain
+        if: always() && env.HAVE_CERT == 'true' && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+  # Creates the DRAFT release. Needs no secrets of its own and runs no build scripts.
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ashdash-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SIGNED: ${{ needs.build.outputs.signed }}
         run: |
           set -euo pipefail
-          flags=(--generate-notes --title "Ashdash ${{ steps.version.outputs.version }}")
-          if [ "$HAVE_CERT" != "true" ] || [ "$HAVE_NOTARY" != "true" ]; then
-            flags+=(--prerelease --notes "Unsigned or ad-hoc signed build, not notarized. Gatekeeper will block it until you right-click > Open, or run xattr -dr com.apple.quarantine on the app.")
+          notes_src="docs/release-notes/${GITHUB_REF_NAME}.md"
+          [ -s "$notes_src" ] || { echo "missing or empty $notes_src" >&2; exit 1; }
+          notes="$RUNNER_TEMP/notes.md"
+          flags=(--draft --verify-tag --title "Ashdash ${VERSION}" --notes-file "$notes")
+          if [ "$SIGNED" != "true" ]; then
+            flags+=(--prerelease)
+            {
+              echo "> **Ad-hoc signed build, not notarized.** Gatekeeper will block it until you right-click > Open,"
+              echo "> or run \`xattr -dr com.apple.quarantine /Applications/Ashdash.app\`."
+              echo
+              cat "$notes_src"
+            } > "$notes"
+          else
+            cp "$notes_src" "$notes"
           fi
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
-            dist/*.dmg dist/*.sha256 dist/ashdash.rb
-
-      - name: Remove the temporary keychain
-        if: always() && env.HAVE_CERT == 'true'
-        run: security delete-keychain "$KEYCHAIN_PATH" || true
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" dist/*.dmg dist/*.sha256 dist/ashdash.rb

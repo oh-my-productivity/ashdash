@@ -12,7 +12,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 
@@ -78,7 +78,7 @@ pub fn apply(plan: &RestorePlan) -> Result<()> {
     match plan {
         RestorePlan::Text(t) => copy_text(t),
         RestorePlan::Jxa(src) => {
-            let out = Command::new("osascript")
+            let out = crate::actions::system_command("osascript")
                 .args(["-l", "JavaScript", "-e"])
                 .arg(src)
                 .stdin(Stdio::null())
@@ -100,7 +100,7 @@ pub fn apply(plan: &RestorePlan) -> Result<()> {
 /// Copy text to the pasteboard via `pbcopy`, forcing a UTF-8 locale (apps
 /// started from Finder have no `LANG`, which garbles non-ASCII text).
 pub fn copy_text(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy")
+    let mut child = crate::actions::system_command("pbcopy")
         .env("LC_ALL", "en_US.UTF-8")
         .stdin(Stdio::piped())
         .spawn()

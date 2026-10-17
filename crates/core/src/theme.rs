@@ -7,9 +7,139 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 pub type Rgba = [u8; 4];
+
+/// Themes are small property lists; a file offered for **installation** (Finder, `ashdash theme`,
+/// the preferences window) that is bigger is refused before it is parsed.
+pub const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
+/// What [`Theme::load`] accepts: a theme already installed (or chosen in the settings) may be
+/// larger than a new one is allowed to be - versions up to 0.1.0 read these with a bigger
+/// allowance - because the parse is bounded in nesting and in values anyway ([`parse_plist`]).
+pub const MAX_INSTALLED_THEME_BYTES: u64 = 8 * 1024 * 1024;
+/// Deepest array/dictionary nesting accepted in a property list (the workflow parser's cap).
+pub const MAX_PLIST_DEPTH: usize = 64;
+/// Most values (keys included) a property list may expand to. A binary plist can refer to one
+/// object from many places, so a few hundred bytes can describe 10^40 values; the probe stops
+/// counting here. Real files stay far below it (a 2 MiB XML plist cannot hold more than ~200 000).
+pub const MAX_PLIST_VALUES: usize = 500_000;
+
+/// Parse a property list (XML, binary or ASCII) after checking how deeply it nests.
+///
+/// `plist::Value::from_reader` builds and drops its tree recursively, so a ~2 MB file of nested
+/// `<array>` elements overflows the stack and aborts the whole process (confirmed for plist
+/// 1.10.1; the same shape as the calculator's SEC-08). The probe below reads the same bytes
+/// through plist's event-driven serde deserializer and fails at [`MAX_PLIST_DEPTH`], so its own
+/// recursion never gets deeper than the cap; the tree is only built for files that passed.
+/// Callers must also bound the input size ([`read_limited`]).
+pub fn parse_plist(bytes: &[u8]) -> Result<plist::Value> {
+    PROBE_VALUES.with(|n| n.set(0));
+    plist::from_reader::<_, DepthProbe>(std::io::Cursor::new(bytes))?;
+    Ok(plist::Value::from_reader(std::io::Cursor::new(bytes))?)
+}
+
+thread_local! {
+    static PROBE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PROBE_VALUES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one more value; fails once a document has expanded to [`MAX_PLIST_VALUES`].
+fn count_value<E: serde::de::Error>() -> Result<(), E> {
+    PROBE_VALUES.with(|n| {
+        if n.get() >= MAX_PLIST_VALUES {
+            return Err(E::custom(format!(
+                "the property list holds more than {MAX_PLIST_VALUES} values"
+            )));
+        }
+        n.set(n.get() + 1);
+        Ok(())
+    })
+}
+
+/// Holds one level of nesting; gives it back when dropped (also on an error return).
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter<E: serde::de::Error>() -> Result<DepthGuard, E> {
+        PROBE_DEPTH.with(|d| {
+            if d.get() >= MAX_PLIST_DEPTH {
+                return Err(E::custom(format!(
+                    "the property list is nested more than {MAX_PLIST_DEPTH} levels deep"
+                )));
+            }
+            d.set(d.get() + 1);
+            Ok(DepthGuard)
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        PROBE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Accepts any property list and keeps nothing but the nesting depth check.
+struct DepthProbe;
+
+impl<'de> serde::Deserialize<'de> for DepthProbe {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<DepthProbe, D::Error> {
+        count_value()?;
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = DepthProbe;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a property list")
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_bytes<E: serde::de::Error>(self, _: &[u8]) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<DepthProbe, E> {
+                Ok(DepthProbe)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<DepthProbe, A::Error> {
+                let _level = DepthGuard::enter()?;
+                while seq.next_element::<DepthProbe>()?.is_some() {}
+                Ok(DepthProbe)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<DepthProbe, A::Error> {
+                let _level = DepthGuard::enter()?;
+                while map.next_key::<DepthProbe>()?.is_some() {
+                    map.next_value::<DepthProbe>()?;
+                }
+                Ok(DepthProbe)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// Read a whole file, refusing one larger than `max` bytes (without reading past `max + 1`).
+pub fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?.take(max + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        bail!("the file is unusually large (over {max} bytes)");
+    }
+    Ok(buf)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
@@ -90,8 +220,8 @@ fn col(d: Option<&plist::Dictionary>, key: &str) -> Option<Rgba> {
 }
 
 impl Theme {
-    pub fn load(path: &Path) -> Result<Theme> {
-        let root = plist::Value::from_file(path).with_context(|| format!("reading {}", path.display()))?;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Theme> {
+        let root = parse_plist(bytes)?;
         let t = root
             .as_dictionary()
             .and_then(|d| d.get("alfredtheme"))
@@ -140,6 +270,22 @@ impl Theme {
         set!(out.separator, col(dict(&wrap, "separator"), "color"));
         Ok(out)
     }
+
+    /// Load a theme that is already on this machine (the `theme` setting, `<data>/themes/`):
+    /// up to [`MAX_INSTALLED_THEME_BYTES`].
+    pub fn load(path: &Path) -> Result<Theme> {
+        Theme::load_limited(path, MAX_INSTALLED_THEME_BYTES)
+    }
+
+    /// Load a theme someone offers for installation: up to [`MAX_THEME_BYTES`].
+    pub fn load_for_install(path: &Path) -> Result<Theme> {
+        Theme::load_limited(path, MAX_THEME_BYTES)
+    }
+
+    fn load_limited(path: &Path, max: u64) -> Result<Theme> {
+        let bytes = read_limited(path, max).with_context(|| format!("reading {}", path.display()))?;
+        Theme::from_bytes(&bytes).with_context(|| format!("reading {}", path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +322,222 @@ mod tests {
         assert_eq!(t.result_selected_background, [0x48, 0, 0x69, 0xE4]);
         assert_eq!(t.result_text_size, 22.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A plist of `depth` nested arrays inside the `alfredtheme` dictionary.
+    fn nested_theme(depth: usize) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        )
+    }
+
+    fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("oa-theme-{tag}-{}.alfredappearance", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_deeply_nested_theme_is_refused_not_a_stack_overflow() {
+        // 1.9 MB, under the Finder size cap: `plist::Value::from_file` overflowed the stack on this
+        // (SIGABRT, "fatal runtime error: stack overflow"). Test threads have a 2 MiB stack.
+        let text = nested_theme(125_000);
+        assert!(text.len() > 1_800_000 && text.len() < 2 * 1024 * 1024, "{}", text.len());
+        let path = temp_file("deep", text.as_bytes());
+        let err = Theme::load(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("nested"), "{err:#}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn nesting_up_to_the_cap_parses_and_one_more_level_does_not() {
+        let at_cap = nested_theme(MAX_PLIST_DEPTH - 2); // root dict + alfredtheme dict + arrays
+        assert!(parse_plist(at_cap.as_bytes()).is_ok());
+        let over = nested_theme(MAX_PLIST_DEPTH - 1);
+        let err = parse_plist(over.as_bytes()).unwrap_err();
+        assert!(format!("{err:#}").contains("nested"), "{err:#}");
+        // ordinary files are untouched
+        assert!(parse_plist(b"<plist version=\"1.0\"><dict/></plist>").is_ok());
+        assert!(parse_plist(b"not a plist").is_err());
+    }
+
+    #[test]
+    fn every_kind_of_value_passes_the_probe_in_both_encodings() {
+        let mut d = plist::Dictionary::new();
+        d.insert("bool".into(), true.into());
+        d.insert("int".into(), 5i64.into());
+        d.insert("big".into(), u64::MAX.into());
+        d.insert("real".into(), 1.5f64.into());
+        d.insert("str".into(), "é".into());
+        d.insert("data".into(), plist::Value::Data(vec![1, 2, 3]));
+        d.insert(
+            "date".into(),
+            plist::Value::Date(plist::Date::from_xml_format("2024-01-02T03:04:05Z").unwrap()),
+        );
+        d.insert("uid".into(), plist::Value::Uid(plist::Uid::new(7)));
+        d.insert("arr".into(), plist::Value::Array(vec![1i64.into(), "x".into()]));
+        let v = plist::Value::Dictionary(d.clone());
+        let mut bin = Vec::new();
+        v.to_writer_binary(&mut bin).unwrap();
+        assert_eq!(parse_plist(&bin).unwrap(), v);
+        // XML cannot hold a Uid
+        d.remove("uid");
+        let v = plist::Value::Dictionary(d);
+        let mut xml = Vec::new();
+        v.to_writer_xml(&mut xml).unwrap();
+        assert_eq!(parse_plist(&xml).unwrap(), v);
+    }
+
+    #[test]
+    fn binary_plists_are_checked_too() {
+        let mut shallow = plist::Dictionary::new();
+        shallow.insert("a".into(), plist::Value::Array(vec![plist::Value::Array(vec![])]));
+        let mut bytes = Vec::new();
+        plist::Value::Dictionary(shallow).to_writer_binary(&mut bytes).unwrap();
+        assert!(bytes.starts_with(b"bplist"));
+        assert!(parse_plist(&bytes).is_ok());
+        // 70 levels, written by the library (deep enough to trip the cap, shallow enough to write)
+        let mut v = plist::Value::Array(vec![]);
+        for _ in 0..70 {
+            v = plist::Value::Array(vec![v]);
+        }
+        let mut deep = Vec::new();
+        v.to_writer_binary(&mut deep).unwrap();
+        assert!(parse_plist(&deep).is_err());
+    }
+
+    /// A binary plist in which every array holds `fan` references to the one object below it:
+    /// `fan^levels` values when read as a tree, in `levels * (fan + 1) + 10 + trailer` bytes.
+    fn shared_reference_bomb(levels: usize, fan: usize) -> Vec<u8> {
+        assert!(fan < 15 && levels + 1 < 256);
+        let mut out = b"bplist00".to_vec();
+        let mut offsets = Vec::new();
+        for i in 0..levels {
+            offsets.push(out.len() as u8);
+            out.push(0xA0 | fan as u8);
+            out.extend(std::iter::repeat_n((i + 1) as u8, fan));
+        }
+        offsets.push(out.len() as u8);
+        out.extend([0x10, 0x01]); // the leaf: the integer 1
+        let table = out.len() as u64;
+        out.extend(&offsets);
+        out.extend([0u8; 6]);
+        out.extend([1u8, 1u8]); // offset size, reference size
+        out.extend((offsets.len() as u64).to_be_bytes());
+        out.extend(0u64.to_be_bytes()); // the top object
+        out.extend(table.to_be_bytes());
+        out
+    }
+
+    /// Run `f` on its own thread; fail (instead of hanging the suite) if it takes over `limit`.
+    fn finishes_within<T: Send + 'static>(
+        limit: std::time::Duration,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(limit).ok()
+    }
+
+    #[test]
+    fn shared_references_cannot_make_the_parse_do_exponential_work() {
+        // 10 references per level, 8 levels: 147 bytes, 10^8 values as a tree, 9 levels deep.
+        let bomb = shared_reference_bomb(8, 10);
+        assert!(bomb.len() < 200, "{}", bomb.len());
+        let started = std::time::Instant::now();
+        let got = finishes_within(std::time::Duration::from_secs(5), move || parse_plist(&bomb));
+        let got = got.expect("the parse did not return within 5 s");
+        let err = got.unwrap_err();
+        assert!(format!("{err:#}").contains("values"), "{err:#}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        // the same shape with a small fan-out is ordinary and still parses
+        assert!(parse_plist(&shared_reference_bomb(4, 4)).is_ok());
+    }
+
+    #[test]
+    fn a_plist_with_a_lot_of_ordinary_values_still_parses() {
+        // 100 000 small values, flat: well inside the bound, in both encodings
+        let v = plist::Value::Array((0..100_000i64).map(plist::Value::from).collect());
+        let mut xml = Vec::new();
+        v.to_writer_xml(&mut xml).unwrap();
+        assert_eq!(parse_plist(&xml).unwrap(), v);
+        let mut bin = Vec::new();
+        v.to_writer_binary(&mut bin).unwrap();
+        assert_eq!(parse_plist(&bin).unwrap(), v);
+        // and the count starts again for every call (a thread parses many files)
+        assert_eq!(parse_plist(&xml).unwrap(), v);
+    }
+
+    #[test]
+    fn real_system_plists_still_parse() {
+        let mut seen = 0;
+        for app in [
+            "/System/Applications/Calculator.app",
+            "/System/Applications/Safari.app",
+            "/System/Applications/Notes.app",
+        ] {
+            let Ok(bytes) = read_limited(&Path::new(app).join("Contents/Info.plist"), 4 * 1024 * 1024) else {
+                continue; // not on this machine
+            };
+            let v = parse_plist(&bytes).unwrap_or_else(|e| panic!("{app}: {e:#}"));
+            assert!(v.as_dictionary().is_some());
+            seen += 1;
+        }
+        if seen == 0 {
+            eprintln!("no system app Info.plist found; skipped");
+        }
+    }
+
+    /// A valid theme padded with a long string to `size` bytes.
+    fn padded_theme(size: usize) -> Vec<u8> {
+        let head = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>name</key><string>Big</string><key>pad</key><string>"#;
+        let tail = "</string></dict></dict></plist>";
+        let mut v = head.as_bytes().to_vec();
+        v.resize(size - tail.len(), b'x');
+        v.extend_from_slice(tail.as_bytes());
+        v
+    }
+
+    #[test]
+    fn an_installed_theme_may_be_bigger_than_one_offered_for_installation() {
+        // Review wave4b item 8: the 2 MiB install cap also applied to themes already installed,
+        // so a larger one stopped loading after the upgrade.
+        let three_mib = temp_file("3mib", &padded_theme(3 * 1024 * 1024));
+        assert_eq!(Theme::load(&three_mib).unwrap().name, "Big");
+        let err = Theme::load_for_install(&three_mib).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        let at_cap = temp_file("8mib", &padded_theme(MAX_INSTALLED_THEME_BYTES as usize));
+        assert_eq!(Theme::load(&at_cap).unwrap().name, "Big");
+        let over = temp_file("9mib", &padded_theme(MAX_INSTALLED_THEME_BYTES as usize + 1));
+        let err = Theme::load(&over).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        // small themes load either way
+        let small = temp_file("small2", &padded_theme(1000));
+        assert!(Theme::load_for_install(&small).is_ok() && Theme::load(&small).is_ok());
+        for f in [three_mib, at_cap, over, small] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[test]
+    fn a_theme_is_read_once_from_bytes_and_files_over_the_cap_are_refused() {
+        let ok = nested_theme(2);
+        assert!(Theme::from_bytes(ok.as_bytes()).is_ok());
+        let big = temp_file("big", &vec![b' '; (MAX_THEME_BYTES + 1) as usize]);
+        let err = Theme::load_for_install(&big).unwrap_err();
+        assert!(format!("{err:#}").contains("large"), "{err:#}");
+        assert!(read_limited(&big, MAX_THEME_BYTES).is_err());
+        let _ = std::fs::remove_file(big);
+        let small = temp_file("small", ok.as_bytes());
+        assert_eq!(read_limited(&small, MAX_THEME_BYTES).unwrap(), ok.as_bytes());
+        let _ = std::fs::remove_file(small);
     }
 }

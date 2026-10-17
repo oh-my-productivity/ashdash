@@ -4,8 +4,9 @@
 //! `odoc` Apple Event. [`install`] registers a handler for it; the handler hands the paths
 //! to [`open_documents`], the one function that does the work:
 //!
-//! * workflows - confirmed with the user first (a workflow is a bundle of scripts that will
-//!   run on this Mac), then `Engine::import_workflow`;
+//! * workflows - the package is opened once, the user is asked about that staged copy (a
+//!   workflow is a bundle of scripts that will run on this Mac) and, on Import, exactly that
+//!   copy is installed (`Engine::stage_workflow` / `install_staged`); the file is not read again;
 //! * snippets - `import_snippet_package` into the collections directory;
 //! * themes - validated with `Theme::load`, copied to `<data>/themes/` and selected in
 //!   `config.json`. The running window keeps its current theme until the next start.
@@ -17,19 +18,23 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ashdash_core::clipboard::snippets::{collections_dir, safe_file_stem};
 use ashdash_core::config::write_private;
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Paths, brand};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+
+use crate::gui::importprompt::clean;
 
 /// More files than this in one event are ignored (a runaway drop is never intended).
 const MAX_FILES_PER_EVENT: usize = 20;
 /// Themes are small property lists; refuse anything big before parsing it.
-const MAX_THEME_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_THEME_BYTES: u64 = ashdash_core::theme::MAX_THEME_BYTES;
+/// One line of a notification: file names and error texts are cut and cleaned to this length.
+const MAX_LINE_CHARS: usize = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocKind {
@@ -41,9 +46,11 @@ pub enum DocKind {
 /// Decide what a file is from its extension (case-insensitive). The reference launcher workflow
 /// extensions are all the same zip format.
 pub fn classify(path: &Path) -> Option<DocKind> {
+    if ashdash_core::workflow::is_workflow_package(path) {
+        return Some(DocKind::Workflow);
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "alfredworkflow" | "alfred3workflow" | "alfred4workflow" | "alfred5workflow" => Some(DocKind::Workflow),
         "alfredappearance" => Some(DocKind::Appearance),
         "alfredsnippets" => Some(DocKind::Snippets),
         _ => None,
@@ -52,9 +59,9 @@ pub fn classify(path: &Path) -> Option<DocKind> {
 
 /// The side effects of importing. Each method returns a one-line, user-facing result.
 pub trait Importer {
-    /// Ask whether a workflow may be installed. `false` cancels quietly.
-    fn confirm_workflow(&self, file: &Path) -> bool;
-    fn workflow(&self, file: &Path) -> Result<String>;
+    /// Open a workflow package, ask whether it may be installed and install what was shown.
+    /// `Ok(None)` means the user declined (cancelled quietly).
+    fn workflow(&self, file: &Path) -> Result<Option<String>>;
     fn snippets(&self, file: &Path) -> Result<String>;
     fn appearance(&self, file: &Path) -> Result<String>;
 }
@@ -106,16 +113,14 @@ fn import_one(importer: &dyn Importer, path: &Path) -> Status {
         Ok(_) => return Status::Failed("not a regular file".into()),
         Err(e) => return Status::Failed(format!("cannot read it: {e}")),
     }
-    if kind == DocKind::Workflow && !importer.confirm_workflow(path) {
-        return Status::Cancelled;
-    }
     let result = match kind {
         DocKind::Workflow => importer.workflow(path),
-        DocKind::Snippets => importer.snippets(path),
-        DocKind::Appearance => importer.appearance(path),
+        DocKind::Snippets => importer.snippets(path).map(Some),
+        DocKind::Appearance => importer.appearance(path).map(Some),
     };
     match result {
-        Ok(msg) => Status::Imported(msg),
+        Ok(Some(msg)) => Status::Imported(msg),
+        Ok(None) => Status::Cancelled,
         Err(e) => Status::Failed(format!("{e:#}")),
     }
 }
@@ -135,34 +140,53 @@ pub fn summarize(results: &[Imported]) -> Option<(String, String)> {
     let lines: Vec<String> = shown
         .iter()
         .map(|r| {
-            let name = r
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            match &r.status {
+            // File names, workflow names and error texts all come from the files: one line each,
+            // no control, format (bidi, zero-width) or blank-looking characters, bounded length.
+            let line = match &r.status {
                 Status::Imported(m) => m.clone(),
-                Status::Failed(e) => format!("{name}: {e}"),
+                Status::Failed(e) => format!("{}: {e}", display_name(&r.path)),
                 Status::Cancelled => unreachable!("filtered above"),
-            }
+            };
+            clean(&line, MAX_LINE_CHARS)
         })
         .collect();
     Some((title, lines.join("\n")))
 }
 
-/// Strip control characters and cap the length so a hostile file name cannot reshape a dialog.
+/// A file name made safe to show: the import prompt's `clean` (control and format characters,
+/// bidi overrides and blank-looking characters removed, whitespace collapsed) cut to 80 characters,
+/// so a hostile file name cannot reshape or spoof a dialog.
 pub fn display_name(path: &Path) -> String {
     let raw = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let clean: String = raw.chars().filter(|c| !c.is_control()).collect();
-    if clean.chars().count() > 80 {
-        let head: String = clean.chars().take(79).collect();
-        format!("{head}…")
+    clean(&raw, 80)
+}
+
+/// `osascript` arguments for a warning dialog. Title and message travel as argv after
+/// the script (`on run argv`), so they are never parsed as code. With `ask` the dialog has
+/// Cancel (default) and Import buttons, otherwise a single OK.
+pub fn alert_args(title: &str, message: &str, ask: bool) -> Vec<String> {
+    let buttons = if ask {
+        "buttons {\"Cancel\", \"Import\"} default button \"Cancel\" cancel button \"Cancel\" giving up after 300"
     } else {
-        clean
-    }
+        "buttons {\"OK\"} default button \"OK\" giving up after 300"
+    };
+    [
+        "-e",
+        "on run argv",
+        "-e",
+        &format!("display alert (item 1 of argv) message (item 2 of argv) as warning {buttons}"),
+        "-e",
+        "end run",
+        "--",
+        title,
+        message,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Did the `osascript` dialog end with the user pressing the confirm button?
@@ -177,43 +201,50 @@ pub fn dialog_confirmed(exit_ok: bool, stdout: &str) -> bool {
 pub struct SystemImporter {
     pub engine: Arc<Engine>,
     pub paths: Paths,
+    /// Shows the confirmation and says whether the user agreed ([`osascript_dialog`] in the app;
+    /// tests pass a fake so no dialog appears).
+    pub ask: Ask,
+}
+
+/// Shows the import confirmation; `true` = the user chose Import.
+pub type Ask = Box<dyn Fn(&crate::gui::importprompt::PromptText) -> bool + Send + Sync>;
+
+/// The confirmation as a native alert (`osascript`). No `osascript`: refuse rather than install
+/// unconfirmed.
+pub fn osascript_dialog(text: &crate::gui::importprompt::PromptText) -> bool {
+    let out = ashdash_core::actions::system_command("osascript")
+        .args(alert_args(&text.title, &text.lines.join("\n"), true))
+        .output();
+    match out {
+        Ok(o) => dialog_confirmed(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
+        Err(_) => false,
+    }
 }
 
 impl Importer for SystemImporter {
-    fn confirm_workflow(&self, file: &Path) -> bool {
-        // Args go after the script (`on run argv`), so the file name is never parsed as code.
-        let message = format!(
-            "Import the workflow \"{}\"?\n\nA workflow is a set of scripts that will run on your Mac with your \
-             permissions. Only import workflows from people you trust.",
-            display_name(file)
-        );
-        let out = Command::new("osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "display alert (item 1 of argv) message (item 2 of argv) as warning buttons {\"Cancel\", \"Import\"} \
-                 default button \"Cancel\" cancel button \"Cancel\" giving up after 300",
-                "-e",
-                "end run",
-                "--",
-                &format!("Import workflow into {}?", brand::NAME),
-                &message,
-            ])
-            .output();
-        match out {
-            Ok(o) => dialog_confirmed(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
-            Err(_) => false, // no osascript: refuse rather than install unconfirmed
+    fn workflow(&self, file: &Path) -> Result<Option<String>> {
+        // Open the package once: what the package says it is and what it can do is read from
+        // the staged copy, and that same copy is installed if the user agrees.
+        let staged = match self.engine.stage_workflow(file) {
+            Ok(s) => s,
+            Err(e) => {
+                let title = format!("Cannot read {}", display_name(file));
+                let _ = ashdash_core::actions::system_command("osascript")
+                    .args(alert_args(&title, &format!("{e:#}"), false))
+                    .output();
+                return Ok(None);
+            }
+        };
+        let text = crate::gui::importprompt::prompt_text(staged.preview());
+        if !(self.ask)(&text) {
+            return Ok(None); // dropping `staged` deletes the copy
         }
-    }
-
-    fn workflow(&self, file: &Path) -> Result<String> {
-        let dest = self.engine.import_workflow(file)?;
+        let dest = self.engine.install_staged(staged)?;
         let name = dest
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Ok(format!("Workflow installed ({name})"))
+        Ok(Some(format!("Workflow installed ({name})")))
     }
 
     fn snippets(&self, file: &Path) -> Result<String> {
@@ -237,14 +268,25 @@ impl Importer for SystemImporter {
     }
 }
 
+/// Bumped every time a theme was installed and selected, so a running window can
+/// notice and apply it without a restart (`gui` compares it once per frame).
+static THEME_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn theme_epoch() -> u64 {
+    THEME_EPOCH.load(Ordering::Acquire)
+}
+
 /// Validate, copy to `<data>/themes/` and select a theme in `config.json`.
 pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
-    let size = std::fs::metadata(file)?.len();
-    if size > MAX_THEME_BYTES {
-        bail!("the theme file is unusually large ({size} bytes)");
-    }
-    let theme = Theme::load(file).context("not a readable theme")?;
-    let bytes = std::fs::read(file)?;
+    install_theme_with(paths, file, |f| ashdash_core::theme::read_limited(f, MAX_THEME_BYTES))
+}
+
+/// [`install_theme`] with the file read injected. The file is read **once**: the bytes that are
+/// validated are the bytes that are written, so a file swapped in between cannot be installed
+/// unchecked (and a theme is never read three times).
+fn install_theme_with(paths: &Paths, file: &Path, read: impl FnOnce(&Path) -> Result<Vec<u8>>) -> Result<String> {
+    let bytes = read(file).with_context(|| format!("reading {}", display_name(file)))?;
+    let theme = Theme::from_bytes(&bytes).context("not a readable theme")?;
     let stem = safe_file_stem(if theme.name.is_empty() {
         file.file_stem().and_then(|s| s.to_str()).unwrap_or("theme")
     } else {
@@ -252,23 +294,22 @@ pub fn install_theme(paths: &Paths, file: &Path) -> Result<String> {
     });
     let dest = paths.data.join("themes").join(format!("{stem}.alfredappearance"));
     write_private(&dest, &bytes).context("copying the theme")?;
-    let mut config = Config::load(paths);
-    config.theme = Some(dest);
-    config.save(paths).context("saving config.json")?;
+    Config::edit_locked(paths, |config| {
+        config.theme = Some(dest);
+        Ok(())
+    })?;
+    THEME_EPOCH.fetch_add(1, Ordering::AcqRel);
     let shown = if theme.name.is_empty() {
         stem
     } else {
         theme.name.clone()
     };
-    Ok(format!(
-        "Theme \"{shown}\" installed. It applies the next time {} starts.",
-        brand::NAME
-    ))
+    Ok(format!("Theme \"{}\" installed and applied.", clean(&shown, 80)))
 }
 
 /// Post a user notification through `osascript` (title/body as argv, never as script text).
 pub fn notify(title: &str, body: &str) {
-    let _ = Command::new("osascript")
+    let _ = ashdash_core::actions::system_command("osascript")
         .args([
             "-e",
             "on run argv",
@@ -411,7 +452,11 @@ mod ae {
 /// Returns `false` when called off the main thread.
 pub fn install(engine: Arc<Engine>) -> bool {
     let paths = engine.paths.clone();
-    let importer = Arc::new(SystemImporter { engine, paths });
+    let importer = Arc::new(SystemImporter {
+        engine,
+        paths,
+        ask: Box::new(osascript_dialog),
+    });
     ae::register(Box::new(move |files| {
         let importer = Arc::clone(&importer);
         std::thread::spawn(move || {
@@ -426,6 +471,7 @@ pub fn install(engine: Arc<Engine>) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::process::Command;
 
     use super::*;
 
@@ -450,18 +496,18 @@ mod tests {
     }
 
     impl Importer for Fake {
-        fn confirm_workflow(&self, file: &Path) -> bool {
+        fn workflow(&self, file: &Path) -> Result<Option<String>> {
             self.log.borrow_mut().push(format!("confirm {}", display_name(file)));
-            self.allow
-        }
-        fn workflow(&self, file: &Path) -> Result<String> {
+            if !self.allow {
+                return Ok(None);
+            }
             self.log.borrow_mut().push(format!("workflow {}", display_name(file)));
-            Ok("Workflow installed".into())
+            Ok(Some("Workflow installed".into()))
         }
         fn snippets(&self, file: &Path) -> Result<String> {
             self.log.borrow_mut().push(format!("snippets {}", display_name(file)));
             if self.fail_snippets {
-                bail!("bad archive");
+                anyhow::bail!("bad archive");
             }
             Ok("Snippets imported".into())
         }
@@ -618,12 +664,66 @@ mod tests {
     fn display_names_cannot_inject_lines_or_overflow() {
         assert_eq!(
             display_name(Path::new("/x/a\nb\u{7}.alfredworkflow")),
-            "ab.alfredworkflow"
+            "a b.alfredworkflow"
         );
         let long = format!("/x/{}.alfredworkflow", "n".repeat(300));
         let shown = display_name(Path::new(&long));
         assert_eq!(shown.chars().count(), 80);
         assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn finder_messages_clean_file_names_like_the_import_prompt() {
+        // bidi override, zero-width space, word joiner, Hangul filler, newline and tab in a name
+        let nasty = "/x/inv\u{202e}gnp.\u{200b}ok\u{2060}\u{3164}\n\tnow.alfredsnippets";
+        let shown = display_name(Path::new(nasty));
+        assert!(
+            !shown
+                .chars()
+                .any(|c| c.is_control() || crate::gui::importprompt::is_format_char(c) || c == '\u{3164}'),
+            "{shown:?}"
+        );
+        // the notification body, for a failure and for an import message carrying the same text
+        let bad = Imported {
+            path: nasty.into(),
+            status: Status::Failed("could not read \u{202e}evil\u{200b}\nSecond line".into()),
+        };
+        let good = Imported {
+            path: "/x/ok".into(),
+            status: Status::Imported("Workflow installed (a\u{202e}b\nc)".into()),
+        };
+        let (title, body) = summarize(&[good, bad]).unwrap();
+        for text in [&title, &body] {
+            assert!(
+                text.chars()
+                    .all(|c| c == '\n' || (!c.is_control() && !crate::gui::importprompt::is_format_char(c))),
+                "{text:?}"
+            );
+        }
+        // each result is still exactly one line, whatever the names contained
+        assert_eq!(body.lines().count(), 2, "{body:?}");
+        // a long error cannot flood the notification either
+        let flood = Imported {
+            path: "/x/y".into(),
+            status: Status::Failed("e".repeat(5000)),
+        };
+        assert!(summarize(&[flood]).unwrap().1.chars().count() <= MAX_LINE_CHARS);
+    }
+
+    #[test]
+    fn dialog_text_travels_as_arguments_never_as_script() {
+        let nasty = "x\" & (do shell script \"touch /tmp/pwned\") & \"";
+        let args = alert_args(nasty, "line1\nline2", true);
+        let dashdash = args.iter().position(|a| a == "--").expect("separator");
+        assert_eq!(&args[dashdash + 1..], [nasty, "line1\nline2"]);
+        // nothing before the separator contains the untrusted text
+        assert!(
+            args[..dashdash]
+                .iter()
+                .all(|a| !a.contains("pwned") && !a.contains("line1"))
+        );
+        assert!(args.join(" ").contains("buttons {\"Cancel\", \"Import\"}"));
+        assert!(alert_args("t", "m", false).join(" ").contains("buttons {\"OK\"}"));
     }
 
     #[test]
@@ -666,6 +766,69 @@ mod tests {
     }
 
     #[test]
+    fn theme_install_reads_the_file_once_and_installs_what_it_validated() {
+        let root = temp_dir("theme-once");
+        let paths = Paths::under(&root);
+        let src = root.join("download.alfredappearance");
+        std::fs::write(&src, "swapped in after the check: not even a plist").unwrap();
+        let reads = std::cell::Cell::new(0);
+        let msg = install_theme_with(&paths, &src, |_| {
+            reads.set(reads.get() + 1);
+            Ok(THEME_XML.as_bytes().to_vec())
+        })
+        .unwrap();
+        assert_eq!(reads.get(), 1, "one read of the source");
+        assert!(msg.contains("Night/Owl"), "{msg}");
+        let installed = Config::load(&paths).theme.unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), THEME_XML.as_bytes());
+        // a read error is reported and leaves the config alone
+        let root = temp_dir("theme-once-err");
+        let paths = Paths::under(&root);
+        assert!(install_theme_with(&paths, &src, |_| anyhow::bail!("gone")).is_err());
+        assert!(Config::load(&paths).theme.is_none());
+    }
+
+    #[test]
+    fn a_deeply_nested_theme_is_refused_not_fatal() {
+        let root = temp_dir("theme-deep");
+        let paths = Paths::under(&root);
+        let src = root.join("deep.alfredappearance");
+        let depth = 120_000;
+        std::fs::write(
+            &src,
+            format!(
+                r#"<?xml version="1.0"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+                "<array>".repeat(depth),
+                "</array>".repeat(depth)
+            ),
+        )
+        .unwrap();
+        assert!(install_theme(&paths, &src).is_err());
+        assert!(Config::load(&paths).theme.is_none());
+    }
+
+    #[test]
+    fn theme_install_waits_for_the_config_lock() {
+        let root = temp_dir("theme-lock");
+        let paths = Paths::under(&root);
+        let src = root.join("download.alfredappearance");
+        std::fs::write(&src, THEME_XML).unwrap();
+        let guard = ashdash_core::config::ConfigLock::acquire(&paths).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (p2, s2) = (paths.clone(), src.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(install_theme(&p2, &s2).is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+            "the theme was written while another writer held the config lock"
+        );
+        drop(guard);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(true));
+        assert!(Config::load(&paths).theme.is_some());
+    }
+
+    #[test]
     fn theme_install_rejects_garbage_without_touching_config() {
         let root = temp_dir("theme-bad");
         let paths = Paths::under(&root);
@@ -677,7 +840,7 @@ mod tests {
 
         let big = root.join("big.alfredappearance");
         std::fs::write(&big, vec![b'x'; (MAX_THEME_BYTES + 1) as usize]).unwrap();
-        assert!(install_theme(&paths, &big).unwrap_err().to_string().contains("large"));
+        assert!(format!("{:#}", install_theme(&paths, &big).unwrap_err()).contains("large"));
     }
 
     /// End to end through the real importer with a sample package built by /usr/bin/zip.
@@ -693,6 +856,7 @@ mod tests {
         let importer = SystemImporter {
             engine: Arc::clone(&engine),
             paths: paths.clone(),
+            ask: Box::new(|_| true),
         };
 
         // Workflow package: a zip with info.plist at the top level.
@@ -714,7 +878,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let msg = importer.workflow(&wf_pkg).unwrap();
+        let msg = importer.workflow(&wf_pkg).unwrap().expect("confirmed");
         assert!(msg.contains("test.opendocs.sample"), "{msg}");
         assert!(
             engine
@@ -742,5 +906,86 @@ mod tests {
         assert!(status.success());
         let msg = importer.snippets(&sn_pkg).unwrap();
         assert!(msg.contains("Samples") && msg.contains("1 imported"), "{msg}");
+    }
+
+    /// A workflow package for the Finder path, built with /usr/bin/zip (`false` when there is none).
+    fn write_workflow_zip(path: &Path, name: &str, bundle: &str, marker: &str) -> bool {
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>name</key><string>{name}</string>
+<key>bundleid</key><string>{bundle}</string><key>objects</key><array>
+<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo {marker}</string></dict></dict>
+</array></dict></plist>"#
+        );
+        let src = path.with_extension("src");
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("info.plist"), plist).unwrap();
+        let _ = std::fs::remove_file(path);
+        Command::new("zip")
+            .current_dir(&src)
+            .arg("-q")
+            .arg(path)
+            .arg("info.plist")
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// The Finder dialog stays up for minutes; whatever happens to the file meanwhile, the
+    /// installed workflow is the one the dialog described.
+    #[test]
+    fn finder_import_installs_the_copy_the_dialog_described() {
+        let root = temp_dir("swap");
+        let paths = Paths::under(&root);
+        let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
+        let pkg = root.join("w.alfredworkflow");
+        if !write_workflow_zip(&pkg, "Harmless", "test.swap.harmless", "SHOWN") {
+            eprintln!("skipping: no zip tool");
+            return;
+        }
+
+        let asked = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (swap_pkg, log) = (pkg.clone(), Arc::clone(&asked));
+        let importer = SystemImporter {
+            engine: Arc::clone(&engine),
+            paths: paths.clone(),
+            ask: Box::new(move |text| {
+                log.lock().unwrap().push(text.plain());
+                // the user is still reading; the file on disk is replaced by something else
+                assert!(write_workflow_zip(&swap_pkg, "Evil", "test.swap.evil", "SWAPPED"));
+                true
+            }),
+        };
+        let msg = importer.workflow(&pkg).unwrap().expect("confirmed");
+        assert!(msg.contains("test.swap.harmless"), "{msg}");
+        let shown = asked.lock().unwrap().concat();
+        assert!(shown.contains("Harmless") && !shown.contains("Evil"), "{shown}");
+        let wf = paths.workflows_dir();
+        assert!(wf.join("user.workflow.test.swap.harmless").is_dir());
+        assert!(!wf.join("user.workflow.test.swap.evil").exists());
+        let text = std::fs::read_to_string(wf.join("user.workflow.test.swap.harmless/info.plist")).unwrap();
+        assert!(text.contains("SHOWN") && !text.contains("SWAPPED"), "{text}");
+    }
+
+    #[test]
+    fn declining_the_dialog_installs_nothing_and_leaves_no_staged_copy() {
+        let root = temp_dir("decline");
+        let paths = Paths::under(&root);
+        let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
+        let pkg = root.join("w.alfredworkflow");
+        if !write_workflow_zip(&pkg, "No", "test.decline", "x") {
+            eprintln!("skipping: no zip tool");
+            return;
+        }
+        let importer = SystemImporter {
+            engine,
+            paths: paths.clone(),
+            ask: Box::new(|_| false),
+        };
+        assert_eq!(importer.workflow(&pkg).unwrap(), None);
+        assert!(!paths.workflows_dir().join("user.workflow.test.decline").exists());
+        let staging = paths.data.join("import-staging");
+        assert_eq!(std::fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0), 0);
     }
 }

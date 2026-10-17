@@ -30,8 +30,9 @@ use super::{
     KIND_EXTERNAL_TRIGGER, KIND_FILE_FILTER, KIND_KEYWORD, KIND_LIST_FILTER, KIND_SCRIPT_FILTER, SCRIPT_FILTER_TIMEOUT,
 };
 use super::{Node, Workflow, render};
+use crate::actions::{Os, RealOs};
 use crate::config::Paths;
-use crate::files::expand_tilde;
+use crate::files::{SearchBudget, expand_tilde};
 use crate::fuzzy;
 use crate::item::{Action, Icon, Item, Mods};
 
@@ -150,22 +151,19 @@ fn resolve_icon(wf: &Workflow, icon: Option<&Value>) -> Icon {
         }
         "filetype" => Icon::Glyph("▤"),
         _ => {
-            let p = if Path::new(path).is_absolute() {
-                PathBuf::from(path)
-            } else {
-                wf.dir.join(path)
-            };
-            if p.is_file() { Icon::Image(p) } else { Icon::None }
+            // SEC-17: only regular files inside the workflow directory, no symlinks, no hard links.
+            match crate::confine::confined_workflow_file(&wf.dir, Path::new(path)) {
+                Some(p) => Icon::Image(p),
+                None => Icon::None,
+            }
         }
     }
 }
 
 fn workflow_icon(wf: &Workflow) -> Icon {
-    let p = wf.dir.join("icon.png");
-    if p.is_file() {
-        Icon::Image(p)
-    } else {
-        Icon::Glyph("◆")
+    match crate::confine::confined_workflow_file(&wf.dir, Path::new("icon.png")) {
+        Some(p) => Icon::Image(p),
+        None => Icon::Glyph("◆"),
     }
 }
 
@@ -210,8 +208,30 @@ impl Workflow {
         (r.items, r.exclusive)
     }
 
+    /// With the real OS and the default file-search budget; the engine uses
+    /// [`Workflow::keyword_results_os`] with its own handle and the configured budget.
     pub fn keyword_results(&self, query: &str, paths: &Paths) -> KeywordResults {
-        self.keyword_results_with(query, paths, &filefilter::mdfind)
+        self.keyword_results_os(query, paths, &RealOs, &SearchBudget::default())
+    }
+
+    /// [`Workflow::keyword_items`] through `os`: File Filter objects run `mdfind` with `budget`
+    /// (time and output bytes), like the built-in file search.
+    pub fn keyword_items_os(
+        &self,
+        query: &str,
+        paths: &Paths,
+        os: &dyn Os,
+        budget: &SearchBudget,
+    ) -> (Vec<Item>, bool) {
+        let r = self.keyword_results_os(query, paths, os, budget);
+        (r.items, r.exclusive)
+    }
+
+    /// [`Workflow::keyword_results`] through `os` with an explicit file-search `budget`.
+    pub fn keyword_results_os(&self, query: &str, paths: &Paths, os: &dyn Os, budget: &SearchBudget) -> KeywordResults {
+        self.keyword_results_with(query, paths, &|pred: &str, scopes: &[PathBuf]| {
+            filefilter::mdfind(os, budget, pred, scopes)
+        })
     }
 
     /// Like [`Workflow::keyword_results`] with an injectable Spotlight search
@@ -550,6 +570,11 @@ impl Workflow {
         items
     }
 
+    /// Whether the graph has an object with this uid (any kind).
+    pub fn has_node(&self, uid: &str) -> bool {
+        self.node(uid).is_some()
+    }
+
     /// Find an External Trigger object by its trigger id.
     pub fn external_trigger(&self, trigger_id: &str) -> Option<&Node> {
         self.nodes
@@ -581,6 +606,10 @@ pub(super) struct ParsedFilter {
     pub cache: Option<(u64, bool)>,
 }
 
+/// A Script Filter may return at most this many items; the rest are dropped (the output size cap
+/// alone would still allow ~100k tiny items to be built on every keystroke).
+pub(super) const MAX_FILTER_ITEMS: usize = 5_000;
+
 pub(super) fn parse_script_filter(stdout: &str) -> Result<ParsedFilter> {
     let text = stdout.trim();
     let v: Value = if text.starts_with('<') {
@@ -589,7 +618,7 @@ pub(super) fn parse_script_filter(stdout: &str) -> Result<ParsedFilter> {
         serde_json::from_str(text).context("script filter output is not valid JSON")?
     };
     let items = match v.get("items") {
-        Some(Value::Array(a)) => a.clone(),
+        Some(Value::Array(a)) => a.iter().take(MAX_FILTER_ITEMS).cloned().collect(),
         _ => bail!("script filter JSON has no \"items\" array"),
     };
     let rerun = v
@@ -629,6 +658,24 @@ mod tests {
         assert!(matches!(match_keyword("demox", "demo", true), KeywordMatch::No));
         assert!(matches!(match_keyword("de", "demo", true), KeywordMatch::Partial));
         assert!(matches!(match_keyword("d", "demo", true), KeywordMatch::No));
+    }
+
+    #[test]
+    fn script_filter_item_count_is_capped() {
+        let big = format!(
+            "{{\"items\":[{}]}}",
+            (0..MAX_FILTER_ITEMS + 500)
+                .map(|i| format!("{{\"title\":\"t{i}\"}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let parsed = parse_script_filter(&big).unwrap();
+        assert_eq!(parsed.items.len(), MAX_FILTER_ITEMS);
+        assert_eq!(parsed.items[0]["title"], "t0", "the first items are kept");
+        assert_eq!(
+            parse_script_filter(r#"{"items":[{"title":"a"}]}"#).unwrap().items.len(),
+            1
+        );
     }
 
     #[test]

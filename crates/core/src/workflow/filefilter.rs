@@ -18,12 +18,12 @@
 //! `anchorfields` and `daterange` are read but not applied yet.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
 use super::{Node, Workflow, WorkflowAction, render};
-use crate::files::{expand_tilde, tilde};
+use crate::actions::{BoundedOutput, Cmd, Os, OutputBudget};
+use crate::files::{SearchBudget, expand_tilde, tilde};
 use crate::fuzzy;
 use crate::item::{Action, Icon, Item};
 
@@ -134,19 +134,48 @@ pub(super) fn scopes(node: &Node) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The real Spotlight search.
-pub(super) fn mdfind(predicate: &str, scopes: &[PathBuf]) -> Vec<PathBuf> {
-    let mut cmd = Command::new("mdfind");
+/// Spotlight hits read from one `mdfind` run (before the system-path filter and the sort).
+const MAX_HITS: usize = MAX_RESULTS * 4;
+/// A generous bound for one path in `mdfind` output: with [`MAX_HITS`] it caps the bytes read, so
+/// a types-only predicate (an empty argument) that matches half the disk is killed after a few
+/// hundred kilobytes. That bounds the output, not the time: `mdfind` itself takes seconds to start,
+/// so the run is bounded by the search budget's timeout (4 s by default), not cheap.
+const PATH_BYTES: usize = 1024;
+
+/// The real Spotlight search: `mdfind` through the bounded runner with the file-search budget
+/// (run time and output size), at most [`MAX_HITS`] paths, parsed straight from the bytes.
+pub(super) fn mdfind(os: &dyn Os, budget: &SearchBudget, predicate: &str, scopes: &[PathBuf]) -> Vec<PathBuf> {
+    let mut cmd = Cmd::new("mdfind");
     for s in scopes {
-        cmd.arg("-onlyin").arg(s);
+        cmd = cmd.arg("-onlyin").arg(s);
     }
-    let Ok(out) = cmd.arg(predicate).output() else {
+    let cmd = cmd.arg(predicate);
+    let limits = OutputBudget {
+        timeout: budget.mdfind_timeout,
+        max_bytes: budget.mdfind_max_bytes.min(MAX_HITS * PATH_BYTES),
+    };
+    let Ok(out) = os.output_bounded(&cmd, &limits) else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .take(MAX_RESULTS * 4)
-        .map(PathBuf::from)
+    parse_hits(&out)
+}
+
+/// Paths from `mdfind` output: one per line, at most [`MAX_HITS`], with a final line that the
+/// kill cut short dropped. Paths are bytes on disk, so no lossy string is built.
+fn parse_hits(out: &BoundedOutput) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut lines: Vec<&[u8]> = out.bytes.split(|b| *b == b'\n').collect();
+    // The last piece is empty when the output ends with a newline; when the run was cut short it
+    // may be half a path. Only a complete run may end without a newline.
+    let cut = out.truncated || out.timed_out;
+    if cut || out.bytes.ends_with(b"\n") {
+        lines.pop();
+    }
+    lines
+        .into_iter()
+        .filter(|l| !l.is_empty())
+        .take(MAX_HITS)
+        .map(|l| PathBuf::from(std::ffi::OsStr::from_bytes(l)))
         .collect()
 }
 
@@ -281,5 +310,118 @@ mod tests {
         assert_eq!(scopes(&n), vec![PathBuf::from("/tmp/scope")]);
         assert!(is_system_path(Path::new("/System/Library/x")));
         assert!(!is_system_path(Path::new("/Users/me/x")));
+    }
+
+    // ---- the Spotlight run is bounded (review item 4)
+
+    use crate::actions::testing::FakeOs;
+    use std::time::Duration;
+
+    fn lots_of_paths(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("/Users/x/Documents/file-{i:07}.txt\n"))
+            .collect()
+    }
+
+    #[test]
+    fn mdfind_goes_through_the_bounded_runner_with_the_search_budget() {
+        let os = FakeOs::with_output(&lots_of_paths(10));
+        let budget = SearchBudget {
+            mdfind_timeout: Duration::from_millis(1234),
+            mdfind_max_bytes: 4096,
+            ..SearchBudget::default()
+        };
+        let hits = mdfind(
+            &os,
+            &budget,
+            "kMDItemContentTypeTree == \"public.folder\"",
+            &[PathBuf::from("/Users/x")],
+        );
+        assert_eq!(hits.len(), 10);
+        assert_eq!(
+            os.cmds(),
+            vec![
+                Cmd::new("mdfind")
+                    .args(["-onlyin", "/Users/x"])
+                    .arg("kMDItemContentTypeTree == \"public.folder\"")
+            ]
+        );
+        let limits = os.budgets.lock().unwrap()[0];
+        assert_eq!(limits.timeout, Duration::from_millis(1234));
+        assert_eq!(limits.max_bytes, 4096);
+    }
+
+    #[test]
+    fn mdfind_output_is_capped_before_strings_are_built() {
+        // 430 000 hits like the review's measurement (about 18 MB here): the runner is told
+        // to stop at a few hundred kilobytes and at most MAX_HITS paths are kept.
+        let os = FakeOs::with_output(&lots_of_paths(430_000));
+        let hits = mdfind(&os, &SearchBudget::default(), "x", &[]);
+        assert_eq!(hits.len(), MAX_HITS);
+        let limits = os.budgets.lock().unwrap()[0];
+        assert!(limits.max_bytes <= MAX_HITS * PATH_BYTES, "{}", limits.max_bytes);
+        assert!(limits.max_bytes < SearchBudget::default().mdfind_max_bytes);
+    }
+
+    #[test]
+    fn a_path_cut_by_the_kill_is_dropped_and_non_utf8_paths_survive() {
+        use std::os::unix::ffi::OsStrExt;
+        let cut = BoundedOutput {
+            bytes: b"/a/one\n/a/tw".to_vec(),
+            truncated: true,
+            timed_out: false,
+        };
+        assert_eq!(parse_hits(&cut), [PathBuf::from("/a/one")]);
+        let timed = BoundedOutput {
+            bytes: b"/a/one\n/a/tw".to_vec(),
+            truncated: false,
+            timed_out: true,
+        };
+        assert_eq!(parse_hits(&timed), [PathBuf::from("/a/one")]);
+        let whole = BoundedOutput {
+            bytes: b"/a/one\n/a/two".to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(parse_hits(&whole).len(), 2);
+        let bytes = BoundedOutput {
+            bytes: b"/a/\xff\xfe\n\n/b\n".to_vec(),
+            ..Default::default()
+        };
+        let hits = parse_hits(&bytes);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].as_os_str().as_bytes(), b"/a/\xff\xfe");
+        assert!(parse_hits(&BoundedOutput::default()).is_empty());
+    }
+
+    #[test]
+    fn a_failing_spotlight_run_is_an_empty_result() {
+        let os = FakeOs::default();
+        *os.fail.lock().unwrap() = true;
+        assert!(mdfind(&os, &SearchBudget::default(), "x", &[]).is_empty());
+    }
+
+    #[test]
+    fn an_empty_argument_with_a_types_only_predicate_stays_bounded() {
+        // File Filter with an optional argument and only `types`: typing the keyword and a space
+        // searches every file of those types. It must go through the same budget.
+        let doc = json!({"name": "FF", "bundleid": "ff.t", "objects": [
+            {"uid": "F", "type": super::super::KIND_FILE_FILTER, "config": {
+                "keyword": "ff", "withspace": true, "argumenttype": 1, "title": "Find",
+                "types": ["public.item"], "scopes": [], "fields": []}}
+        ], "connections": {}});
+        let wf = Workflow::from_json(Path::new("/tmp/oa-ff"), "ff", &doc).unwrap();
+        let os = FakeOs::with_output(&lots_of_paths(430_000));
+        let paths = crate::config::Paths::under(Path::new("/tmp/oa-ff-paths"));
+        let budget = SearchBudget {
+            mdfind_timeout: Duration::from_millis(900),
+            ..SearchBudget::default()
+        };
+        let r = wf.keyword_results_os("ff ", &paths, &os, &budget);
+        assert!(r.items.len() <= MAX_RESULTS, "{}", r.items.len());
+        assert!(!r.items.is_empty());
+        let limits = os.budgets.lock().unwrap()[0];
+        assert_eq!(limits.timeout, Duration::from_millis(900));
+        assert!(limits.max_bytes <= MAX_HITS * PATH_BYTES);
+        assert_eq!(os.calls().len(), 1);
     }
 }

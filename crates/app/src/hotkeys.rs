@@ -28,18 +28,15 @@
 //! take hundreds of milliseconds and the Carbon callback runs on the main
 //! thread.
 //!
-//! Firing needs no change in `ashdash-core`: the hotkey object is started as a
-//! `Workflow` action whose `from_uid` is the hotkey node
-//! (`Engine::execute` with `Action::Workflow`). Side effect: the engine
-//! records the run in `usage.json` with an empty query; a dedicated
-//! `Engine::run_node(bundle, node_uid, arg, vars)` would avoid that.
+//! Firing goes through `Engine::run_node(workflow_id, node_uid, arg, vars)`, which starts the
+//! workflow at the hotkey node and records nothing in `usage.json`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use ashdash_core::workflow::{self, Workflow, WorkflowAction};
-use ashdash_core::{Action, Engine, Item, Mods, Outcome, Paths};
+use ashdash_core::workflow::{self, Workflow};
+use ashdash_core::{Engine, Outcome, Paths};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
@@ -310,7 +307,19 @@ pub fn spec_from_node(wf: &Workflow, uid: &str, config: &serde_json::Value) -> R
 /// has a key assigned but cannot be used.
 pub fn collect(workflows: &[Workflow]) -> (Vec<HotkeySpec>, Vec<String>) {
     let (mut specs, mut warnings) = (Vec::new(), Vec::new());
+    let mut seen_ids = std::collections::HashSet::new();
     for wf in workflows.iter().filter(|w| !w.disabled) {
+        // Hotkeys fire by workflow id (directory name); two enabled copies with the
+        // same directory name in different roots cannot be told apart.
+        if !seen_ids.insert(wf.id.as_str()) {
+            if wf.nodes.iter().any(|n| n.kind == KIND_HOTKEY) {
+                warnings.push(format!(
+                    "workflow '{}': another enabled workflow folder is also named '{}'; its hotkeys are ignored",
+                    wf.name, wf.id
+                ));
+            }
+            continue;
+        }
         for node in wf.nodes.iter().filter(|n| n.kind == KIND_HOTKEY) {
             match spec_from_node(wf, &node.uid, &node.config) {
                 Ok(Some(s)) => specs.push(s),
@@ -387,6 +396,9 @@ pub trait HotkeyHost: Send + Sync {
     fn run_node(&self, spec: &HotkeySpec, arg: &str, vars: BTreeMap<String, String>) -> Outcome;
     fn show_launcher(&self, query: Option<String>);
     fn report(&self, outcome: Outcome);
+    /// A background refresh published a new [`Snapshot`]: ask the window thread to register it
+    /// ([`WorkflowHotkeys::apply`]). Called from the refresh thread.
+    fn hotkeys_refreshed(&self) {}
 }
 
 pub fn fire(host: &dyn HotkeyHost, spec: &HotkeySpec) {
@@ -436,15 +448,70 @@ pub fn route(ev: &GlobalHotKeyEvent) -> bool {
     }
 }
 
-/// Workflow hotkeys of the running launcher. Lives on the main thread.
+/// The hotkeys found in the workflow folders at one moment, built off the window thread by
+/// [`build_snapshot`] and read (never rebuilt) by [`WorkflowHotkeys::apply`].
+#[derive(Debug, Default)]
+pub struct Snapshot {
+    /// Usable hotkeys of the enabled workflows, in folder order.
+    pub specs: Vec<HotkeySpec>,
+    /// Objects that have a key assigned but cannot be used.
+    pub warnings: Vec<String>,
+    /// Which refresh produced it; a slower, older refresh never replaces a newer one.
+    seq: u64,
+}
+
+/// Read the workflow folders and collect their hotkeys. This is the only place the registry
+/// touches the disk; it must not run on the window thread.
+pub fn build_snapshot(roots: &[PathBuf]) -> Snapshot {
+    let workflows = workflow::load_all(roots);
+    let (specs, warnings) = collect(&workflows);
+    Snapshot {
+        specs,
+        warnings,
+        seq: 0,
+    }
+}
+
+/// The current [`Snapshot`], swapped atomically (the lock is held only to clone or replace one
+/// `Arc`, never across I/O).
+#[derive(Default)]
+struct SnapshotCell {
+    current: Mutex<Arc<Snapshot>>,
+    issued: std::sync::atomic::AtomicU64,
+}
+
+impl SnapshotCell {
+    fn next_seq(&self) -> u64 {
+        self.issued.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    fn get(&self) -> Arc<Snapshot> {
+        Arc::clone(&self.current.lock().unwrap())
+    }
+
+    /// Replace the snapshot unless a newer refresh already did. Returns whether it was stored.
+    fn publish(&self, seq: u64, mut snap: Snapshot) -> bool {
+        snap.seq = seq;
+        let mut cur = self.current.lock().unwrap();
+        if seq <= cur.seq {
+            return false;
+        }
+        *cur = Arc::new(snap);
+        true
+    }
+}
+
+/// Workflow hotkeys of the running launcher. Lives on the main thread; only
+/// [`refresh_in_background`](Self::refresh_in_background) reads the disk, on its own thread.
 pub struct WorkflowHotkeys {
     host: Arc<dyn HotkeyHost>,
     roots: Vec<PathBuf>,
     reserved: Vec<HotKey>,
+    snapshot: Arc<SnapshotCell>,
     /// Used only when the launcher's own manager could not be created.
     own_manager: Option<GlobalHotKeyManager>,
     registered: Vec<HotKey>,
-    /// Problems found by the last [`reload`](Self::reload).
+    /// Problems found by the last [`apply`](Self::apply).
     pub warnings: Vec<String>,
 }
 
@@ -456,14 +523,67 @@ impl WorkflowHotkeys {
             host,
             roots,
             reserved: main_hotkey.into_iter().collect(),
+            snapshot: Arc::default(),
             own_manager: None,
             registered: Vec::new(),
             warnings: Vec::new(),
         }
     }
 
-    /// Re-read the workflows and replace all registrations.
-    pub fn reload(&mut self, manager: Option<&GlobalHotKeyManager>) {
+    /// Replace the folders searched for workflows (the managed folder is always kept first).
+    /// Takes effect at the next [`refresh_in_background`](Self::refresh_in_background).
+    pub fn set_extra_dirs(&mut self, paths: &Paths, extra_dirs: &[PathBuf]) {
+        let mut roots = vec![paths.workflows_dir()];
+        roots.extend(extra_dirs.iter().cloned());
+        self.roots = roots;
+    }
+
+    /// The launcher's own hotkey as registered right now; workflow hotkeys may not take it.
+    pub fn set_launcher_hotkey(&mut self, main_hotkey: Option<HotKey>) {
+        self.reserved = main_hotkey.into_iter().collect();
+    }
+
+    /// The folders searched and the reserved launcher hotkeys (for tests and diagnostics).
+    #[cfg(test)]
+    pub fn context(&self) -> (&[PathBuf], &[HotKey]) {
+        (&self.roots, &self.reserved)
+    }
+
+    /// Rebuild the snapshot from the folders on a background thread, publish it, then tell the
+    /// host ([`HotkeyHost::hotkeys_refreshed`]) so the window thread calls [`apply`](Self::apply).
+    pub fn refresh_in_background(&self) {
+        let (roots, cell, host) = (self.roots.clone(), Arc::clone(&self.snapshot), Arc::clone(&self.host));
+        let seq = cell.next_seq();
+        std::thread::spawn(move || {
+            let snap = build_snapshot(&roots);
+            if cell.publish(seq, snap) {
+                host.hotkeys_refreshed();
+            }
+        });
+    }
+
+    /// Like [`refresh_in_background`](Self::refresh_in_background), on the calling thread and
+    /// without notifying the host.
+    #[cfg(test)]
+    fn refresh_blocking(&self) {
+        let seq = self.snapshot.next_seq();
+        self.snapshot.publish(seq, build_snapshot(&self.roots));
+    }
+
+    /// What [`apply`](Self::apply) would register now: the current snapshot minus combinations
+    /// the launcher owns or that two workflows claim, and the warnings that go with it.
+    /// Pure: no disk access.
+    pub fn planned(&self) -> (Vec<(HotKey, Arc<HotkeySpec>)>, Vec<String>) {
+        let snap = self.snapshot.get();
+        let mut warnings = snap.warnings.clone();
+        let (plan, more) = plan_registrations(snap.specs.clone(), &self.reserved);
+        warnings.extend(more);
+        (plan, warnings)
+    }
+
+    /// Replace all registrations with the ones in the current snapshot (window thread; reads no
+    /// folders).
+    pub fn apply(&mut self, manager: Option<&GlobalHotKeyManager>) {
         if manager.is_none() && self.own_manager.is_none() {
             self.own_manager = GlobalHotKeyManager::new().ok();
         }
@@ -481,10 +601,7 @@ impl WorkflowHotkeys {
         }
         routes().lock().unwrap().clear();
 
-        let workflows = workflow::load_all(&self.roots);
-        let (specs, mut warnings) = collect(&workflows);
-        let (plan, more) = plan_registrations(specs, &self.reserved);
-        warnings.extend(more);
+        let (plan, mut warnings) = self.planned();
         for (hk, spec) in plan {
             match mgr.register(hk) {
                 Ok(()) => {
@@ -541,19 +658,7 @@ impl HotkeyHost for AppHost {
     }
 
     fn run_node(&self, spec: &HotkeySpec, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
-        let action = WorkflowAction {
-            workflow: spec.workflow_id.clone(),
-            from_uid: spec.node_uid.clone(),
-            arg: arg.to_string(),
-            vars,
-            ..Default::default()
-        };
-        let item = Item::new(
-            format!("hotkey:{}:{}", spec.workflow_id, spec.node_uid),
-            &spec.workflow_name,
-        )
-        .action(Action::Workflow(Box::new(action)));
-        self.engine.execute(&item, "", Mods::NONE, true)
+        self.engine.run_node(&spec.workflow_id, &spec.node_uid, arg, vars)
     }
 
     fn show_launcher(&self, query: Option<String>) {
@@ -561,6 +666,10 @@ impl HotkeyHost for AppHost {
             Some(q) => AppEvent::Search(q),
             None => AppEvent::Show,
         });
+    }
+
+    fn hotkeys_refreshed(&self) {
+        self.sink.emit(AppEvent::HotkeysRefreshed);
     }
 
     fn report(&self, outcome: Outcome) {
@@ -766,6 +875,186 @@ mod tests {
         assert_eq!(specs[0].node_uid, "H1");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bad") && warnings[0].contains("52"));
+    }
+
+    #[test]
+    fn collect_keys_specs_by_workflow_id_not_bundle_id() {
+        let mk = |dir: &str, bundle: &str| {
+            let doc = json!({"name": dir, "bundleid": bundle, "objects": [
+                hk("H1", json!({"hotkey": 1, "hotmod": NS_COMMAND}))]});
+            Workflow::from_json(std::path::Path::new("/nonexistent"), dir, &doc).unwrap()
+        };
+        // empty bundle id and a shared bundle id: both still carry their own directory id
+        let (specs, warnings) = collect(&[mk("a", ""), mk("b", "shared"), mk("c", "shared")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let ids: Vec<_> = specs.iter().map(|s| s.workflow_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // the same directory name in two roots is ambiguous: the second copy is refused loudly
+        let (specs, warnings) = collect(&[mk("dup", "x"), mk("dup", "y")]);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].bundle_id, "x");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dup"));
+    }
+
+    struct NoHost;
+    impl HotkeyHost for NoHost {
+        fn frontmost_bundle(&self) -> Option<String> {
+            None
+        }
+        fn read_argument(&self, _: ArgSource) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn run_node(&self, _: &HotkeySpec, _: &str, _: BTreeMap<String, String>) -> Outcome {
+            Outcome::Done
+        }
+        fn show_launcher(&self, _: Option<String>) {}
+        fn report(&self, _: Outcome) {}
+    }
+
+    #[test]
+    fn folders_and_launcher_hotkey_follow_live_changes() {
+        let paths = Paths::under(&std::env::temp_dir().join("oa-hk-ctx"));
+        let old = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::Space);
+        let mut w = WorkflowHotkeys::new(Arc::new(NoHost), &paths, &[PathBuf::from("/old")], Some(old));
+        assert_eq!(w.context().0, [paths.workflows_dir(), PathBuf::from("/old")]);
+
+        // folders added, removed
+        w.set_extra_dirs(&paths, &[PathBuf::from("/new1"), PathBuf::from("/new2")]);
+        assert_eq!(
+            w.context().0,
+            [paths.workflows_dir(), PathBuf::from("/new1"), PathBuf::from("/new2")]
+        );
+        w.set_extra_dirs(&paths, &[]);
+        assert_eq!(w.context().0, [paths.workflows_dir()]);
+
+        // the launcher moved to Cmd+J: that key is now off limits, the old one is free
+        let new = HotKey::new(Some(Modifiers::SUPER), Code::KeyJ);
+        w.set_launcher_hotkey(Some(new));
+        let (plan, warnings) = plan_registrations(
+            vec![
+                spec("takes-new", Code::KeyJ, Modifiers::SUPER),
+                spec("takes-old", Code::Space, Modifiers::ALT | Modifiers::SHIFT),
+            ],
+            w.context().1,
+        );
+        let names: Vec<_> = plan.iter().map(|(_, s)| s.workflow_name.as_str()).collect();
+        assert_eq!(names, ["takes-old"]);
+        assert!(warnings[0].contains("launcher hotkey"));
+    }
+
+    /// A workflow folder `<root>/<id>` whose only object is a hotkey (Option+F5, pass through).
+    fn write_hotkey_workflow(root: &std::path::Path, id: &str) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>bundleid</key><string>b.{id}</string><key>name</key><string>{id}</string>
+<key>connections</key><dict/>
+<key>objects</key><array><dict>
+<key>uid</key><string>H</string><key>type</key><string>{KIND_HOTKEY}</string>
+<key>config</key><dict><key>hotkey</key><integer>96</integer><key>hotmod</key><integer>8912896</integer>
+<key>action</key><integer>0</integer><key>argument</key><integer>0</integer></dict>
+</dict></array></dict></plist>"#
+            ),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn registry(root: &std::path::Path, host: Arc<dyn HotkeyHost>) -> WorkflowHotkeys {
+        let paths = Paths::under(root);
+        let wf_dir = paths.workflows_dir();
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        WorkflowHotkeys::new(host, &paths, &[], None)
+    }
+
+    fn names(w: &WorkflowHotkeys) -> Vec<String> {
+        w.planned().0.iter().map(|(_, s)| s.workflow_id.clone()).collect()
+    }
+
+    /// The window thread only reads the snapshot: whatever happens to the folders in between
+    /// changes nothing until a refresh has published a new one.
+    #[test]
+    fn the_lookup_path_reads_only_the_snapshot_not_the_folders() {
+        let root = std::env::temp_dir().join(format!("oa-hk-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let w = registry(&root, Arc::new(NoHost));
+        let wf_dir = Paths::under(&root).workflows_dir();
+        let first = write_hotkey_workflow(&wf_dir, "first");
+
+        // nothing has been scanned yet: the folder exists but the registry does not look
+        assert!(names(&w).is_empty(), "planned() must not read the folders");
+        w.refresh_blocking();
+        assert_eq!(names(&w), ["first"]);
+
+        // folder deleted, another created: the snapshot is unchanged until the next refresh
+        std::fs::remove_dir_all(&first).unwrap();
+        write_hotkey_workflow(&wf_dir, "second");
+        for _ in 0..3 {
+            assert_eq!(names(&w), ["first"], "planned() must not read the folders");
+        }
+        // even an unreadable workflows directory cannot disturb the lookups
+        w.refresh_blocking();
+        assert_eq!(names(&w), ["second"]);
+        std::fs::remove_dir_all(&wf_dir).unwrap();
+        assert_eq!(names(&w), ["second"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_slow_older_refresh_never_replaces_a_newer_snapshot() {
+        let cell = SnapshotCell::default();
+        let (old, new) = (cell.next_seq(), cell.next_seq());
+        let snap = |name: &str| Snapshot {
+            specs: vec![spec(name, Code::F5, Modifiers::ALT)],
+            ..Snapshot::default()
+        };
+        assert!(cell.publish(new, snap("new")));
+        assert!(!cell.publish(old, snap("old")), "the older scan finished last");
+        assert_eq!(cell.get().specs[0].workflow_id, "new");
+        // readers holding the previous Arc keep a consistent view across a swap
+        let held = cell.get();
+        let newest = cell.next_seq();
+        assert!(cell.publish(newest, snap("newest")));
+        assert_eq!(held.specs[0].workflow_id, "new");
+        assert_eq!(cell.get().specs[0].workflow_id, "newest");
+    }
+
+    struct Notifying(Mutex<std::sync::mpsc::Sender<()>>);
+    impl HotkeyHost for Notifying {
+        fn frontmost_bundle(&self) -> Option<String> {
+            None
+        }
+        fn read_argument(&self, _: ArgSource) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn run_node(&self, _: &HotkeySpec, _: &str, _: BTreeMap<String, String>) -> Outcome {
+            Outcome::Done
+        }
+        fn show_launcher(&self, _: Option<String>) {}
+        fn report(&self, _: Outcome) {}
+        fn hotkeys_refreshed(&self) {
+            let _ = self.0.lock().unwrap().send(());
+        }
+    }
+
+    #[test]
+    fn the_background_refresh_publishes_then_tells_the_host() {
+        let root = std::env::temp_dir().join(format!("oa-hk-bg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = registry(&root, Arc::new(Notifying(Mutex::new(tx))));
+        write_hotkey_workflow(&Paths::under(&root).workflows_dir(), "bg");
+        w.refresh_in_background();
+        // the call returned without scanning; the host is told once the snapshot is in place
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("host notified");
+        assert_eq!(names(&w), ["bg"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn spec(name: &str, key: Code, mods: Modifiers) -> HotkeySpec {

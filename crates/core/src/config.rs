@@ -53,6 +53,11 @@ impl Paths {
     pub fn workflow_config_dir(&self) -> PathBuf {
         self.data.join("workflow-config")
     }
+    /// Advisory lock serialising read-modify-write cycles of `config.json`
+    /// (see [`Config::edit_locked`]).
+    pub fn config_lock_file(&self) -> PathBuf {
+        self.data.join("run").join("config.lock")
+    }
     pub fn icon_cache(&self) -> PathBuf {
         self.cache.join("icons")
     }
@@ -88,6 +93,9 @@ pub struct Config {
     /// Provider ids (see `providers::provider_ids`) that are switched off.
     /// Unknown ids are ignored, so a setting survives a provider being renamed.
     pub providers_disabled: Vec<String>,
+    /// Learn from the results you pick to rank them (`usage.json`). Off = nothing is
+    /// recorded and existing data does not influence ranking. Preferences switch.
+    pub learn_usage: bool,
 }
 
 /// Serializable form of [`FileSearchScope`]. Paths may start with `~`.
@@ -106,6 +114,47 @@ pub struct FileSearchSettings {
     /// Keep iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`)
     /// searchable although `~/Library` is excluded. See [`ICLOUD_DRIVE`].
     pub include_icloud_drive: bool,
+    /// `mdfind` is killed after this many milliseconds (hits found so far are kept).
+    /// Out-of-range values are clamped to [`MDFIND_TIMEOUT_MS_RANGE`] when read.
+    #[serde(deserialize_with = "de_mdfind_timeout")]
+    pub mdfind_timeout_ms: u64,
+    /// `mdfind` output beyond this many bytes is discarded ([`MDFIND_MAX_BYTES_RANGE`]).
+    #[serde(deserialize_with = "de_mdfind_bytes")]
+    pub mdfind_max_bytes: usize,
+    /// The directory-walk fallback stops after this many milliseconds ([`WALK_TIMEOUT_MS_RANGE`]).
+    #[serde(deserialize_with = "de_walk_timeout")]
+    pub walk_timeout_ms: u64,
+    /// ...or after visiting this many entries ([`WALK_MAX_ENTRIES_RANGE`]; 0 never means "unlimited").
+    #[serde(deserialize_with = "de_walk_entries")]
+    pub walk_max_entries: usize,
+}
+
+/// Accepted ranges of the file search run budget. A value outside is clamped when the settings are
+/// loaded, so a typo (or a hand-edited `0`) can neither disable a limit nor stall the query worker.
+pub const MDFIND_TIMEOUT_MS_RANGE: std::ops::RangeInclusive<u64> = 200..=30_000;
+pub const MDFIND_MAX_BYTES_RANGE: std::ops::RangeInclusive<usize> = (64 << 10)..=(256 << 20);
+pub const WALK_TIMEOUT_MS_RANGE: std::ops::RangeInclusive<u64> = 100..=30_000;
+pub const WALK_MAX_ENTRIES_RANGE: std::ops::RangeInclusive<usize> = 1_000..=10_000_000;
+
+fn clamp_de<'de, D, T>(d: D, range: &std::ops::RangeInclusive<T>) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Ord + Copy,
+{
+    Ok(T::deserialize(d)?.clamp(*range.start(), *range.end()))
+}
+
+fn de_mdfind_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    clamp_de(d, &MDFIND_TIMEOUT_MS_RANGE)
+}
+fn de_mdfind_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    clamp_de(d, &MDFIND_MAX_BYTES_RANGE)
+}
+fn de_walk_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    clamp_de(d, &WALK_TIMEOUT_MS_RANGE)
+}
+fn de_walk_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    clamp_de(d, &WALK_MAX_ENTRIES_RANGE)
 }
 
 /// iCloud Drive's folder, relative to the home directory.
@@ -120,11 +169,32 @@ impl Default for FileSearchSettings {
             excluded_substrings: vec!["/pkg/mod/".into()],
             include_hidden: false,
             include_icloud_drive: true,
+            mdfind_timeout_ms: 4_000,
+            mdfind_max_bytes: 8 << 20,
+            walk_timeout_ms: 2_000,
+            walk_max_entries: 200_000,
         }
     }
 }
 
 impl FileSearchSettings {
+    /// The run budget as the search code wants it. Values set in code (not read from a file) are
+    /// clamped here too.
+    pub fn budget(&self) -> crate::files::SearchBudget {
+        use std::time::Duration;
+        let clamp = |v: u64, r: &std::ops::RangeInclusive<u64>| v.clamp(*r.start(), *r.end());
+        crate::files::SearchBudget {
+            mdfind_timeout: Duration::from_millis(clamp(self.mdfind_timeout_ms, &MDFIND_TIMEOUT_MS_RANGE)),
+            mdfind_max_bytes: self
+                .mdfind_max_bytes
+                .clamp(*MDFIND_MAX_BYTES_RANGE.start(), *MDFIND_MAX_BYTES_RANGE.end()),
+            walk_timeout: Duration::from_millis(clamp(self.walk_timeout_ms, &WALK_TIMEOUT_MS_RANGE)),
+            walk_max_entries: self
+                .walk_max_entries
+                .clamp(*WALK_MAX_ENTRIES_RANGE.start(), *WALK_MAX_ENTRIES_RANGE.end()),
+        }
+    }
+
     /// The scope for the current user (`~` is this user's home directory).
     pub fn to_scope(&self) -> FileSearchScope {
         self.to_scope_in(&dirs::home_dir().unwrap_or_default())
@@ -153,6 +223,7 @@ impl FileSearchSettings {
         scope.excluded_names = self.excluded_names.clone();
         scope.excluded_substrings = self.excluded_substrings.clone();
         scope.include_hidden = self.include_hidden;
+        scope.budget = self.budget();
         scope
     }
 }
@@ -257,6 +328,7 @@ impl Default for Config {
             file_search: FileSearchSettings::default(),
             clipboard: ClipboardSettings::default(),
             providers_disabled: Vec::new(),
+            learn_usage: true,
         }
     }
 }
@@ -289,21 +361,81 @@ impl Config {
         Ok(serde_json::from_value(migrate(raw))?)
     }
 
+    /// Read-modify-write of `config.json` under an exclusive advisory `flock` on
+    /// `run/config.lock`, so the preferences window, `ashdash config set` and a theme import
+    /// cannot overwrite each other's edit with a stale copy. The file is read strictly (an
+    /// unreadable file is an error, never replaced by defaults); `edit` runs on a copy and its
+    /// error leaves the file alone; nothing is written when `edit` changed nothing. Returns the
+    /// settings now on disk and `edit`'s result.
+    ///
+    /// Keys in `config.json` that this build does not know (hand edits) survive the save, at the
+    /// top level and inside nested objects (see [`Config::save`]); a file from a *newer* config
+    /// version is refused instead.
+    pub fn edit_locked<T>(
+        paths: &Paths,
+        edit: impl FnOnce(&mut Config) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(Config, T)> {
+        use anyhow::Context;
+        let _lock = ConfigLock::acquire(paths).context("locking config.json")?;
+        let old = Config::load_strict(paths)?;
+        let mut new = old.clone();
+        let out = edit(&mut new)?;
+        if serde_json::to_value(&old)? == serde_json::to_value(&new)? {
+            return Ok((old, out));
+        }
+        new.save(paths).context("saving config.json")?;
+        Ok((new, out))
+    }
+
     /// Writes the current schema version. Refuses to overwrite a file written by a
     /// newer build, which would silently drop settings this build does not know.
+    ///
+    /// Keys of the existing file that [`Config`] has no field for are kept: the settings are
+    /// merged over the (migrated) file contents, recursing into objects. Arrays (web searches,
+    /// root lists) are replaced as a whole, so unknown keys inside array elements are not kept.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
+        let mut base = serde_json::Value::Null;
         if let Ok(bytes) = std::fs::read(paths.config_file())
             && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && v.get("version").and_then(|n| n.as_u64()).unwrap_or(0) > CURRENT_VERSION as u64
         {
-            return Err(std::io::Error::other(
-                "config.json was written by a newer version; refusing to overwrite it",
-            ));
+            if v.get("version").and_then(|n| n.as_u64()).unwrap_or(0) > CURRENT_VERSION as u64 {
+                return Err(std::io::Error::other(
+                    "config.json was written by a newer version; refusing to overwrite it",
+                ));
+            }
+            base = migrate(v);
         }
         let mut out = self.clone();
         out.version = CURRENT_VERSION;
+        let mut merged = serde_json::to_value(&out)?;
+        if base.is_object() {
+            merge_unknown(&mut base, &mut merged);
+            merged = base;
+        }
         // 0600, written through a unique temp file and renamed (SEC-18)
-        write_private(&paths.config_file(), &serde_json::to_vec_pretty(&out)?)
+        write_private(&paths.config_file(), &serde_json::to_vec_pretty(&merged)?)
+    }
+}
+
+/// Overlay `new` onto `base`: every key of `new` wins, keys only in `base` stay, nested objects
+/// merge recursively, anything else (arrays, scalars, type changes) is taken from `new`.
+/// Afterwards `base` is the result; `new` is left empty where it was moved from.
+fn merge_unknown(base: &mut serde_json::Value, new: &mut serde_json::Value) {
+    match (base.as_object_mut(), new.as_object_mut()) {
+        (Some(b), Some(n)) => {
+            for (k, v) in std::mem::take(n) {
+                match b.get_mut(&k) {
+                    Some(existing) if existing.is_object() && v.is_object() => {
+                        let mut v = v;
+                        merge_unknown(existing, &mut v);
+                    }
+                    _ => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+        }
+        _ => *base = std::mem::take(new),
     }
 }
 
@@ -335,6 +467,34 @@ fn migrate(mut raw: serde_json::Value) -> serde_json::Value {
         obj.insert("version".into(), v.into());
     }
     raw
+}
+
+/// Holds the exclusive `flock` on [`Paths::config_lock_file`] until dropped (or the process ends).
+pub struct ConfigLock(std::fs::File);
+
+impl ConfigLock {
+    /// Wait for the lock. Other holders are short read-modify-write cycles.
+    pub fn acquire(paths: &Paths) -> std::io::Result<ConfigLock> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let file = paths.config_lock_file();
+        if let Some(dir) = file.parent() {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&file)?;
+        f.lock()?;
+        Ok(ConfigLock(f))
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -387,6 +547,150 @@ mod tests {
     }
 
     use serde_json::json;
+
+    #[test]
+    fn unknown_keys_survive_a_locked_edit() {
+        let paths = tmp_paths("unknown-keys");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            serde_json::to_vec(&json!({
+                "version": CURRENT_VERSION,
+                "max_results": 5,
+                "future_key": {"a": [1, 2, {"b": null}], "c": "d"},
+                "clipboard": {"max_entries": 7, "future_nested": [true]},
+                "file_search": {"future_fs": 1.5},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (cfg, ()) = Config::edit_locked(&paths, |c| {
+            c.max_results = 9;
+            c.clipboard.max_entries = 8;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(cfg.max_results, 9);
+        let after: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert_eq!(after["future_key"], json!({"a": [1, 2, {"b": null}], "c": "d"}));
+        assert_eq!(after["clipboard"]["future_nested"], json!([true]));
+        assert_eq!(after["clipboard"]["max_entries"], 8);
+        assert_eq!(after["file_search"]["future_fs"], 1.5);
+        assert_eq!(after["max_results"], 9);
+        // the typed settings still load, and plain save() keeps them too
+        Config::load_strict(&paths).unwrap().save(&paths).unwrap();
+        let again: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert_eq!(again, after);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn migrated_keys_do_not_come_back_after_a_save() {
+        let paths = tmp_paths("unknown-migrated");
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            br#"{"version": 1, "clipboard_history_size": 12, "extra": 1}"#,
+        )
+        .unwrap();
+        Config::edit_locked(&paths, |c| {
+            c.max_results = 3;
+            Ok(())
+        })
+        .unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
+        assert!(after.get("clipboard_history_size").is_none());
+        assert_eq!(after["clipboard"]["max_entries"], 12);
+        assert_eq!(after["extra"], 1);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    fn tmp_paths(tag: &str) -> Paths {
+        let root = std::env::temp_dir().join(format!("oa-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Paths::under(&root)
+    }
+
+    #[test]
+    fn concurrent_locked_edits_do_not_lose_updates() {
+        let paths = tmp_paths("lock-threads");
+        let start = Config::default().max_results;
+        let threads: Vec<_> = (0..12)
+            .map(|_| {
+                let paths = paths.clone();
+                std::thread::spawn(move || {
+                    Config::edit_locked(&paths, |c| {
+                        let n = c.max_results;
+                        // widen the race window between read and write
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                        c.max_results = n + 1;
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(Config::load_strict(&paths).unwrap().max_results, start + 12);
+        assert_eq!(mode(&paths.config_lock_file()), 0o600);
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    #[test]
+    fn edit_locked_writes_nothing_on_error_or_no_change() {
+        let paths = tmp_paths("lock-nowrite");
+        assert!(Config::edit_locked(&paths, |_| Ok(())).is_ok());
+        assert!(!paths.config_file().exists(), "unchanged settings are not written");
+        let r: anyhow::Result<(Config, ())> = Config::edit_locked(&paths, |c| {
+            c.max_results = 3;
+            anyhow::bail!("refused")
+        });
+        assert!(r.is_err());
+        assert!(!paths.config_file().exists());
+        // an unreadable file is an error, never replaced by defaults
+        std::fs::create_dir_all(&paths.data).unwrap();
+        std::fs::write(paths.config_file(), b"{ nope").unwrap();
+        assert!(
+            Config::edit_locked(&paths, |c| {
+                c.max_results = 4;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(paths.config_file()).unwrap(), b"{ nope");
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    /// The lock is a real `flock`: another process cannot take it while we hold it.
+    #[test]
+    fn the_lock_excludes_other_processes() {
+        if let Ok(dir) = std::env::var("OA_CFG_LOCK_CHILD") {
+            let paths = Paths::under(Path::new(&dir));
+            let f = std::fs::File::open(paths.config_lock_file()).unwrap();
+            let blocked = matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+            std::process::exit(if blocked { 0 } else { 7 });
+        }
+        let paths = tmp_paths("lock-proc");
+        let guard = ConfigLock::acquire(&paths).unwrap();
+        let root = paths.data.parent().unwrap().to_path_buf();
+        let run = || {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::tests::the_lock_excludes_other_processes",
+                    "--nocapture",
+                ])
+                .env("OA_CFG_LOCK_CHILD", &root)
+                .status()
+                .unwrap()
+        };
+        assert!(run().success(), "child could take the lock while it was held");
+        drop(guard);
+        assert_eq!(run().code(), Some(7), "child could not take a released lock");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn mode(p: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
@@ -537,6 +841,10 @@ mod tests {
             excluded_substrings: vec![],
             include_hidden: true,
             include_icloud_drive: false,
+            mdfind_timeout_ms: 1500,
+            mdfind_max_bytes: 1 << 20,
+            walk_timeout_ms: 700,
+            walk_max_entries: 5000,
         };
         c.clipboard = ClipboardSettings {
             max_entries: 12,
@@ -686,5 +994,101 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(paths.config_file()).unwrap()).unwrap();
         assert_eq!(raw["version"], CURRENT_VERSION);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_search_budget_defaults_match_the_search_code() {
+        let d = FileSearchSettings::default();
+        assert_eq!(d.budget(), crate::files::SearchBudget::default());
+        assert_eq!(
+            d.to_scope_in(Path::new("/h")).budget,
+            crate::files::SearchBudget::default()
+        );
+    }
+
+    #[test]
+    fn file_search_budget_reaches_the_scope_and_is_clamped() {
+        use std::time::Duration;
+        let s = FileSearchSettings {
+            mdfind_timeout_ms: 1500,
+            mdfind_max_bytes: 1 << 20,
+            walk_timeout_ms: 700,
+            walk_max_entries: 5000,
+            ..FileSearchSettings::default()
+        };
+        let b = s.to_scope_in(Path::new("/h")).budget;
+        assert_eq!(b.mdfind_timeout, Duration::from_millis(1500));
+        assert_eq!(b.mdfind_max_bytes, 1 << 20);
+        assert_eq!(b.walk_timeout, Duration::from_millis(700));
+        assert_eq!(b.walk_max_entries, 5000);
+        // in-code values are clamped as well
+        let wild = FileSearchSettings {
+            mdfind_timeout_ms: 0,
+            mdfind_max_bytes: 0,
+            walk_timeout_ms: u64::MAX,
+            walk_max_entries: 0,
+            ..FileSearchSettings::default()
+        }
+        .budget();
+        assert_eq!(
+            wild.mdfind_timeout,
+            Duration::from_millis(*MDFIND_TIMEOUT_MS_RANGE.start())
+        );
+        assert_eq!(wild.mdfind_max_bytes, *MDFIND_MAX_BYTES_RANGE.start());
+        assert_eq!(wild.walk_timeout, Duration::from_millis(*WALK_TIMEOUT_MS_RANGE.end()));
+        assert_eq!(
+            wild.walk_max_entries,
+            *WALK_MAX_ENTRIES_RANGE.start(),
+            "0 is not 'unlimited'"
+        );
+    }
+
+    #[test]
+    fn file_search_budget_in_a_file_is_clamped_and_missing_keys_default() {
+        let c: Config = serde_json::from_str(
+            r#"{"file_search":{"mdfind_timeout_ms":0,"mdfind_max_bytes":99999999999,"walk_max_entries":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(c.file_search.mdfind_timeout_ms, *MDFIND_TIMEOUT_MS_RANGE.start());
+        assert_eq!(c.file_search.mdfind_max_bytes, *MDFIND_MAX_BYTES_RANGE.end());
+        assert_eq!(c.file_search.walk_max_entries, *WALK_MAX_ENTRIES_RANGE.start());
+        assert_eq!(c.file_search.walk_timeout_ms, 2_000, "unset key keeps its default");
+        // wrong types are errors (the whole file is then ignored by `load`), never panics
+        for bad in [
+            r#"{"file_search":{"mdfind_timeout_ms":-1}}"#,
+            r#"{"file_search":{"walk_max_entries":"lots"}}"#,
+            r#"{"file_search":{"mdfind_max_bytes":1.5}}"#,
+        ] {
+            assert!(serde_json::from_str::<Config>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn file_search_budget_keys_are_settable_and_validated() {
+        let mut c = Config::default();
+        crate::settings_view::set(&mut c, "file_search.mdfind_timeout_ms", "2500").unwrap();
+        assert_eq!(c.file_search.mdfind_timeout_ms, 2500);
+        crate::settings_view::set(&mut c, "file_search.walk_max_entries", "50000").unwrap();
+        assert_eq!(c.file_search.walk_max_entries, 50_000);
+        for (k, v) in [
+            ("file_search.mdfind_timeout_ms", "0"),
+            ("file_search.mdfind_timeout_ms", "9999999"),
+            ("file_search.mdfind_max_bytes", "10"),
+            ("file_search.walk_timeout_ms", "-5"),
+            ("file_search.walk_max_entries", "0"),
+        ] {
+            let before = c.file_search.clone();
+            assert!(crate::settings_view::set(&mut c, k, v).is_err(), "{k}={v}");
+            assert_eq!(c.file_search, before, "{k}={v} changed nothing");
+        }
+        let keys = crate::settings_view::keys(&c);
+        for k in [
+            "mdfind_timeout_ms",
+            "mdfind_max_bytes",
+            "walk_timeout_ms",
+            "walk_max_entries",
+        ] {
+            assert!(keys.contains(&format!("file_search.{k}")), "{k}");
+        }
     }
 }

@@ -1,7 +1,5 @@
 //! System commands (lock, sleep, empty trash, ...).
 
-use std::process::Command;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemCommand {
     Lock,
@@ -62,15 +60,22 @@ impl SystemCommand {
     }
 
     pub fn run(&self) -> std::io::Result<()> {
-        let osa = |script: &str| Command::new("osascript").arg("-e").arg(script).status();
+        let osa = |script: &str| {
+            crate::actions::system_command("osascript")
+                .arg("-e")
+                .arg(script)
+                .status()
+        };
         let status = match self {
-            Self::Lock => Command::new("pmset").arg("displaysleepnow").status(),
-            Self::Sleep => Command::new("pmset").arg("sleepnow").status(),
-            Self::SleepDisplays => Command::new("pmset").arg("displaysleepnow").status(),
+            Self::Lock => crate::actions::system_command("pmset").arg("displaysleepnow").status(),
+            Self::Sleep => crate::actions::system_command("pmset").arg("sleepnow").status(),
+            Self::SleepDisplays => crate::actions::system_command("pmset").arg("displaysleepnow").status(),
             Self::LogOut => osa(r#"tell application "System Events" to log out"#),
             Self::Restart => osa(r#"tell application "System Events" to restart"#),
             Self::ShutDown => osa(r#"tell application "System Events" to shut down"#),
-            Self::ScreenSaver => Command::new("open").args(["-a", "ScreenSaverEngine"]).status(),
+            Self::ScreenSaver => crate::actions::system_command("open")
+                .args(["-a", "ScreenSaverEngine"])
+                .status(),
             Self::EmptyTrash => osa(r#"tell application "Finder" to empty trash"#),
         }?;
         if status.success() {

@@ -442,3 +442,92 @@ fn external_trigger_runs_to_large_type() {
         Outcome::LargeType("got xyz".into())
     );
 }
+
+// ---------------------------------------------------------------- run_node (workflow hotkeys)
+
+fn hotkey_like_workflow(bundle: &str) -> serde_json::Value {
+    json!({
+        "name": "Hk", "bundleid": bundle,
+        "objects": [
+            {"uid": "H", "type": "alfred.workflow.trigger.hotkey", "config": {"hotkey": 0, "hotmod": 0}},
+            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "{var:who} got {query}"}}
+        ],
+        "connections": {"H": [{"destinationuid": "L", "modifiers": 0}]}
+    })
+}
+
+#[test]
+fn run_node_starts_at_the_node_with_arg_and_vars_and_records_no_usage() {
+    let env = Env::new("run-node", APPS);
+    env.install_workflow("user.workflow.hk", &hotkey_like_workflow("qa.hk"));
+    let e = env.engine();
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("who".to_string(), "me".to_string());
+    assert_eq!(
+        e.run_node("user.workflow.hk", "H", "payload", vars),
+        Outcome::LargeType("me got payload".into())
+    );
+    let usage = std::fs::read_to_string(env.paths.usage_file()).unwrap_or_default();
+    assert!(!usage.contains("hotkey") && !usage.contains("qa.hk"), "usage: {usage}");
+}
+
+#[test]
+fn run_node_reports_unknown_bundle_node_and_disabled_workflows() {
+    let env = Env::new("run-node-err", APPS);
+    let mut doc = hotkey_like_workflow("qa.off");
+    env.install_workflow("user.workflow.hk", &hotkey_like_workflow("qa.hk"));
+    doc["disabled"] = json!(true);
+    env.install_workflow("user.workflow.off", &doc);
+    let e = env.engine();
+    let none = std::collections::BTreeMap::new;
+    assert!(matches!(e.run_node("no.such", "H", "", none()), Outcome::Error(_)));
+    assert!(matches!(
+        e.run_node("user.workflow.hk", "NOPE", "", none()),
+        Outcome::Error(_)
+    ));
+    assert!(matches!(
+        e.run_node("user.workflow.off", "H", "", none()),
+        Outcome::Error(_)
+    ));
+}
+
+/// A hotkey workflow whose output text names the copy that ran.
+fn marked_hotkey_workflow(bundle: &str, mark: &str) -> serde_json::Value {
+    let mut doc = hotkey_like_workflow(bundle);
+    doc["objects"][1]["config"]["largetypetext"] = json!(format!("{mark}:{{query}}"));
+    doc
+}
+
+#[test]
+fn run_node_works_for_a_workflow_without_a_bundle_id() {
+    let env = Env::new("run-node-noid", APPS);
+    env.install_workflow("user.workflow.noid", &marked_hotkey_workflow("", "solo"));
+    let e = env.engine();
+    assert_eq!(
+        e.run_node("user.workflow.noid", "H", "x", Default::default()),
+        Outcome::LargeType("solo:x".into())
+    );
+}
+
+#[test]
+fn run_node_runs_the_copy_that_owns_the_hotkey_when_bundle_ids_collide() {
+    let env = Env::new("run-node-dup", APPS);
+    env.install_workflow("user.workflow.one", &marked_hotkey_workflow("qa.same", "first"));
+    let second_root = env.root.join("more-workflows");
+    std::fs::create_dir_all(second_root.join("copy-two")).unwrap();
+    common::write_info_plist(
+        &second_root.join("copy-two"),
+        &marked_hotkey_workflow("qa.same", "second"),
+    );
+    let mut cfg = env.config();
+    cfg.workflow_dirs = vec![second_root];
+    let e = Engine::new(env.paths.clone(), cfg);
+    assert_eq!(
+        e.run_node("copy-two", "H", "x", Default::default()),
+        Outcome::LargeType("second:x".into())
+    );
+    assert_eq!(
+        e.run_node("user.workflow.one", "H", "x", Default::default()),
+        Outcome::LargeType("first:x".into())
+    );
+}

@@ -1,11 +1,16 @@
 //! URL hygiene for bookmarks: which schemes we are willing to open, display
 //! host, and the key used to de-duplicate.
 
-const ALLOWED: &[&str] = &["http", "https", "ftp"];
+/// Policy: bookmarks are web pages, so only `http` and `https` are opened. Every other scheme is
+/// dropped when the bookmark list is built, including `ftp:` (nothing on a current macOS browses
+/// it, and `open ftp://...` hands the URL to whatever handler is registered, e.g. a mounting
+/// helper) and `file:` (see below). A scheme that a user really needs can be added with a web
+/// search or a workflow instead, where the consequence is visible and deliberate.
+const ALLOWED: &[&str] = &["http", "https"];
 
 /// Trim `raw` and return it only if it is safe to hand to `open`: an
-/// http/https/ftp URL without control characters. `javascript:` bookmarklets,
-/// `data:`, `place:`, `chrome://` and friends yield `None`, and so does
+/// http/https URL without control characters. `javascript:` bookmarklets,
+/// `data:`, `place:`, `chrome://`, `ftp:` and friends yield `None`, and so does
 /// `file:`: a browser would only display such a bookmark, but `open` hands it
 /// to LaunchServices, which launches an application or runs a `.command` file.
 pub fn clean_url(raw: &str) -> Option<String> {
@@ -79,15 +84,18 @@ mod tests {
 
     #[test]
     fn allows_only_safe_schemes() {
-        for ok in [
-            "http://a.com",
-            "HTTPS://a.com/x?y=1#z",
-            "ftp://files.example.org/pub",
-            "  https://a.com  ",
-        ] {
+        for ok in ["http://a.com", "HTTPS://a.com/x?y=1#z", "  https://a.com  "] {
             assert!(clean_url(ok).is_some(), "{ok}");
         }
         for bad in [
+            "ftp://files.example.org/pub",
+            "FTP://files.example.org/pub",
+            "sftp://host/x",
+            "ssh://host",
+            "smb://server/share",
+            "vnc://host",
+            "x-apple.systempreferences:com.apple.preference",
+            "tel:+15551234",
             "file:///Users/me/doc.html",
             "FILE:///Applications/Calculator.app",
             "file:/tmp/x.command",

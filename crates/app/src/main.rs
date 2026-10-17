@@ -5,6 +5,7 @@ mod gui;
 mod hotkeys;
 mod ipc;
 mod mac;
+mod prefs_model;
 mod scripting;
 mod urlscheme;
 
@@ -23,7 +24,8 @@ USAGE:
   ashdash                         start the launcher (default hotkey: Option+Shift+Space)
   ashdash query <text>            print the ranked results for <text>
   ashdash run <text> [index]      run result <index> (default 0) for <text>
-  ashdash import <file>           install an .alfredworkflow package
+  ashdash import [--yes] <file>   install an .alfredworkflow package after showing what it can
+                                      do and asking (--yes: skip the question)
   ashdash workflows               list installed workflows
   ashdash trigger <bundle-id> <trigger-id> [argument]
                                       fire a workflow's External Trigger (through the
@@ -33,9 +35,11 @@ USAGE:
   ashdash show                    show the launcher (starts it if needed)
   ashdash search <text>           show the launcher with <text> typed (starts it if needed)
   ashdash reload                  re-scan apps, workflows, snippets and workflow hotkeys
+  ashdash prefs                   open the preferences window
   ashdash quit                    quit the running launcher
   ashdash login-item enable|disable|status
                                       launch at login (needs the Ashdash.app bundle)
+  ashdash --version               print the version
   ashdash paths                   print data / config locations
   ashdash config path             print the settings file location
   ashdash config get [key]        print all settings, or one by dotted path (clipboard.max_entries)
@@ -44,8 +48,44 @@ USAGE:
   ashdash config keys             list every setting name
 ";
 
+const IMPORT_USAGE: &str = "usage: ashdash import [--yes] [--] <file.alfredworkflow>";
+
+/// Arguments of `ashdash import`: `--yes` and `--` (end of options) are the only options; any
+/// other `-`-prefixed word is an error (exit code 2), so a typo such as `--yess` can never be
+/// mistaken for "ask me first" or for a file name. Exactly one file is required.
+fn parse_import_args(args: &[String]) -> std::result::Result<(bool, PathBuf), String> {
+    let (mut yes, mut file, mut options_done) = (false, None, false);
+    for a in args {
+        if !options_done && a == "--" {
+            options_done = true;
+        } else if !options_done && a == "--yes" {
+            yes = true;
+        } else if !options_done && a.starts_with('-') && a.len() > 1 {
+            return Err(format!("unknown option '{a}'"));
+        } else if file.replace(PathBuf::from(a)).is_some() {
+            return Err("only one file can be imported at a time".into());
+        }
+    }
+    file.map(|f| (yes, f)).ok_or_else(|| "no file given".into())
+}
+
+/// `ashdash --version` / `-V` / `version`: the first word only, so a file or text that happens
+/// to be called `-V` further along (`ashdash search -V`) is not mistaken for the flag.
+fn is_version_request(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("-V" | "--version" | "version"))
+}
+
+fn version_line() -> String {
+    format!("ashdash {}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Before anything touches the data folder or the settings file.
+    if is_version_request(&args) {
+        println!("{}", version_line());
+        return Ok(());
+    }
     let paths = Paths::system();
     let config = Config::load(&paths);
 
@@ -55,6 +95,9 @@ fn main() -> Result<()> {
             print!("{HELP}");
             Ok(())
         }
+        Some("prefs") => gui::prefs::open_window(),
+        // The window itself (its own process); `ashdash prefs` starts this detached.
+        Some("prefs-window") => gui::prefs::run(paths),
         Some("login-item") => mac::loginitem::cli(args.get(1).map(String::as_str)),
         Some("paths") => {
             println!("data:      {}", paths.data.display());
@@ -102,12 +145,20 @@ fn main() -> Result<()> {
             report(outcome)
         }
         Some("import") => {
-            let Some(file) = args.get(1) else {
-                bail!("usage: ashdash import <file.alfredworkflow>")
+            let (yes, file) = match parse_import_args(&args[1..]) {
+                Ok(parsed) => parsed,
+                Err(msg) => {
+                    eprintln!("ashdash: {msg}\n{IMPORT_USAGE}");
+                    std::process::exit(2);
+                }
             };
+            // A workflow is code that will run as you: show what it can do and ask first. The
+            // package is opened once; what is shown is the staged copy that gets installed.
+            let staged = ashdash_core::workflow::stage_package(&paths, &file)?;
             let sock = socket_path(&paths);
-            let engine = Engine::new(paths, config);
-            let dest = engine.import_workflow(&PathBuf::from(file))?;
+            let dest = gui::importprompt::cli_import(staged, yes, gui::importprompt::ask_yes_no, |staged| {
+                Engine::new(paths, config).install_staged(staged)
+            })?;
             println!("installed to {}", dest.display());
             // Best effort: let a running launcher pick up the new workflow and its hotkeys.
             let _ = ipc::send(&sock, &ipc::Request::Reload, CONTROL_TIMEOUT);
@@ -145,7 +196,7 @@ fn main() -> Result<()> {
                 bail!("usage: ashdash theme <file>")
             };
             let file = std::fs::canonicalize(file).with_context(|| format!("cannot read {file}"))?;
-            let theme = Theme::load(&file)?;
+            let theme = Theme::load_for_install(&file)?;
             match ipc::send(&socket_path(&paths), &ipc::Request::Theme { file }, CONTROL_TIMEOUT) {
                 Ok(resp) => report_response(resp),
                 Err(ipc::ClientError::NotRunning) => {
@@ -205,10 +256,10 @@ fn config_command(paths: &Paths, args: &[String]) -> Result<()> {
             if args.len() > 3 {
                 bail!("{USAGE}\n(quote values that contain spaces)");
             }
-            // Strict load: never overwrite a settings file we could not read.
-            let mut config = Config::load_strict(paths)?;
-            settings_view::set(&mut config, key, value)?;
-            config.save(paths).context("saving the settings")?;
+            // Strict load under the config lock: never overwrite a settings file we could not
+            // read, and never lose an edit made at the same time by the preferences window.
+            let (config, ()) = Config::edit_locked(paths, |config| settings_view::set(config, key, value))
+                .context("saving the settings")?;
             println!("{key} = {}", settings_view::get(&config, key)?);
             Ok(())
         }
@@ -294,7 +345,93 @@ fn report(o: Outcome) -> Result<()> {
             println!("{t}");
             Ok(())
         }
+        Outcome::ShowLauncher(q) => {
+            eprintln!("ashdash: the workflow wants the launcher open with '{q}' (no launcher is running)");
+            Ok(())
+        }
         Outcome::Confirm(m) => bail!("{m}"),
         Outcome::Error(e) => bail!("{e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(a: &[&str]) -> std::result::Result<(bool, PathBuf), String> {
+        parse_import_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    fn strings(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn version_flags_are_recognised_only_as_the_first_word() {
+        for yes in [&["--version"][..], &["-V"], &["version"], &["--version", "extra"]] {
+            assert!(is_version_request(&strings(yes)), "{yes:?}");
+        }
+        for no in [
+            &[][..],
+            &["search", "-V"],
+            &["query", "--version"],
+            &["-v"],
+            &["--versions"],
+            &["import", "--version"],
+        ] {
+            assert!(!is_version_request(&strings(no)), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn the_version_line_is_the_crate_version() {
+        assert_eq!(version_line(), format!("ashdash {}", env!("CARGO_PKG_VERSION")));
+        assert!(
+            version_line()
+                .split(' ')
+                .nth(1)
+                .unwrap()
+                .chars()
+                .next()
+                .unwrap()
+                .is_ascii_digit()
+        );
+        assert!(HELP.contains("--version"));
+    }
+
+    #[test]
+    fn import_takes_a_file_and_the_yes_flag_in_any_order() {
+        assert_eq!(parse(&["a.alfredworkflow"]), Ok((false, "a.alfredworkflow".into())));
+        assert_eq!(
+            parse(&["--yes", "a.alfredworkflow"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
+        assert_eq!(
+            parse(&["a.alfredworkflow", "--yes"]),
+            Ok((true, "a.alfredworkflow".into()))
+        );
+        // `--` ends the options, so a file whose name starts with a dash can still be imported
+        assert_eq!(
+            parse(&["--", "--odd.alfredworkflow"]),
+            Ok((false, "--odd.alfredworkflow".into()))
+        );
+        assert_eq!(parse(&["--yes", "--", "-x"]), Ok((true, "-x".into())));
+    }
+
+    #[test]
+    fn import_rejects_unknown_flags_and_wrong_file_counts() {
+        for bad in [
+            &["--yess", "a.alfredworkflow"][..],
+            &["a.alfredworkflow", "--force"],
+            &["-y", "a.alfredworkflow"],
+            &["--yes=1", "a.alfredworkflow"],
+            &["--", "a", "b"],
+            &["a", "b"],
+            &["--yes"],
+            &[],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(parse(&["--yess", "x"]).unwrap_err(), "unknown option '--yess'");
     }
 }

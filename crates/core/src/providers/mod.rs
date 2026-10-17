@@ -168,6 +168,17 @@ pub fn registry_with(deps: &RegistryDeps) -> Vec<Box<dyn Provider>> {
 /// named in `config.providers_disabled` are not created at all, and the file
 /// search and bookmark providers take their settings from the configuration.
 pub fn registry_for(config: &Config, deps: &RegistryDeps) -> Vec<Box<dyn Provider>> {
+    let (v, warnings) = registry_checked(config, deps);
+    for w in &warnings {
+        eprintln!("ashdash: {w}");
+    }
+    v
+}
+
+/// Like [`registry_for`], also returning what was wrong with the configuration (web searches
+/// whose URL template is not a plain http(s) URL are skipped and listed here).
+pub fn registry_checked(config: &Config, deps: &RegistryDeps) -> (Vec<Box<dyn Provider>>, Vec<String>) {
+    let (searches, warnings) = crate::websearch::checked(&config.web_searches);
     let mut v: Vec<Box<dyn Provider>> = Vec::new();
     // One line per provider; the id literal must equal `Provider::id` (tested).
     macro_rules! add {
@@ -177,7 +188,7 @@ pub fn registry_for(config: &Config, deps: &RegistryDeps) -> Vec<Box<dyn Provide
             }
         };
     }
-    add!("workflow", workflow::WorkflowProvider);
+    add!("workflow", workflow::WorkflowProvider::new(Arc::clone(&deps.os)));
     add!("shell", shell::ShellProvider);
     add!(
         "files",
@@ -190,13 +201,13 @@ pub fn registry_for(config: &Config, deps: &RegistryDeps) -> Vec<Box<dyn Provide
         "bookmarks",
         bookmarks::BookmarksProvider::with_settings(&deps.home, config.bookmarks.clone())
     );
-    add!("web-keyword", websearch::WebKeywordProvider);
+    add!("web-keyword", websearch::WebKeywordProvider::new(searches.clone()));
     add!("path", files::PathBrowseProvider);
     add!("calc", calc::CalcProvider);
     add!("apps", apps::AppsProvider);
     add!("system", system::SystemProvider);
-    add!("web-fallback", websearch::FallbackProvider);
-    v
+    add!("web-fallback", websearch::FallbackProvider::new(searches));
+    (v, warnings)
 }
 
 /// If `q` is `keyword` or `keyword <rest>`, return the (left-trimmed) rest.

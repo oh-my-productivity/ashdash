@@ -39,16 +39,28 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<AppEntry> {
     crate::index::scan_entries(dirs)
 }
 
+/// An app's `Info.plist` is a few KB; one this big is not read.
+const MAX_INFO_PLIST_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Locate the `.icns` file of an app bundle from its Info.plist.
 fn icns_path(app: &Path) -> Option<PathBuf> {
-    let resources = app.join("Contents/Resources");
-    let info = plist::Value::from_file(app.join("Contents/Info.plist")).ok()?;
+    // Bounded in size and nesting: a hostile bundle's Info.plist must not abort the launcher.
+    let bytes = crate::theme::read_limited(&app.join("Contents/Info.plist"), MAX_INFO_PLIST_BYTES).ok()?;
+    let info = crate::theme::parse_plist(&bytes).ok()?;
     let name = info.as_dictionary()?.get("CFBundleIconFile")?.as_string()?.to_string();
-    let mut p = resources.join(&name);
-    if p.extension().is_none() {
-        p.set_extension("icns");
+    // SEC-17: `CFBundleIconFile` is a plain file name inside Resources; anything with a
+    // separator, `..` or an absolute path (and any symlink) is refused.
+    // The bundle is the confinement root and `Contents/Resources/<name>` the relative path, so
+    // `Contents` and `Resources` themselves are checked: a `Resources` that is a symlink to
+    // some other folder must not make that folder's images resolvable.
+    let mut file = PathBuf::from(&name);
+    if file.extension().is_none() {
+        file.set_extension("icns");
     }
-    p.exists().then_some(p)
+    if name.contains(['/', '\\', '\0']) {
+        return None;
+    }
+    crate::confine::confined_file(app, &Path::new("Contents/Resources").join(file))
 }
 
 /// Convert the app's icon to a small PNG (cached) using the system `sips`
@@ -78,7 +90,7 @@ pub fn app_icon_png(app: &Path, cache_dir: &Path) -> Option<PathBuf> {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let status = Command::new("sips")
+    let status = Command::new(crate::actions::system_program(std::ffi::OsStr::new("sips")))
         .args(["-s", "format", "png", "-Z", "96"])
         .arg(&icns)
         .arg("--out")
@@ -138,5 +150,85 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1, "no .part leftovers");
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    fn fake_app(root: &Path, icon_file: &str) -> PathBuf {
+        let app = root.join("Evil.app");
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        let mut d = plist::Dictionary::new();
+        d.insert("CFBundleIconFile".into(), icon_file.into());
+        plist::Value::Dictionary(d)
+            .to_file_xml(app.join("Contents/Info.plist"))
+            .unwrap();
+        app
+    }
+
+    #[test]
+    fn icon_file_name_is_confined_to_resources() {
+        // SEC-17
+        let root = std::env::temp_dir().join(format!("oa-apps-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("secret.icns"), b"x").unwrap();
+        let secret_abs = root.join("secret.icns").display().to_string();
+        for bad in [
+            "../../../secret.icns",
+            "../secret",
+            secret_abs.as_str(),
+            "sub/x.icns",
+            "a\\b",
+        ] {
+            let app = fake_app(&root, bad);
+            assert_eq!(icns_path(&app), None, "{bad}");
+            let _ = std::fs::remove_dir_all(&app);
+        }
+        // a symlink inside Resources is refused as well
+        let app = fake_app(&root, "icon");
+        std::os::unix::fs::symlink(root.join("secret.icns"), app.join("Contents/Resources/icon.icns")).unwrap();
+        assert_eq!(icns_path(&app), None);
+        std::fs::remove_file(app.join("Contents/Resources/icon.icns")).unwrap();
+        // ...while a normal icon, with or without extension, resolves
+        std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
+        assert_eq!(icns_path(&app), Some(app.join("Contents/Resources/icon.icns")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hostile_info_plist_is_ignored_not_fatal() {
+        let root = std::env::temp_dir().join(format!("oa-apps-deep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = fake_app(&root, "icon");
+        std::fs::write(app.join("Contents/Resources/icon.icns"), b"x").unwrap();
+        assert!(icns_path(&app).is_some(), "the control case resolves");
+        let depth = 120_000; // ~1.8 MB: overflowed the stack of a 2 MiB thread
+        let text = format!(
+            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIconFile</key><string>icon</string><key>x</key>{}{}</dict></plist>"#,
+            "<array>".repeat(depth),
+            "</array>".repeat(depth)
+        );
+        std::fs::write(app.join("Contents/Info.plist"), text).unwrap();
+        assert_eq!(icns_path(&app), None);
+        // and one over the size cap is not even read
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            vec![b' '; MAX_INFO_PLIST_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(icns_path(&app), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlinked_resources_folder_does_not_expose_other_images() {
+        let root = std::env::temp_dir().join(format!("oa-apps-resym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("photo.icns"), b"x").unwrap();
+        let app = fake_app(&root, "photo");
+        std::fs::remove_dir_all(app.join("Contents/Resources")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, app.join("Contents/Resources")).unwrap();
+        assert_eq!(icns_path(&app), None, "Resources is a link to another folder");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1,6 +1,7 @@
 //! The query engine: turns typed text into ranked results and performs the
 //! chosen action.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,6 +24,8 @@ pub enum Outcome {
     Done,
     /// Show this text in Large Type.
     LargeType(String),
+    /// Show the launcher with this text typed in (a workflow's Open Launcher object).
+    ShowLauncher(String),
     /// The action is destructive; ask the user and call again with `confirmed`.
     Confirm(String),
     Error(String),
@@ -39,14 +42,39 @@ pub struct Engine {
     usage: Mutex<Usage>,
     clipboard: Arc<Mutex<ClipboardHistory>>,
     providers: Vec<Box<dyn Provider>>,
+    /// Settings applied after start-up by [`Engine::apply_config`]; they take precedence over
+    /// `config` and `providers` (which stay as the start-up snapshot).
+    live: RwLock<Option<Arc<Live>>>,
+    /// What providers are built from (kept for [`Engine::apply_config`]).
+    deps: RegistryDeps,
     /// Everything that reaches the machine from `perform` (Universal Actions).
     os: Arc<dyn Os>,
     /// Background reload bookkeeping (see [`Engine::reload`]).
     reload_gate: Arc<Mutex<ReloadGate>>,
+    /// Same bookkeeping for the workflow/snippet-only refresh started by [`Engine::apply_config`].
+    content_gate: Arc<Mutex<ContentGate>>,
     /// Serialises writes of per-workflow settings files.
     settings_lock: Mutex<()>,
     /// Pasteboard and key-press access for clipboard actions (replaceable in tests).
     clip_env: Box<dyn clipboard::command::ClipEnv + Send + Sync>,
+    /// What was wrong with the configuration at start-up (web searches that were skipped).
+    startup_warnings: Vec<String>,
+}
+
+/// Configuration and the providers built from it, swapped as one unit.
+struct Live {
+    config: Config,
+    providers: Vec<Box<dyn Provider>>,
+}
+
+/// What [`Engine::apply_config`] could not apply to the running engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApplyReport {
+    /// Setting names that only take effect after a restart.
+    pub restart_required: Vec<&'static str>,
+    /// Parts of the new settings that were left out because they are not allowed (a web
+    /// search with a non-web URL, say); everything else was applied.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Default)]
@@ -54,6 +82,54 @@ struct ReloadGate {
     running: bool,
     /// Another reload was requested while one was running.
     again: bool,
+    /// Tests: make the next worker pass panic (to prove the gate is released).
+    #[cfg(test)]
+    panic_once: bool,
+}
+
+/// Bookkeeping of the background workflow/snippet refresh: the roots of the *latest* request
+/// win, so a refresh queued behind a running one scans the newest folder list.
+#[derive(Default)]
+struct ContentGate {
+    running: bool,
+    again: bool,
+    roots: Vec<PathBuf>,
+    /// Tests: make the next worker pass panic (to prove the gate is released).
+    #[cfg(test)]
+    panic_once: bool,
+}
+
+/// Held by a reload worker: if the worker unwinds (a panic while scanning), the gate is released
+/// so [`Engine::reload_pending`] cannot stay true for the rest of the session and the next
+/// request starts a new worker. Normal exits clear the gate themselves, under the lock that
+/// also decides whether another pass is due, and [`GateRelease::disarm`] the guard.
+struct GateRelease<T> {
+    gate: Arc<Mutex<T>>,
+    clear: fn(&mut T),
+    armed: bool,
+}
+
+impl<T> GateRelease<T> {
+    fn new(gate: Arc<Mutex<T>>, clear: fn(&mut T)) -> Self {
+        GateRelease {
+            gate,
+            clear,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<T> Drop for GateRelease<T> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut g = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            (self.clear)(&mut g);
+        }
+    }
 }
 
 /// Everything a reload needs, owned so it can run on a background thread.
@@ -74,6 +150,11 @@ impl ReloadJob {
     }
 
     fn run_content(&self) {
+        // The first root is the app's own workflows folder (`reload_job`); the others come from
+        // `workflow_dirs` and are never written to.
+        if let Some(own) = self.workflow_roots.first() {
+            workflow::sweep_interrupted_installs(own);
+        }
         let fresh = workflow::load_all(&self.workflow_roots);
         let snippets = clipboard::load_snippets(&self.snippets_file);
         let old = std::mem::replace(&mut *self.workflows.write().unwrap(), fresh);
@@ -135,14 +216,18 @@ impl Engine {
     }
 
     fn with_deps(paths: Paths, config: Config, deps: RegistryDeps) -> Engine {
-        let usage = Usage::load(paths.usage_file());
+        let mut usage = Usage::load(paths.usage_file());
+        usage.set_enabled(config.learn_usage);
         let mut clipboard = ClipboardHistory::load(paths.clipboard_file(), config.clipboard.max_entries);
         config.clipboard.apply(&mut clipboard);
         // Served from the cache at once (or scanned synchronously on the very first run);
         // refreshed and watched in the background afterwards.
         let apps = Arc::new(RwLock::new(Vec::new()));
         let app_index = Arc::new(AppIndex::open(&paths, &config.app_dirs, Arc::clone(&apps)));
-        let providers = providers::registry_for(&config, &deps);
+        let (providers, startup_warnings) = providers::registry_checked(&config, &deps);
+        for w in &startup_warnings {
+            eprintln!("ashdash: {w}");
+        }
         let e = Engine {
             paths,
             config,
@@ -153,13 +238,24 @@ impl Engine {
             usage: Mutex::new(usage),
             clipboard: Arc::new(Mutex::new(clipboard)),
             providers,
-            os: deps.os,
+            live: RwLock::new(None),
+            os: Arc::clone(&deps.os),
+            deps,
             reload_gate: Arc::default(),
+            content_gate: Arc::default(),
             settings_lock: Mutex::new(()),
             clip_env: Box::new(clipboard::command::SystemEnv::default()),
+            startup_warnings,
         };
         e.reload_content();
         e
+    }
+
+    /// What was wrong with the configuration this engine started with (web searches that were
+    /// left out because their URL is not a plain http(s) URL, ...). The window reports these the
+    /// same way as problems found by a live reload.
+    pub fn startup_warnings(&self) -> &[String] {
+        &self.startup_warnings
     }
 
     /// Replace the pasteboard / key-press backend used by clipboard actions
@@ -187,7 +283,15 @@ impl Engine {
         let spawned = std::thread::Builder::new()
             .name("ashdash-reload".into())
             .spawn(move || {
+                let mut release = GateRelease::new(Arc::clone(&gate), |g: &mut ReloadGate| {
+                    g.running = false;
+                    g.again = false;
+                });
                 loop {
+                    #[cfg(test)]
+                    if std::mem::take(&mut gate.lock().unwrap().panic_once) {
+                        panic!("test: reload worker panics");
+                    }
                     job.run();
                     let mut g = gate.lock().unwrap();
                     if g.again {
@@ -195,6 +299,7 @@ impl Engine {
                         continue;
                     }
                     g.running = false;
+                    release.disarm();
                     break;
                 }
             });
@@ -205,9 +310,56 @@ impl Engine {
         }
     }
 
-    /// Whether a background [`Engine::reload`] is still working.
+    /// Whether a background [`Engine::reload`] or content refresh is still working.
     pub fn reload_pending(&self) -> bool {
-        self.reload_gate.lock().unwrap().running
+        self.reload_gate.lock().unwrap().running || self.content_gate.lock().unwrap().running
+    }
+
+    /// Like [`Engine::reload_content`] but on a background thread: returns at once, requests
+    /// made while a refresh runs are merged into one extra pass over the newest folder list, and
+    /// [`Engine::reload_pending`] reports it. Queries keep using the old workflows meanwhile.
+    pub fn reload_content_background(&self) {
+        let job = self.reload_job();
+        {
+            let mut gate = self.content_gate.lock().unwrap();
+            gate.roots = job.workflow_roots.clone();
+            if gate.running {
+                gate.again = true;
+                return;
+            }
+            gate.running = true;
+        }
+        let gate = Arc::clone(&self.content_gate);
+        let worker_job = job;
+        let spawned = std::thread::Builder::new()
+            .name("ashdash-reload-content".into())
+            .spawn(move || {
+                let mut release = GateRelease::new(Arc::clone(&gate), |g: &mut ContentGate| {
+                    g.running = false;
+                    g.again = false;
+                });
+                let mut job = worker_job;
+                loop {
+                    #[cfg(test)]
+                    if std::mem::take(&mut gate.lock().unwrap().panic_once) {
+                        panic!("test: content refresh panics");
+                    }
+                    job.run_content();
+                    let mut g = gate.lock().unwrap();
+                    if g.again {
+                        g.again = false;
+                        job.workflow_roots = g.roots.clone();
+                        continue;
+                    }
+                    g.running = false;
+                    release.disarm();
+                    break;
+                }
+            });
+        if spawned.is_err() {
+            self.content_gate.lock().unwrap().running = false;
+            self.reload_content();
+        }
     }
 
     /// Re-scan applications, workflows and snippets and return when done
@@ -216,14 +368,15 @@ impl Engine {
         self.reload_job().run();
     }
 
-    /// Workflows and snippets only (applications are handled by the app index).
-    fn reload_content(&self) {
+    /// Workflows and snippets only (applications are handled by the app index). Used by the
+    /// settings watcher and the preferences window after they changed those files.
+    pub fn reload_content(&self) {
         self.reload_job().run_content();
     }
 
     fn reload_job(&self) -> ReloadJob {
         let mut roots = vec![self.paths.workflows_dir()];
-        roots.extend(self.config.workflow_dirs.iter().cloned());
+        roots.extend(self.config_now().workflow_dirs.iter().cloned());
         ReloadJob {
             app_index: Arc::clone(&self.app_index),
             workflows: Arc::clone(&self.workflows),
@@ -231,6 +384,50 @@ impl Engine {
             workflow_roots: roots,
             snippets_file: self.paths.snippets_file(),
         }
+    }
+
+    /// The settings in force: the last [`Engine::apply_config`], or the start-up settings.
+    pub fn config_now(&self) -> Config {
+        match &*self.live.read().unwrap() {
+            Some(l) => l.config.clone(),
+            None => self.config.clone(),
+        }
+    }
+
+    /// Put new settings into force without restarting: rebuilds the providers (provider
+    /// switches, web searches, file search scope, bookmark sources), re-applies the clipboard
+    /// retention / ignore list, the usage-learning switch and the extra workflow folders.
+    /// Queries running meanwhile finish with the old settings. Settings that are read once at
+    /// start-up are listed in the report (`app_dirs`); the global hotkey and the theme belong to
+    /// the window, which applies them itself.
+    pub fn apply_config(&self, new: Config) -> ApplyReport {
+        let old = self.config_now();
+        let mut report = ApplyReport::default();
+        if new.app_dirs != old.app_dirs {
+            report.restart_required.push("app_dirs");
+        }
+        let (providers, warnings) = providers::registry_checked(&new, &self.deps);
+        report.warnings = warnings;
+        new.clipboard.apply(&mut self.clipboard.lock().unwrap());
+        self.usage.lock().unwrap().set_enabled(new.learn_usage);
+        let workflows_moved = new.workflow_dirs != old.workflow_dirs;
+        *self.live.write().unwrap() = Some(Arc::new(Live { config: new, providers }));
+        if workflows_moved {
+            // The folder scan can be slow and this runs on the window thread: refresh in the
+            // background (see `reload_pending`); queries use the old workflows until it lands.
+            self.reload_content_background();
+        }
+        report
+    }
+
+    /// Whether result picks are recorded and used for ranking.
+    pub fn usage_enabled(&self) -> bool {
+        self.usage.lock().unwrap().is_enabled()
+    }
+
+    /// Forget everything learned from earlier picks (memory and `usage.json`).
+    pub fn clear_usage(&self) {
+        self.usage.lock().unwrap().clear();
     }
 
     pub fn clipboard(&self) -> Arc<Mutex<ClipboardHistory>> {
@@ -250,8 +447,20 @@ impl Engine {
             .collect()
     }
 
+    /// Install a package without asking. UIs that confirm with the user must use
+    /// [`Engine::stage_workflow`] and [`Engine::install_staged`] instead.
     pub fn import_workflow(&self, package: &Path) -> Result<PathBuf> {
-        let dest = workflow::import_package(package, &self.paths.workflows_dir())?;
+        self.install_staged(self.stage_workflow(package)?)
+    }
+
+    /// Open a package once for inspection (see `workflow::stage_package`); nothing is installed.
+    pub fn stage_workflow(&self, package: &Path) -> Result<workflow::StagedPackage> {
+        workflow::stage_package(&self.paths, package)
+    }
+
+    /// Install exactly the tree a [`StagedPackage`](workflow::StagedPackage) described.
+    pub fn install_staged(&self, staged: workflow::StagedPackage) -> Result<PathBuf> {
+        let dest = staged.install()?;
         // The new workflow must be usable as soon as this returns.
         self.reload_content();
         Ok(dest)
@@ -264,24 +473,7 @@ impl Engine {
     pub fn workflow_settings(&self, bundle_id: &str) -> Option<Vec<WorkflowSetting>> {
         let wfs = self.workflows.read().unwrap();
         let wf = wfs.iter().find(|w| !bundle_id.is_empty() && w.bundle_id == bundle_id)?;
-        let vars = wf.base_vars(&self.paths);
-        Some(
-            wf.user_config
-                .iter()
-                .map(|c| {
-                    let value = vars.get(&c.variable).cloned().unwrap_or_else(|| c.default.clone());
-                    WorkflowSetting {
-                        variable: c.variable.clone(),
-                        label: c.label.clone(),
-                        description: c.description.clone(),
-                        kind: c.kind.clone(),
-                        is_default: value == c.default,
-                        default: c.default.clone(),
-                        value,
-                    }
-                })
-                .collect(),
-        )
+        Some(crate::settings_view::workflow_settings_of(wf, &self.paths))
     }
 
     /// Save a value for one entry of a workflow's configuration sheet. It is
@@ -305,16 +497,7 @@ impl Engine {
         if !wf.user_config.iter().any(|c| c.variable == variable) {
             bail!("workflow '{}' has no setting '{variable}'", wf.name);
         }
-        let file = wf.user_values_file(&self.paths);
-        let mut map: serde_json::Map<String, serde_json::Value> = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        match value {
-            Some(v) => map.insert(variable.to_string(), v.into()),
-            None => map.remove(variable),
-        };
-        crate::config::write_private(&file, &serde_json::to_vec_pretty(&map)?)?;
+        crate::settings_view::write_workflow_value(wf, &self.paths, variable, value)?;
         // The values are cached per loaded workflow: drop the cache so the next run re-reads them.
         wf.reset_session();
         Ok(())
@@ -330,8 +513,13 @@ impl Engine {
         if q.trim().is_empty() {
             return Vec::new();
         }
+        let live = self.live.read().unwrap().clone();
+        let (config, providers) = match &live {
+            Some(l) => (&l.config, &l.providers),
+            None => (&self.config, &self.providers),
+        };
         let state = EngineState {
-            config: &self.config,
+            config,
             paths: &self.paths,
             apps: &self.apps,
             workflows: &self.workflows,
@@ -346,11 +534,11 @@ impl Engine {
         let mut items = Vec::new();
         let mut fixed = Vec::new(); // from providers that opt out of learning
         let mut trailing = Vec::new();
-        for p in &self.providers {
+        for p in providers {
             let out = p.query(&ctx);
             if out.exclusive {
                 let mut v = out.items;
-                v.truncate(self.config.max_results);
+                v.truncate(config.max_results);
                 return v;
             }
             match (p.placement(), p.learns()) {
@@ -368,7 +556,7 @@ impl Engine {
         }
         items.extend(fixed);
         sort_items(&mut items);
-        items.truncate(self.config.max_results);
+        items.truncate(config.max_results);
         items.extend(trailing);
         items
     }
@@ -376,6 +564,28 @@ impl Engine {
     /// Universal Actions available for a result (empty when it has none).
     pub fn actions_for(&self, item: &Item) -> Vec<Item> {
         actions::actions_for(item)
+    }
+
+    /// Placeholder rows (`runningsubtext`) for Script Filters that would run for
+    /// `query`, cheap enough to show while the real, slow query is in flight.
+    pub fn pending_items(&self, query: &str) -> Vec<Item> {
+        let q = query.trim_start();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let wfs = self.workflows.read().unwrap();
+        wfs.iter().flat_map(|w| w.pending_items(q, &self.paths)).collect()
+    }
+
+    /// Applications to offer for "Open With..." on `path`, filtered by `filter`.
+    pub fn open_with_items(&self, path: &Path, filter: &str, limit: usize) -> Vec<Item> {
+        actions::open_with_items(self.os.as_ref(), &self.config.app_dirs, path, filter, limit)
+    }
+
+    /// Start Quick Look on `paths` through the engine's [`Os`] and return the
+    /// handle; `kill()` on it dismisses the preview.
+    pub fn spawn_quick_look(&self, paths: &[PathBuf]) -> Result<Box<dyn actions::Process>> {
+        actions::spawn_quick_look(self.os.as_ref(), paths)
     }
 
     // ------------------------------------------------------------ execution
@@ -412,8 +622,13 @@ impl Engine {
         // Universal Actions carry the text or path they act on in their id
         // (`act:copy:<text>`); recording that would write it, unbounded and in
         // plaintext, to usage.json. They are never ranked, so nothing is lost.
-        let learnable = !matches!(action, Action::Universal(_)) && !matches!(item.action, Action::Universal(_));
-        if learnable && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_))) {
+        // Clipboard rows are ordered by recency, not usage, and the typed query (`clip hunter2`)
+        // may be a fragment of a secret: they are not learned either (SEC-19).
+        let sensitive = |a: &Action| matches!(a, Action::Universal(_) | Action::Clipboard(_));
+        let learnable = !sensitive(&action) && !sensitive(&item.action);
+        if learnable
+            && (outcome == Outcome::Done || matches!(outcome, Outcome::LargeType(_) | Outcome::ShowLauncher(_)))
+        {
             self.usage.lock().unwrap().record(query, &item.id);
         }
         outcome
@@ -433,12 +648,12 @@ impl Engine {
                 Action::Clipboard(c) => match clipboard::command::run_with(&self.clipboard, c, &*self.clip_env) {
                     Outcome::Error(m) => bail!("{m}"),
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
-                    Outcome::Done | Outcome::Confirm(_) => {}
+                    Outcome::Done | Outcome::Confirm(_) | Outcome::ShowLauncher(_) => {}
                 },
                 Action::Universal(u) => match actions::run(self.os.as_ref(), u) {
                     Outcome::LargeType(t) => return Ok(Some(format!("{TAG_LARGE}{t}"))),
                     Outcome::Error(e) => bail!("{e}"),
-                    Outcome::Done | Outcome::Confirm(_) => {}
+                    Outcome::Done | Outcome::Confirm(_) | Outcome::ShowLauncher(_) => {}
                 },
             }
             Ok(None)
@@ -457,6 +672,37 @@ impl Engine {
             wf.run(act, mods, &self.paths)
         };
         Some(apply_effects(effects))
+    }
+
+    /// Start an enabled workflow at one of its objects (a hotkey, say): `arg` and `vars` are
+    /// what that object would have produced. Unlike [`Engine::execute`] this records nothing
+    /// in the usage table.
+    ///
+    /// `workflow_id` is the workflow's directory identity (`Workflow::id`), not its bundle
+    /// id: bundle ids may be empty or shared by copies in several roots.
+    ///
+    /// Callers must derive `node_uid` from an installed workflow's own objects (as the
+    /// hotkey registry does); any object kind is accepted, so this must never be reachable
+    /// with a uid taken from outside input (URL scheme, IPC, AppleScript).
+    pub fn run_node(&self, workflow_id: &str, node_uid: &str, arg: &str, vars: BTreeMap<String, String>) -> Outcome {
+        let effects = {
+            let wfs = self.workflows.read().unwrap();
+            let Some(wf) = wfs.iter().find(|w| w.id == workflow_id && !w.disabled) else {
+                return Outcome::Error(format!("no enabled workflow '{workflow_id}'"));
+            };
+            if !wf.has_node(node_uid) {
+                return Outcome::Error(format!("workflow '{}' has no object '{node_uid}'", wf.name));
+            }
+            let act = WorkflowAction {
+                workflow: wf.id.clone(),
+                from_uid: node_uid.to_string(),
+                arg: arg.to_string(),
+                vars,
+                ..Default::default()
+            };
+            wf.run(&act, Mods::NONE, &self.paths)
+        };
+        msg_to_outcome(apply_effects(effects))
     }
 
     /// Fire a workflow's External Trigger, like `reference://runtrigger`.
@@ -486,12 +732,15 @@ impl Engine {
 // Effects are reported back as a tagged string so `perform` can stay uniform.
 const TAG_LARGE: &str = "\u{1}large:";
 const TAG_ERR: &str = "\u{1}err:";
+const TAG_SHOW: &str = "\u{1}show:";
 
 fn msg_to_outcome(m: String) -> Outcome {
     if let Some(t) = m.strip_prefix(TAG_LARGE) {
         Outcome::LargeType(t.to_string())
     } else if let Some(e) = m.strip_prefix(TAG_ERR) {
         Outcome::Error(e.to_string())
+    } else if let Some(q) = m.strip_prefix(TAG_SHOW) {
+        Outcome::ShowLauncher(q.to_string())
     } else {
         Outcome::Done
     }
@@ -499,6 +748,7 @@ fn msg_to_outcome(m: String) -> Outcome {
 
 fn apply_effects(effects: Vec<Effect>) -> String {
     let mut large = None;
+    let mut show = None;
     let mut errors = Vec::new();
     for fx in effects {
         let r: Result<()> = match fx {
@@ -506,6 +756,7 @@ fn apply_effects(effects: Vec<Effect>) -> String {
             Effect::OpenPath { path, with } => open_path(&path, with.as_deref()),
             Effect::Reveal(p) => reveal(&p),
             Effect::Copy(t) => copy_to_clipboard(&t),
+            Effect::CopyTransient(t) => copy_to_clipboard_transient(&t),
             Effect::Notify { title, text } => notify(&title, &text),
             Effect::LargeType(t) => {
                 large = Some(t);
@@ -522,9 +773,10 @@ fn apply_effects(effects: Vec<Effect>) -> String {
             }
             Effect::WriteFile(w) => w.perform(),
             Effect::AppleScript(s) => workflow::run_osascript(&s).map(|_| ()),
-            Effect::ShowLauncher { query } => Err(anyhow::anyhow!(
-                "showing the launcher with '{query}' from a workflow is not wired up yet"
-            )),
+            Effect::ShowLauncher { query } => {
+                show = Some(query);
+                Ok(())
+            }
             Effect::Debug(t) => {
                 workflow::debug_log(&t);
                 Ok(())
@@ -536,6 +788,8 @@ fn apply_effects(effects: Vec<Effect>) -> String {
     }
     if !errors.is_empty() {
         format!("{TAG_ERR}{}", errors.join("; "))
+    } else if let Some(q) = show {
+        format!("{TAG_SHOW}{q}")
     } else if let Some(t) = large {
         format!("{TAG_LARGE}{t}")
     } else {
@@ -564,10 +818,15 @@ fn run_status(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// A command for a macOS system tool, by absolute path (see `actions::system_program`).
+fn sys_command(name: &str) -> Command {
+    Command::new(actions::system_program(std::ffi::OsStr::new(name)))
+}
+
 pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
     let s = p.to_string_lossy();
     no_dash(&s, "path")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = with {
         no_dash(app, "application")?;
         c.arg("-a").arg(app);
@@ -577,12 +836,12 @@ pub fn open_path(p: &Path, with: Option<&str>) -> Result<()> {
 
 pub fn reveal(p: &Path) -> Result<()> {
     no_dash(&p.to_string_lossy(), "path")?;
-    run_status(Command::new("open").arg("-R").arg(p), "reveal")
+    run_status(sys_command("open").arg("-R").arg(p), "reveal")
 }
 
 pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
     no_dash(url, "URL")?;
-    let mut c = Command::new("open");
+    let mut c = sys_command("open");
     if let Some(app) = browser {
         no_dash(app, "browser")?;
         c.arg("-a").arg(app);
@@ -591,7 +850,7 @@ pub fn open_url(url: &str, browser: Option<&str>) -> Result<()> {
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    let mut child = sys_command("pbcopy").stdin(Stdio::piped()).spawn()?;
     child.stdin.take().expect("piped stdin").write_all(text.as_bytes())?;
     if !child.wait()?.success() {
         bail!("pbcopy failed");
@@ -599,10 +858,37 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// The JXA that puts `argv[0]` on the general pasteboard as plain text together with the
+/// transient marker type (<http://nspasteboard.org>), which every clipboard manager,
+/// this one included, treats as "do not record".
+fn transient_copy_script() -> String {
+    format!(
+        "ObjC.import('AppKit'); function run(argv) {{ var pb = $.NSPasteboard.generalPasteboard; \
+         pb.clearContents; pb.setStringForType($(argv[0]), 'public.utf8-plain-text'); \
+         pb.setDataForType($.NSData.data, '{}'); }}",
+        crate::clipboard::filter::TRANSIENT_TYPE
+    )
+}
+
+/// The text travels as an argument after `--`, never inside the script source.
+fn transient_copy_command(text: &str) -> Command {
+    let mut c = sys_command("osascript");
+    c.args(["-l", "JavaScript", "-e"])
+        .arg(transient_copy_script())
+        .arg("--")
+        .arg(text);
+    c
+}
+
+/// Copy to Clipboard with the workflow object's "transient" box ticked.
+pub fn copy_to_clipboard_transient(text: &str) -> Result<()> {
+    run_status(&mut transient_copy_command(text), "osascript")
+}
+
 /// `osascript -e <line>... -- <arg>...`. The `--` is what makes the arguments data: without it a
 /// first argument beginning with `-e` is parsed as one more script fragment (SEC-01).
 fn osascript_command(lines: &[&str], args: &[&str]) -> Command {
-    let mut c = Command::new("osascript");
+    let mut c = sys_command("osascript");
     for l in lines {
         c.arg("-e").arg(l);
     }
@@ -649,6 +935,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn a_transient_copy_carries_the_marker_and_the_text_only_as_an_argument() {
+        let c = transient_copy_command("-e hunter2\"; do shell script \"x");
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[..3], ["-l", "JavaScript", "-e"]);
+        assert!(args[3].contains(crate::clipboard::filter::TRANSIENT_TYPE));
+        assert!(!args[3].contains("hunter2"));
+        assert_eq!(args[4], "--");
+        assert_eq!(args[5], "-e hunter2\"; do shell script \"x");
+        assert_eq!(args.len(), 6);
+    }
 
     fn engine(tag: &str) -> (Engine, PathBuf) {
         let root = std::env::temp_dir().join(format!("oa-eng-{tag}-{}", std::process::id()));
@@ -1191,6 +1489,20 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_rows_and_their_queries_are_not_written_to_usage() {
+        // SEC-19: `clip <fragment of a secret>` must not land in usage.json.
+        let (e, _fake, root) = engine_with_clip("clip-usage", true);
+        e.clipboard().lock().unwrap().push("hunter2-correct-horse");
+        let q = "clip hunter2-corr";
+        let it = e.query(q).remove(0);
+        assert_eq!(e.execute(&it, q, Mods::NONE, false), Outcome::Done);
+        assert_eq!(e.usage.lock().unwrap().boost(q, &it.id), 0.0);
+        let on_disk = std::fs::read_to_string(e.paths.usage_file()).unwrap_or_default();
+        assert!(!on_disk.contains("hunter2") && !on_disk.contains("clip:"), "{on_disk}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn disabled_providers_do_not_answer() {
         let root = std::env::temp_dir().join(format!("oa-eng-off-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1347,6 +1659,91 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn apply_config_with_new_workflow_dirs_does_not_scan_on_the_calling_thread() {
+        let (e, root) = engine("apply-bg");
+        let extra = root.join("extra-workflows");
+        std::fs::create_dir_all(extra.join("copy")).unwrap();
+        let doc = json!({"name": "Extra", "bundleid": "extra.b", "objects": [], "connections": {}});
+        json_to_plist(&doc)
+            .to_file_xml(extra.join("copy").join("info.plist"))
+            .unwrap();
+        let e = Arc::new(e);
+        // Hold the workflow list so a synchronous scan could never finish its swap.
+        let guard = e.workflows.write().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&e);
+        std::thread::spawn(move || {
+            let mut c = worker.config_now();
+            c.workflow_dirs = vec![extra];
+            worker.apply_config(c);
+            let _ = tx.send(());
+        });
+        let returned = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(guard);
+        assert!(returned, "apply_config waited for the workflow rescan");
+        assert!(e.reload_pending() || e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        wait_until("the background refresh", || !e.reload_pending());
+        assert!(e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra"));
+        // removing the folder drops its workflows again
+        let mut c = e.config_now();
+        c.workflow_dirs.clear();
+        e.apply_config(c);
+        wait_until("the second refresh", || {
+            !e.reload_pending() && !e.workflow_summaries().iter().any(|(n, _, _)| n == "Extra")
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_up_remembers_what_was_wrong_with_the_configuration() {
+        let (e0, root) = engine("startup-ok");
+        assert!(e0.startup_warnings().is_empty());
+        let mut config = Config {
+            app_dirs: vec![],
+            ..Config::default()
+        };
+        config.web_searches.push(crate::websearch::WebSearch {
+            keyword: "zork".into(),
+            title: "Zork".into(),
+            url: "file:///etc/{query}".into(),
+            fallback: false,
+        });
+        let e = Engine::new(Paths::under(&root.join("other")), config);
+        assert_eq!(e.startup_warnings().len(), 1);
+        assert!(e.startup_warnings()[0].contains("zork"), "{:?}", e.startup_warnings());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_panic_in_the_content_refresh_does_not_leave_reload_pending_stuck() {
+        let (e, root) = engine("content-panic");
+        write_config_workflow(&e);
+        e.content_gate.lock().unwrap().panic_once = true;
+        e.reload_content_background();
+        wait_until("the failed refresh to release the gate", || !e.reload_pending());
+        // the gate works again: the next refresh runs and picks up a change
+        let plist = e.paths.workflows_dir().join("user.workflow.cfg").join("info.plist");
+        let text = std::fs::read_to_string(&plist)
+            .unwrap()
+            .replace("Hello {var:name}", "Howdy {var:name}");
+        std::fs::write(&plist, text).unwrap();
+        e.reload_content_background();
+        wait_until("the next refresh", || {
+            !e.reload_pending() && e.query("who")[0].title == "Howdy Ann"
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_panic_in_the_full_reload_does_not_leave_reload_pending_stuck() {
+        let (e, root) = engine("reload-panic");
+        e.reload_gate.lock().unwrap().panic_once = true;
+        e.reload();
+        wait_until("the failed reload to release the gate", || !e.reload_pending());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

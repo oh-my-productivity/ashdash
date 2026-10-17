@@ -39,6 +39,19 @@ fn rank<'a>(snippets: &'a [Snippet], query: &str) -> Vec<(f64, &'a Snippet)> {
     v
 }
 
+/// Whether expanding `text` pulls in clipboard contents (directly or through `{snippet:..}`).
+/// Decided by expanding twice with a fixed clock and seed and different clipboards, so nothing
+/// but the clipboard can make the two results differ.
+fn depends_on_clipboard(text: &str, lookup: &dyn Fn(&str) -> Option<String>) -> bool {
+    let empty: Vec<String> = Vec::new();
+    let probe: Vec<String> = (0..CLIPBOARD_DEPTH)
+        .map(|i| format!("\u{1}clipboard-probe-{i}\u{1}"))
+        .collect();
+    let a = expand(text, &ExpandCtx::new(&empty, 0, 0, 1).with_snippets(lookup));
+    let b = expand(text, &ExpandCtx::new(&probe, 0, 0, 1).with_snippets(lookup));
+    a.text != b.text
+}
+
 impl Provider for SnippetsProvider {
     fn id(&self) -> &'static str {
         "snippets"
@@ -86,7 +99,15 @@ impl Provider for SnippetsProvider {
                         (false, false) => format!("snip:{}/{kw}", s.collection),
                         (false, true) => format!("snip:{}/{}", s.collection, s.name),
                     };
-                    let preview = truncate(ex.text.lines().next().unwrap_or(""), 100);
+                    // SEC-19: an expansion that contains clipboard text may contain a password;
+                    // keep it out of the subtitle, which is on screen without any action. Large Type
+                    // and the copy shortcut are explicit requests and keep the expansion.
+                    let secret = depends_on_clipboard(&s.text, &lookup);
+                    let preview = if secret {
+                        "expands using the clipboard".to_string()
+                    } else {
+                        truncate(ex.text.lines().next().unwrap_or(""), 100)
+                    };
                     let sub = [s.collection.as_str(), kw.as_str(), preview.as_str()]
                         .into_iter()
                         .filter(|p| !p.is_empty())
