@@ -158,7 +158,7 @@ impl LauncherApp {
                 // the same query again: stay on the same result, do not jump
                 Kind::Rerun => {
                     let same = reselect(previous.as_deref(), old_selected, &self.items);
-                    self.selected = track.replaced_with(&old, old_selected, same);
+                    self.selected = track.replaced_with_rerun(&old, old_selected, same);
                 }
             }
         }
