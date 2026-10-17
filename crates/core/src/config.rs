@@ -1216,10 +1216,7 @@ mod tests {
                 .map(PathBuf::from)
             );
             assert_eq!(c.app_dirs, [PathBuf::from("/home/u/Apps")]);
-            assert_eq!(
-                c.theme,
-                Some(PathBuf::from("/home/u/themes/Midnight.alfredappearance"))
-            );
+            assert_eq!(c.theme, Some(PathBuf::from("/home/u/themes/Midnight.alfredappearance")));
         }
         let _ = std::fs::remove_dir_all(&paths.data);
     }
