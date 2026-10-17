@@ -51,7 +51,9 @@ ashdash config set file_search.roots '["~/Documents","~/Projects"]'
 * **Paths:** a leading `~` or `~/` means your home folder in `app_dirs`, `workflow_dirs`, `theme` and the `file_search.*`
   paths, so a `config.json` kept in your dotfiles works on every machine (`~user/...` is not expanded; other relative paths are
   left as they are). **A save keeps what you wrote:** `"workflow_dirs": ["~/dotfiles/workflows"]` stays `~/dotfiles/workflows`
-  in the file when preferences or `ashdash config set` save it; a path you add yourself is written as you give it. `ashdash config get` prints the expanded, absolute path, because that is the folder in use.
+  in the file when preferences or `ashdash config set` save it; a path you add yourself is written as you give it. **`ashdash config get` prints the expanded, absolute path** for `app_dirs`, `workflow_dirs` and `theme` (the folder in use), so it
+  differs from the file; `ashdash config get file_search.roots` (and the other `file_search.*` paths) prints them as written. Extra
+  slashes after the `~` stay inside home (`~//a` is `<home>/a`), and if the account has no home folder nothing is expanded.
 
 Defaults below are from `ashdash config get` on a fresh account (`<home>` is your home folder).
 
