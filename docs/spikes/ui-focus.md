@@ -1,6 +1,6 @@
 # Spike: does the egui window take key focus and give it back?
 
-Question (WP7 item 1): when the global hotkey shows the launcher, does the eframe/winit window reliably become the
+Question: when the global hotkey shows the launcher, does the eframe/winit window reliably become the
 key window, and does hiding it return focus to the app that was frontmost before? If flaky, an NSPanel (non-activating,
 floating, can become key) would be the alternative.
 
@@ -67,7 +67,7 @@ Not verified: full-screen apps, multiple physical monitors, release build timing
 * Large Type: Cmd+L stretched the window over the whole monitor under the mouse (covering the menu bar), dimmed it, centred the text at the maximum size; Esc returned to the normal launcher.
 * Quick Look: Cmd+Y and a lone Shift tap (held ~150 ms; a sub-frame tap can be missed) spawn `qlmanage -p`. The launcher stays open while the preview has focus; Esc in the preview ends the process and the launcher takes focus back. The launcher window is drawn above the preview window (status window level).
 
-## Launcher stays on screen after another app is activated (W6-FOCUS, fixed)
+## Launcher stays on screen after another app is activated (fixed)
 
 Symptom (QA 3.4.1, `tests/lab/qa/checklist.sh` s34): after `set frontmost of process "Finder" to true` the launcher stayed
 up in 3 of 5 trials; Cmd+Tab hid it every time.
@@ -112,7 +112,7 @@ in every trial), Quick Look, `hide_app`, throttled repaints of invisible windows
 * The decision is a pure function, unit-tested (`gui::focus::tests`: loss 345 ms after show, loss at 1..5000 ms, stale
   `false` right after show, never focused, unknown focus, Quick Look in and out, a second `show`).
 
-Verification in the lab (macOS 15.7.7 guest, bundle built from this branch, one VM at a time):
+Verification in the lab (macOS 15.7.7 guest, bundle built with the fix, one VM at a time):
 
 | Check | Before | After |
 |---|---|---|
@@ -125,7 +125,7 @@ Verification in the lab (macOS 15.7.7 guest, bundle built from this branch, one 
 | click inside the launcher keeps it and its focus | passes | passes |
 | idle CPU, hidden, 60 s | - | 0.01 CPU-s (ps cputime) |
 | idle CPU, shown and focused, 30 s | 0.34 CPU-s | 0.33-0.40 CPU-s (caret blink; same as before, the extra trace line only costs when `ASHDASH_TRACE` is set) |
-| `checklist.sh s33 w45` (keys, Large Type, held Return, import prompt, URL consent) | - | no new failures; 3.3.3b (Tab on an app row) is fixed on the QA branch, not here |
+| `checklist.sh s33 w45` (keys, Large Type, held Return, import prompt, URL consent) | - | no new failures; 3.3.3b (Tab on an app row) is fixed separately |
 
 Re-run: `tests/lab/lab-run <vm> -- bash tests/lab/focus/probe.sh --trials 20` (`--after-show S`, `--race MS`, `--only act|tab`),
 `bash tests/lab/focus/regress.sh [--only ql|panel|click|idle]`; both build `Ashdash.app` into `~/focus-dist` (`FOCUS_DIST`).
@@ -138,7 +138,7 @@ whichever `Ashdash.app` LaunchServices last registered: with two bundles in the 
 the wrong one; delete the other bundle or `lsregister -f` the one under test. (3) `lab-up` VMs are reaped after 30 minutes unless
 started with `--max-age`.
 
-## Preferences window (WP8)
+## Preferences window
 
 Decision: the preferences window is **its own process** (`ashdash prefs-window`, started by `ashdash prefs`, the status-item
 menu item "Preferences…" and `ashdash://prefs`), using winit's *Regular* activation policy. A second eframe viewport inside the

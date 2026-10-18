@@ -18,15 +18,15 @@ see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live 
 | `cargo test -p ashdash-core --test prefs_core` | the core half of the preferences window: live `apply_config` (providers, web searches and their URL check, restart-required keys, usage switch, clipboard settings), the file watcher, workflow list/enable/remove, package preview, themes, snippet library | ~2 s |
 | `cargo test -p ashdash-core --test ui_glue_api` | engine behaviour behind the launcher glue: "open launcher" outcomes, a Script Filter's running text, Open With listing, Quick Look through the `Os` handle (fake OS) | <1 s |
 | `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON | ~3 s |
-| `cargo test -p ashdash-core --test compat_packages -- --nocapture` | imports every `*.alfredworkflow` bundled in an installed `/Applications/Reference.app` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes) when the reference launcher is not installed | ~1 s |
+| `ASHDASH_COMPAT_TEMPLATES=<folder> cargo test -p ashdash-core --test 'compat_*' -- --nocapture` | imports every workflow package in the folder named by `ASHDASH_COMPAT_TEMPLATES` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes, with a message) when the variable is unset. Nothing from that folder is copied into the repository | ~1 s |
 
 Environment variables: `PROPTEST_CASES=N` scales the fuzz suites (try 20000 before a release);
 `RUST_BACKTRACE=1` as usual.
 
 Rules the suites follow (keep them when adding tests): everything lives in a unique temp dir
 (`tests/common/mod.rs`: `TempDir`, `Env`, `Paths::under`); never touch the real `HOME`, the user's
-clipboard, or `~/Library/Application Support/reference-launcher`; never execute destructive actions (shutdown, logout,
-trash); no reference launcher assets are copied into the repo; the compat suite only reads the installed app.
+clipboard, or another application's data folder; never execute destructive actions (shutdown, logout,
+trash); no third-party assets are copied into the repo; the compatibility suite only reads the folder you point it at.
 
 ### Known-issue tests
 
@@ -43,7 +43,7 @@ Caveats: `zip_bomb_is_rejected` writes ~300 MB to a temp dir, `huge_script_outpu
 `calc_deep_nesting_*` and `fuzzy_pathologically_*` re-run the test binary as a child process, because a stack
 overflow aborts the process. When a finding is fixed, delete the `#[ignore]` in the same commit.
 
-`documents_*` tests pin intentional reference-compatible behaviour (for example that the default query mask
+`documents_*` tests pin intentional behaviour that existing workflow packages rely on (for example that the default query mask
 leaves `;` and `|` live). If one fails because behaviour got *safer*, update the test and SECURITY.md together.
 
 ## 2. GUI smoke test (scripted, one window, one machine)
@@ -65,7 +65,7 @@ deletes the throwaway HOME. Requirements and cautions:
   Look for: the launcher visible near the top centre, query text "saf", Safari first in the list, no error row.
 - The clipboard watcher runs against the real pasteboard; its history goes into the throwaway HOME and is deleted.
 
-`scripts/qa/ui-glue-smoke.sh [binary]` is the longer wave 3 version (actions panel and buffer, in-window import prompt with
+`scripts/qa/ui-glue-smoke.sh [binary]` is the longer version (actions panel and buffer, in-window import prompt with
 a synthetic workflow, Script Filter rerun and pending rows, Quick Look layering, held-modifier subtitle, scrolling Large Type).
 It shows windows and drives System Events on the **host desktop**, so it takes the lock `/tmp/ashdash-desktop.lock`
 (`mkdir`; always `rmdir` it afterwards), runs with a throw-away HOME and a non-default hotkey, and leaves whole-desktop
@@ -80,21 +80,20 @@ The manual checklist below is scripted as far as a VM allows. Everything runs **
 | Script | What it does |
 |---|---|
 | `qa/pkg-install.sh` | fresh clone: `build-app.sh` + `make-dmg.sh`, quarantined DMG, copy to /Applications, Gatekeeper switched on, the refusal dialog, "Open Anyway", `xattr -dr`, first launch with no TCC rows for the app, login item, `ashdash://prefs`, the first Automation / Accessibility prompts |
-| `qa/checklist.sh [section...]` | sections 3.1-3.9, 3.11, the Wave 4/5 behaviours and the "known unverified" items; one `result id PASS/FAIL/BLOCKED/NEEDS-OWNER evidence` line per check, a tsv in `$QA_ART/results.tsv` |
+| `qa/checklist.sh [section...]` | sections 3.1-3.9, 3.11, the later behaviours (crash reports, selection tracking, Tab completion) and the "known unverified" items; one `result id PASS/FAIL/BLOCKED/NEEDS-OWNER evidence` line per check, a tsv in `$QA_ART/results.tsv` |
 | `qa/soak.sh [seconds] [interval]` | show, type, hide every 30 s for 2 h; footprint, RSS, CPU time, threads and open files every 5 minutes; crash reports; hotkey check at the end |
 | `qa/prep.sh` | grants, `build-app.sh`, install to /Applications (no quarantine): the starting point of `checklist.sh` and `soak.sh` in a fresh clone |
-| `qa/verify-tab.sh`, `qa/repro-placeholder.sh`, `qa/sleep.sh` | single-purpose re-checks: Tab on an application row, the Wave 5 "placeholder with results" screenshot (40 trials), `pmset displaysleepnow` / `sleepnow` and the hotkey |
-| `qa/report.py` | merges result files into the tables of `docs/qa-runs/<run>.md` |
+| `qa/verify-tab.sh`, `qa/repro-placeholder.sh`, `qa/sleep.sh` | single-purpose re-checks: Tab on an application row, the "placeholder with results" screenshot (40 trials), `pmset displaysleepnow` / `sleepnow` and the hotkey |
+| `qa/report.py` | merges result files into the tables of a run document |
 | `qa/lib.sh`, `qa/qa-tool.swift`, `qa/ocr.swift`, `qa/fixtures.py` | helpers: dialogs read through the accessibility tree, window listing, held keys with the auto-repeat flag, pasteboard with the nspasteboard.org marker types, a seeded data folder (workflows, snippets, files) |
 
 Run: `tests/lab/lab-up --id qa --max-age 14400`, then `tests/lab/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/lab/qa/pkg-install.sh`
 (and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/lab/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
-display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in the run documents.
-Results of the release-candidate run: [qa-runs/2026-10-rc1.md](qa-runs/2026-10-rc1.md).
+display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
+The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs, since open), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
 
 ## 3. Manual checklist
 
-Result of the Wave 6 run in the lab: [qa-runs/2026-10-rc1.md](qa-runs/2026-10-rc1.md) (every item below has an id there; the items marked NEEDS-OWNER carry the exact steps).
 Run on a debug build (`cargo run -p ashdash`) with a clean profile
 (`HOME=$(mktemp -d) cargo run ...` after building, or delete `~/Library/Application Support/ashdash`).
 Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
@@ -148,7 +147,7 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Verified in the lab with a real Cmd+V into TextEdit: 3.5.8b, 3.5.10.)
 
 ### 3.6 Workflows
-- [ ] `ashdash import x.alfredworkflow` for a trusted sample workflow prints the trust summary, asks `Install this workflow? [y/N]`, and installs only on `y`; with stdin not a terminal and without `--yes` it refuses; `--yes` installs without asking. The keyword works afterwards (within a second, no reload needed).
+- [ ] `ashdash import <workflow package>` for a trusted sample workflow prints the trust summary, asks `Install this workflow? [y/N]`, and installs only on `y`; with stdin not a terminal and without `--yes` it refuses; `--yes` installs without asking. The keyword works afterwards (within a second, no reload needed).
 - [ ] A package with `../` or absolute entry names (build with `tests/common` helpers or `zip`) is rejected or neutralised;
   nothing appears outside `workflows/`.
 - [ ] A Script Filter that prints garbage shows an error row, not a crash; one that hangs gives up after 10 s.
@@ -166,10 +165,10 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Automation prompts when Terminal (`>`), Finder (empty trash), System Events (logout/restart) are first driven; denial shows an error row.
 - [ ] Accessibility: required for auto-paste / snippet expansion; the app explains how to grant it and works without it otherwise.
 - [ ] Contacts / Files & Folders / Full Disk Access prompts only appear for features that use them.
-- [ ] Gatekeeper: a downloaded build opens after the documented steps (signing/notarisation is a later work package). **On macOS 15 and later** a quarantined ad-hoc app is refused with "Apple could not verify..." and only *Done* / *Move to Trash*; it opens after System Settings > Privacy & Security > *Open Anyway* (then a second dialog with *Open Anyway*) or `xattr -dr com.apple.quarantine /Applications/Ashdash.app`. Right-click > Open is the macOS 14 and earlier route (qa-runs PKG-06..PKG-14).
+- [ ] Gatekeeper: a downloaded build opens after the documented steps (signing and notarisation are not done yet). **On macOS 15 and later** a quarantined ad-hoc app is refused with "Apple could not verify..." and only *Done* / *Move to Trash*; it opens after System Settings > Privacy & Security > *Open Anyway* (then a second dialog with *Open Anyway*) or `xattr -dr com.apple.quarantine /Applications/Ashdash.app`. Right-click > Open is the macOS 14 and earlier route.
 
 ### 3.8 Appearance and robustness
-- [ ] Light/dark mode switch while open; a custom `.alfredappearance` theme loads; a broken theme falls back.
+- [ ] Light/dark mode switch while open; a custom theme (appearance file) loads; a broken theme falls back.
 - [ ] Retina and non-Retina displays; text scaling; the window never goes off-screen.
 - [ ] Idle CPU near 0 % (Activity Monitor, 1 min idle), memory stable after 1,000 queries.
 - [ ] Kill -9 during a clipboard write, then relaunch: history loads or resets, no crash.
@@ -192,13 +191,33 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 - [ ] Break `config.json` by hand (`echo '{' > ...`): the launcher keeps working with the previous settings, one notification appears, the preferences window shows the problem, and fixing the file clears it. Change `app_dirs`: the window says a restart is needed.
 
 ### 3.11 Release-candidate measurements that need the real process (see docs/PERF.md)
-- [ ] Idle memory of the running launcher: start `ashdash` (bundle or release binary), wait 10 s, then `ps -o rss=,cputime= -p "$(pgrep -x ashdash)"` twice, 60 s apart. Target from the plan: RSS under 80 MB, CPU time not growing. Record the app count of the machine (`ashdash query` does not print it; count `/Applications`).
+- [ ] Idle memory of the running launcher: start `ashdash` (bundle or release binary), wait 10 s, then `ps -o rss=,cputime= -p "$(pgrep -x ashdash)"` twice, 60 s apart. Target: footprint under 80 MB (see PERF.md; RSS is higher for any Metal app), CPU time not growing. Record the app count of the machine (`ashdash query` does not print it; count `/Applications`).
 - [ ] Hotkey-ready time: from process start to the first Option+Shift+Space that shows the window (stopwatch or `log stream`); target under 300 ms with a warm cache.
 - [ ] `mdfind` file search on a real home folder: time `open <name>` and `in <text>`; note what happens when a search hits the 4 s Spotlight limit (a huge home folder).
-- [ ] Download the DMG from a draft release in a browser (so it is quarantined), install it as in docs/release-notes/v0.1.0.md, and confirm the documented Gatekeeper steps work on a Mac that never saw the project.
+- [ ] Download the DMG from a draft release in a browser (so it is quarantined), install it as in [release-notes/v0.1.0.md](release-notes/v0.1.0.md), and confirm the documented Gatekeeper steps work on a Mac that never saw the project.
 
-## 4. Reporting
+## 4. Checks that need a physical Mac
+
+The lab VM cannot do these (no second display, no sleep state, no physical keyboard, Spotlight and Full Disk Access are not enforced). Use the installed
+`/Applications/Ashdash.app`, preferably with SIP on and one display unless the step says otherwise. Each takes a few minutes.
+
+1. **Real browser download.** In Safari, download the DMG from the release page (not with `curl`, so the browser sets the quarantine flag), drag Ashdash to Applications and double-click it.
+   On macOS 15 and later expect "Apple could not verify..." with only *Done* / *Move to Trash*; then System Settings > Privacy & Security > *Open Anyway* (asks for your password) and *Open Anyway*
+   in the second dialog. Check that right-click > Open does not offer *Open* on macOS 15.
+2. **Several displays.** With two displays, move the pointer to the second one and press the hotkey: the launcher opens there, near the top fifth. Repeat on a second Space and over a full-screen app on the second display.
+3. **Spaces.** Add a second Space in Mission Control; open the launcher; press Ctrl+Right: it hides and does not follow. Ctrl+Left, hotkey: it shows on the current Space.
+4. **Lock, hot-plug, sleep.** Lock the screen (Ctrl+Cmd+Q), unlock, hotkey. Unplug and re-plug a display with the launcher hidden, hotkey (expected: shows on the main display). Apple menu > Sleep, wake, hotkey.
+5. **Input methods.** Add Japanese or Pinyin in Keyboard settings, open the launcher, compose "nihon" + Space/Return: the candidate window follows the field and committed text loses no characters.
+6. **Password manager.** In 1Password or Bitwarden use "copy password", then `clip` in the launcher: no row. Then `grep -c <part of the password> ~/Library/Application\ Support/ashdash/clipboard.json` prints 0.
+7. **Full Disk Access.** With SIP on and Ashdash not listed under Privacy & Security > Full Disk Access: hotkey, `bm`: a row that explains the missing permission, no crash. Add Ashdash, quit and reopen it, `bm`: Safari bookmarks are listed.
+8. **Non-Retina display.** Connect or scale a 1x display and open the launcher on it: text is crisp and the window is fully on screen.
+9. **Not covered at all:** Arc and Firefox bookmark parsers on real profiles, the x86_64 slice, notarization, `brew install --cask`, the file watcher with real editors, the trust summary against real-world workflows.
+
+Things to know when reading results: two processes can register the same hotkey (macOS reports success to both), so a second app that grabs Option+Shift+Space does not make Ashdash fail; whichever the window
+server prefers gets the key. An idle hidden launcher shows 84-99 MB RSS but 29-36 MB footprint; the memory target is the footprint.
+
+## 5. Reporting
 
 File defects with: build (`git rev-parse --short HEAD`), macOS version, steps, expected/actual, and logs
-(`ashdash > app.log 2>&1`). Security-relevant ones go to SECURITY.md with a severity and, where possible,
+(`ashdash > app.log 2>&1`). Security-relevant ones are reported privately ([.github/SECURITY.md](../.github/SECURITY.md)); once fixed they are recorded in [SECURITY.md](SECURITY.md) with a severity and, where possible,
 an `#[ignore = "known: SEC-nn ..."]` regression test.

@@ -17,7 +17,7 @@ DELAY=${DELAY:-0.8}
 APPS=(Finder Calculator Terminal Safari "System Settings")
 TMP=$(mktemp -d)
 LOG=$TMP/trace.log
-CP=/tmp/wp7-ashdash-spike   # unique name so pkill cannot hit other launchers
+CP=/tmp/ashdash-focus-spike   # unique name so pkill cannot hit other launchers
 cp "$BIN" "$CP"
 
 export HOME=$TMP

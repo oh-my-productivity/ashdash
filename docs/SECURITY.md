@@ -1,14 +1,16 @@
 # Ashdash security review and threat model
 
-Status: wave 1, written by WP6 against commit `8efb202` (main) plus the code in this branch's tests.
+Status: kept up to date with the code. The findings were first written against an early commit and are amended with each fix (section 9).
 Scope: `crates/core` (engine, workflows, data stores) and the places `crates/app` calls it. The GUI
 itself (window, hotkey) is not reviewed here beyond what it feeds into the core.
+
+To report a vulnerability, follow [the security policy](../.github/SECURITY.md); do not open a public issue.
 
 Every finding has an ID (`SEC-nn`). Findings that can be demonstrated have a regression test in
 `crates/core/tests/` marked `#[ignore = "known: SEC-nn ..."]`; un-ignore it when the fix lands.
 Run the open ones with `cargo test -p ashdash-core --tests -- --ignored --no-fail-fast`
 (they are expected to FAIL while the finding is open; a few allocate 200-300 MB or take 6-14 s).
-Tests named `documents_*` pin intentional, reference-compatible behaviour so that nobody changes it by accident.
+Tests named `documents_*` pin intentional behaviour that existing workflow packages rely on, so that nobody changes it by accident.
 
 The code under review belongs to other work packages and is changing concurrently, so nothing here
 was patched: each entry gives a suggested fix and an owner hint.
@@ -26,7 +28,7 @@ has the user's privileges, so the question for each path is *who controls the by
 |---|---|---|
 | Typed query | the user (but see paste: web pages, chat) | yes for intent, no for content |
 | Installed workflow (`info.plist`, scripts) | its author | **code the user chose to run**; see 3 |
-| `.alfredworkflow` archive being imported | whoever sent/hosted it | archive structure untrusted, scripts trusted only after import |
+| Workflow package (zip archive) being imported | whoever sent/hosted it | archive structure untrusted, scripts trusted only after import |
 | Script Filter output (JSON/XML) | the script, which may relay web APIs, file names, mail subjects | **untrusted data** |
 | Clipboard contents | any app, any web page | untrusted data |
 | App bundles (`Info.plist`, icons) | their publishers | untrusted data |
@@ -45,49 +47,49 @@ Low = hardening, robustness, privacy details.
 
 | ID | Sev | Title | Owner area | Test | Status |
 |---|---|---|---|---|---|
-| SEC-01 | High | `osascript` option injection via notification text and Terminal commands | `engine.rs` | `notification_text_cannot_inject_applescript` | Fixed (FIX-B) |
-| SEC-02 | High | Script Filter variables can set `PATH`, `BASH_ENV`, `DYLD_*` for downstream scripts | `workflow/exec.rs`, `script.rs` | `script_filter_variables_cannot_inject_loader_env`, `..._replace_path` | Fixed (FIX-B), rule in 9 |
+| SEC-01 | High | `osascript` option injection via notification text and Terminal commands | `engine.rs` | `notification_text_cannot_inject_applescript` | Fixed |
+| SEC-02 | High | Script Filter variables can set `PATH`, `BASH_ENV`, `DYLD_*` for downstream scripts | `workflow/exec.rs`, `script.rs` | `script_filter_variables_cannot_inject_loader_env`, `..._replace_path` | Fixed, rule in 9 |
 | SEC-03 | Medium | Default `{query}` escaping does not stop `; \| & ' < >` newline injection | `workflow/script.rs` | `documents_default_mask_leaves_shell_metacharacters_live` (documented) | Open by design; `Workflow::trust_summary()` hook |
-| SEC-04 | Low | `reveal` lacks the leading-`-` guard of the other `open` wrappers | `engine.rs` | `reveal_refuses_option_like_paths` | Fixed (FIX-B) |
-| SEC-05 | Medium | Timeout kills only the direct child; backgrounded grandchildren orphaned; pipe readers block after exit | `workflow/script.rs` | `timeout_kills_grandchildren`, `backgrounded_grandchild_does_not_stall_the_script_filter` | Fixed (FIX-B) |
-| SEC-06 | Medium | Script output read without a size limit | `workflow/script.rs` | `huge_script_output_is_bounded` | Fixed (FIX-B) |
-| SEC-07 | Medium | Zip extraction has no size / entry-count limit (decompression bomb) | `workflow/package.rs` | `zip_bomb_is_rejected` | Fixed (FIX-B) |
-| SEC-08 | High | `calc::eval` recurses without depth limit: pasting `((((...` aborts the process | `calc.rs` | `calc_deep_nesting_does_not_overflow_the_stack` | Fixed (FIX-B) |
-| SEC-09 | Low | `fuzzy::score` recursion depth grows with query word count | `fuzzy.rs` | `fuzzy_pathologically_long_input_neither_crashes_nor_stalls` | Fixed (FIX-B) |
-| SEC-10 | Low | Failed import leaks its `.import-<pid>` staging directory | `workflow/package.rs` | `failed_import_cleans_up_staging_dir` | Fixed (FIX-B) |
-| SEC-11 | Medium | Import staging dir is per-process and install is remove-then-rename (races, non-atomic) | `workflow/package.rs` | `concurrent_imports_do_not_interfere` | Fixed (FIX-B) |
-| SEC-12 | Medium | Workflow data/cache dir derived from the unsanitised bundle id (`..` escapes) | `workflow/script.rs` | `bundle_id_cannot_steer_workflow_data_dir` | Fixed (FIX-B) |
+| SEC-04 | Low | `reveal` lacks the leading-`-` guard of the other `open` wrappers | `engine.rs` | `reveal_refuses_option_like_paths` | Fixed |
+| SEC-05 | Medium | Timeout kills only the direct child; backgrounded grandchildren orphaned; pipe readers block after exit | `workflow/script.rs` | `timeout_kills_grandchildren`, `backgrounded_grandchild_does_not_stall_the_script_filter` | Fixed |
+| SEC-06 | Medium | Script output read without a size limit | `workflow/script.rs` | `huge_script_output_is_bounded` | Fixed |
+| SEC-07 | Medium | Zip extraction has no size / entry-count limit (decompression bomb) | `workflow/package.rs` | `zip_bomb_is_rejected` | Fixed |
+| SEC-08 | High | `calc::eval` recurses without depth limit: pasting `((((...` aborts the process | `calc.rs` | `calc_deep_nesting_does_not_overflow_the_stack` | Fixed |
+| SEC-09 | Low | `fuzzy::score` recursion depth grows with query word count | `fuzzy.rs` | `fuzzy_pathologically_long_input_neither_crashes_nor_stalls` | Fixed |
+| SEC-10 | Low | Failed import leaks its `.import-<pid>` staging directory | `workflow/package.rs` | `failed_import_cleans_up_staging_dir` | Fixed |
+| SEC-11 | Medium | Import staging dir is per-process and install is remove-then-rename (races, non-atomic) | `workflow/package.rs` | `concurrent_imports_do_not_interfere` | Fixed |
+| SEC-12 | Medium | Workflow data/cache dir derived from the unsanitised bundle id (`..` escapes) | `workflow/script.rs` | `bundle_id_cannot_steer_workflow_data_dir` | Fixed |
 | SEC-13 | Medium | Terminal Command and `openurl` splice `{query}` unescaped; any URL scheme is opened | `workflow/exec.rs` | (design finding, see text) | Open by design; `trust_summary()` hook |
 | SEC-14 | Low | Scripts inherit the launcher's whole environment | `workflow/script.rs` | `documents_scripts_inherit_parent_environment` (documented) | Open by design (documented) |
-| SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed (FIX-B) |
-| SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed (FIX-B) |
-| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `workflow_roots_refuse_hard_links_but_app_roots_do_not`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (wave 3 review, 9c); hard-linked files in workflow folders refused (W4-FIX, 9d) |
-| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` (FIX-B) and the clipboard watcher (WP2, re-verified in core-followups). Opt-out and clear now exist (wave 3): `learn_usage` in `config.json` (applied live through `Usage::set_enabled`), the Preferences > General switch, and "Forget what I picked..." (`Usage::clear`, via the `clear-usage` socket verb to the running launcher, or directly when none runs). **Turning learning off does not delete an existing `usage.json`**: it stays on disk (clear-text queries, mode 0600) until Forget is pressed or the file is deleted; the preferences hint says earlier picks "stop affecting the order", not that they are gone. Residual: no setting to stop clipboard recording (SEC-19 filters only) |
+| SEC-15 | Low | Temporary script files are created 0644 | `workflow/script.rs` | `temp_script_file_is_private` | Fixed |
+| SEC-16 | Medium | Stdin-mode query is written before the timeout loop: an unread pipe defeats the timeout | `workflow/script.rs` | `unread_stdin_cannot_defeat_the_timeout` | Fixed |
+| SEC-17 | Low | App icon path from `CFBundleIconFile` (and workflow / Script Filter icon paths) not confined | `apps.rs`, `workflow/filter.rs`, `confine.rs` | `icon_file_name_is_confined_to_resources`, `item_icons_are_confined_to_the_workflow_directory`, `workflow_icon_png_symlink_falls_back_to_the_glyph`, `workflow_roots_refuse_hard_links_but_app_roots_do_not`, `confine::tests` | Fixed (core-followups); app icons now use the bundle as root (9c); hard-linked files in workflow folders refused (9d) |
+| SEC-18 | Medium | Privacy: `usage.json` stores every executed query in clear text; `config.json` and the `.tmp` files are not forced to 0600; clipboard history has no concealed-type filter | `usage.rs`, `config.rs`, `clipboard.rs` | `usage_file_is_private` covers the mode only; `concealed_transient_and_ignored_app_copies_never_reach_rows_or_disk` | Fixed in `usage.rs`/`config.rs` and the clipboard watcher (re-verified in core-followups). Opt-out and clear now exist `learn_usage` in `config.json` (applied live through `Usage::set_enabled`), the Preferences > General switch, and "Forget what I picked..." (`Usage::clear`, via the `clear-usage` socket verb to the running launcher, or directly when none runs). **Turning learning off does not delete an existing `usage.json`**: it stays on disk (clear-text queries, mode 0600) until Forget is pressed or the file is deleted; the preferences hint says earlier picks "stop affecting the order", not that they are gone. Residual: no setting to stop clipboard recording (SEC-19 filters only) |
 | SEC-19 | Low | Snippet / clipboard text can show secrets in the result list (first line of the expansion, large type) | `providers/snippets.rs`, `providers/clipboard.rs`, `engine.rs` | `crates/core/tests/clipboard_privacy.rs`, `clipboard_rows_and_their_queries_are_not_written_to_usage` | Fixed for what the core controls (core-followups); screen-share masking preference is UI work, see section 9b |
 | SEC-20 | Low | `Engine::run_node` starts a workflow at any object and is not an external entry point | `engine.rs` | `run_node_*` in `engine_e2e.rs` | Design constraint (core-followups), see 9b; now keyed by workflow id (9c) |
-| SEC-30 | Medium | Import prompt said "Runs no scripts and no terminal commands" for a workflow whose only object is Write File (append to `~/.zshenv`, write a LaunchAgent plist = persistence) | `workflow/trust.rs`, `gui/importprompt.rs` | `write_file_is_reported_and_is_never_passive`, `write_file_targets_are_classified_like_the_executor_resolves_them` (trust.rs); `a_workflow_that_only_writes_a_file_is_not_called_harmless`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed (FIX-TRUST), see 9c |
-| SEC-31 | Medium | Every import path previewed the package and then re-opened the same path to install (TOCTOU: the file could change while the prompt was up) | `workflow/package.rs`, `engine.rs`, `gui/glue.rs`, `mac/opendocs.rs`, `main.rs`, `gui/prefs/workflows.rs` | `the_installed_bytes_are_the_previewed_bytes_even_if_the_file_is_swapped` (import_staging.rs); `the_launcher_prompt_installs_the_copy_it_showed`, `the_cli_installs_the_staged_copy_or_nothing`, `finder_import_installs_the_copy_the_dialog_described`, `installing_from_the_prefs_prompt_uses_the_staged_copy` | Fixed (FIX-TRUST), see 9c |
-| SEC-32 | Medium | A held Return (key repeat) satisfied "press again to confirm" for destructive actions and the import prompt's guard | `gui/keys.rs`, `gui/mod.rs`, `gui/importprompt.rs` | `a_held_return_never_answers_the_question` (mod.rs), `a_held_return_never_installs_by_repeating`, `a_first_press_is_fresh_and_its_repeats_are_not` (keys.rs) | Fixed (FIX-TRUST), see 9c |
-| SEC-33 | Low | Importing a package whose bundle id matches an installed workflow replaced it silently (outside the prefs window) and it inherited the saved settings (API tokens) | `workflow/package.rs`, `gui/importprompt.rs` | `the_preview_reports_what_would_be_replaced_and_inherited` (import_staging.rs), `a_replacement_is_announced_with_the_installed_name_and_version` | Fixed by disclosure; inheritance kept on purpose (reference-compatible), see 9c |
-| SEC-34 | Low | Prefs import prompt showed package text raw; Unicode format characters (bidi override, zero-width) survived the launcher's sanitising | `gui/importprompt.rs`, `gui/prefs/workflows.rs` | `format_characters_are_stripped_and_long_names_are_capped`, `the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless` | Fixed (FIX-TRUST), see 9c |
-| SEC-35 | Medium | Open File with an empty file field (= the incoming argument) or a `{placeholder}` path was invisible to the trust summary, so a workflow that launches an app or script shipped in its own package was called passive | `workflow/trust.rs`, `gui/importprompt.rs` | `open_file_with_an_empty_or_dynamic_field_is_never_passive` (trust.rs), `files_opened_at_run_time_are_listed_and_not_called_harmless` (importprompt.rs) | Fixed (FIX-R2), see 9c |
-| SEC-36 | Medium | Write File with "relative to the workflow folder" could overwrite the workflow's own `info.plist`/scripts after the prompt and was listed as harmless "own folders" | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `write_file_never_rewrites_the_workflows_own_info_plist` (workflow/tests.rs), `writing_into_its_own_installed_folder_is_a_separate_warning` (importprompt.rs) | Fixed for `info.plist` and disclosed for the rest (FIX-R2), see 9c |
-| SEC-37 | Low | The trust summary could not say that a Script Filter's items (`arg`, `variables`, `quicklookurl`) steer later Run Script / Open URL / Open File / Write File / Terminal steps, so such a workflow could look passive | `workflow/trust.rs`, `gui/importprompt.rs` | `script_filter_results_steering_later_steps_are_flagged`, `script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged` (trust.rs); `script_filter_steering_is_stated` (importprompt.rs) | Fixed by disclosure (W4-FIX), see 9d |
-| SEC-38 | Low | `ashdash import` ignored unknown `--` flags (`--yess` silently meant "ask") and the preferences drop zone accepted only `.alfredworkflow`, so the same package was handled differently per path | `main.rs`, `gui/prefs/app.rs`, `gui/prefs/workflows.rs`, `workflow/package.rs` | `import_rejects_unknown_flags_and_wrong_file_counts` (main.rs), `the_drop_zone_accepts_every_workflow_extension_the_launcher_does`, `every_reference_package_extension_is_recognised` | Fixed (W4-FIX), see 9d |
-| SEC-39 | Low | `write_workflow_value` trusted its caller to check the variable: the preferences window did not, so any key could be stored in `workflow-config/<bundle id>.json` and reach the workflow's scripts as an environment variable | `settings_view.rs` | `write_workflow_value_only_accepts_variables_on_the_sheet` | Fixed (W4-FIX), see 9d |
-| SEC-R4-01 | Medium | Open File `openwith` and Open URL `browser` (and "Search the web" `browser`) were not read by the trust summary, and a relative literal `sourcefile` went to `open` unresolved (the launcher's working directory): a workflow that launches an app shipped in its own package was called passive ("Runs no scripts...") | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `open_file_openwith_and_open_url_browser_are_launched_applications`, `a_relative_literal_file_is_a_file_shipped_with_the_workflow` (trust.rs); `relative_open_targets_and_apps_resolve_against_the_workflow_folder` (exec.rs); `a_launched_application_is_a_capability_line_and_a_shipped_one_is_called_out`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed (W4-R1), see 9e |
-| SEC-R4-02 | Medium | Write File could still rewrite the workflow's `info.plist` through a package symlink (`notes.txt -> info.plist`): the refusal compared path text and the parent folder only, and `perform` followed links | `workflow/exec.rs` | `write_file_does_not_follow_a_package_symlink_to_info_plist`, `write_file_still_writes_through_a_link_to_an_ordinary_file` (exec.rs) | Fixed (W4-R1), see 9e |
-| SEC-R4-04 | Medium | File Filter ran `mdfind` with no timeout and no output cap (a types-only predicate matched 430 572 files, 58.7 MB, 18 s) on the single query worker | `workflow/filefilter.rs`, `workflow/filter.rs`, `providers/workflow.rs` | `mdfind_goes_through_the_bounded_runner_with_the_search_budget`, `mdfind_output_is_capped_before_strings_are_built`, `an_empty_argument_with_a_types_only_predicate_stays_bounded` (filefilter.rs); `a_file_filter_runs_through_the_engines_os_with_the_configured_budget` (providers/workflow.rs) | Fixed (W4-R1), see 9e |
-| SEC-R4-09 | Low | A cross-volume install removed the old version before a long copy, and `load_all` read the hidden `.import-*` folders, so a reload or crash could show a phantom duplicate; leftovers were never swept | `workflow/package.rs`, `workflow/model.rs` | `load_all_skips_dot_directories_so_a_swap_in_progress_is_not_a_second_workflow`, `the_old_version_stays_visible_until_the_new_copy_is_complete`, `interrupted_installs_are_swept_and_a_lost_workflow_is_put_back`, `staging_a_package_sweeps_the_workflows_folder`, `a_failed_same_volume_install_gives_the_staged_tree_back` (package.rs) | Fixed (W4-R1), see 9e |
-| SEC-R4-10 | Low | `config set web_searches '<array>'` compared the number of bad entries, so a new list with a different bad entry passed when an old bad entry existed | `settings_view.rs` | `replacing_the_whole_web_search_list_checks_every_entry_not_the_count` | Fixed (W4-R1), see 9e |
-| SEC-R4-14 | Low | The spawn guard test matched only the one-line form `Command::new("name")`; `system_program`'s behaviour for a missing tool was undocumented | `tests/system_programs.rs`, `actions.rs` | `no_bare_system_tool_names_are_spawned`, `the_scan_sees_calls_the_old_line_match_missed`, `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path` | Tightened and documented (W4-R1), see 9e |
-| SEC-50 | Medium | A ~2 MB property list of nested `<array>` elements (a theme opened from Finder, `ashdash theme`, an app's `Info.plist`) overflowed the stack inside the `plist` crate and aborted the launcher | `theme.rs`, `apps.rs`, `mac/opendocs.rs` | `a_deeply_nested_theme_is_refused_not_a_stack_overflow`, `nesting_up_to_the_cap_parses_and_one_more_level_does_not`, `binary_plists_are_checked_too`, `every_kind_of_value_passes_the_probe_in_both_encodings` (theme.rs); `a_hostile_info_plist_is_ignored_not_fatal` (apps.rs); `a_deeply_nested_theme_is_refused_not_fatal` (opendocs.rs) | Fixed (W4-R2), see 9e; workflow `info.plist` and the value bound added by W4-R3 (SEC-R5-01, SEC-R5-02, 9g) |
-| SEC-51 | Medium | `ashdash://search` typed attacker text into the launcher *and ran it*, so a web page could start a workflow's Script Filter with `{query}` chosen by the page, with no consent dialog | `urlscheme.rs`, `events.rs`, `gui/glue.rs`, `gui/mod.rs` | `search_from_a_url_never_becomes_a_query` (urlscheme.rs); the GUI side is on-screen only (QA) | Fixed (W4-R2): the URL only fills the field, see 9e and section 6 |
-| SEC-52 | Low | URL consent dialog: one dialog per link (a page could stack dozens, each living up to 60 s); a timeout was stored as a permanent "deny"; `url-trust.json` was read once, so "delete the entry to be asked again" needed a restart and a hand edit was overwritten | `urlscheme.rs` | `only_one_question_per_bundle_is_open_at_a_time`, `the_claim_is_released_when_the_question_fails`, `a_timeout_or_dismissed_dialog_is_not_a_decision`, `the_dialog_result_maps_to_an_answer`, `edits_to_the_consent_file_are_seen_without_a_restart` | Fixed (W4-R2), see 9e |
-| SEC-53 | Medium | Snippet auto-paste went through the pasteboard (`pbcopy`, no marker type), so a snippet holding a token or password was recorded in `clipboard.json` in clear text | `clipboard/{command,history,watch,filter}.rs` | `a_snippet_pasted_by_ashdash_is_not_recorded_but_the_users_own_copies_are`, `an_old_note_does_not_hide_a_later_copy`, `markers_still_win_over_the_own_paste_note` (watch.rs); `snippet_pastes_are_noted_for_the_watcher_but_history_pastes_are_not`, `a_failed_snippet_copy_leaves_no_note_behind` (command.rs) | Fixed (W4-R2); live pasteboard not run, see 9e |
-| SEC-54 | Low | `urlscheme::parse` sliced the URL at a byte offset: `ashdash:/é` panicked the dispatch thread | `urlscheme.rs` | `multibyte_text_anywhere_never_panics_the_parser` | Fixed (W4-R2) |
-| SEC-55 | Low | The IPC connection counter was decremented after the handler returned: sixteen panicking handlers locked the socket out until restart | `ipc.rs` | `panicking_handlers_do_not_use_up_the_connection_slots`, `a_connection_slot_is_released_when_its_guard_drops_even_while_unwinding` | Fixed (W4-R2) |
-| SEC-56 | Low | AppleScript `search` / `run trigger` skipped the length caps of the socket and the URL scheme; Finder import messages showed raw file names (bidi, zero-width); a theme was read three times (check vs. copy) | `scripting.rs`, `mac/opendocs.rs` | `script_commands_apply_the_same_length_caps_as_the_other_entry_points`; `finder_messages_clean_file_names_like_the_import_prompt`, `theme_install_reads_the_file_once_and_installs_what_it_validated` | Fixed (W4-R2) |
+| SEC-30 | Medium | Import prompt said "Runs no scripts and no terminal commands" for a workflow whose only object is Write File (append to `~/.zshenv`, write a LaunchAgent plist = persistence) | `workflow/trust.rs`, `gui/importprompt.rs` | `write_file_is_reported_and_is_never_passive`, `write_file_targets_are_classified_like_the_executor_resolves_them` (trust.rs); `a_workflow_that_only_writes_a_file_is_not_called_harmless`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed, see 9c |
+| SEC-31 | Medium | Every import path previewed the package and then re-opened the same path to install (TOCTOU: the file could change while the prompt was up) | `workflow/package.rs`, `engine.rs`, `gui/glue.rs`, `mac/opendocs.rs`, `main.rs`, `gui/prefs/workflows.rs` | `the_installed_bytes_are_the_previewed_bytes_even_if_the_file_is_swapped` (import_staging.rs); `the_launcher_prompt_installs_the_copy_it_showed`, `the_cli_installs_the_staged_copy_or_nothing`, `finder_import_installs_the_copy_the_dialog_described`, `installing_from_the_prefs_prompt_uses_the_staged_copy` | Fixed, see 9c |
+| SEC-32 | Medium | A held Return (key repeat) satisfied "press again to confirm" for destructive actions and the import prompt's guard | `gui/keys.rs`, `gui/mod.rs`, `gui/importprompt.rs` | `a_held_return_never_answers_the_question` (mod.rs), `a_held_return_never_installs_by_repeating`, `a_first_press_is_fresh_and_its_repeats_are_not` (keys.rs) | Fixed, see 9c |
+| SEC-33 | Low | Importing a package whose bundle id matches an installed workflow replaced it silently (outside the prefs window) and it inherited the saved settings (API tokens) | `workflow/package.rs`, `gui/importprompt.rs` | `the_preview_reports_what_would_be_replaced_and_inherited` (import_staging.rs), `a_replacement_is_announced_with_the_installed_name_and_version` | Fixed by disclosure; inheritance kept on purpose (so an update keeps its configuration), see 9c |
+| SEC-34 | Low | Prefs import prompt showed package text raw; Unicode format characters (bidi override, zero-width) survived the launcher's sanitising | `gui/importprompt.rs`, `gui/prefs/workflows.rs` | `format_characters_are_stripped_and_long_names_are_capped`, `the_prefs_prompt_is_cleaned_shows_the_author_and_never_calls_a_file_writer_harmless` | Fixed, see 9c |
+| SEC-35 | Medium | Open File with an empty file field (= the incoming argument) or a `{placeholder}` path was invisible to the trust summary, so a workflow that launches an app or script shipped in its own package was called passive | `workflow/trust.rs`, `gui/importprompt.rs` | `open_file_with_an_empty_or_dynamic_field_is_never_passive` (trust.rs), `files_opened_at_run_time_are_listed_and_not_called_harmless` (importprompt.rs) | Fixed, see 9c |
+| SEC-36 | Medium | Write File with "relative to the workflow folder" could overwrite the workflow's own `info.plist`/scripts after the prompt and was listed as harmless "own folders" | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `write_file_never_rewrites_the_workflows_own_info_plist` (workflow/tests.rs), `writing_into_its_own_installed_folder_is_a_separate_warning` (importprompt.rs) | Fixed for `info.plist` and disclosed for the rest, see 9c |
+| SEC-37 | Low | The trust summary could not say that a Script Filter's items (`arg`, `variables`, `quicklookurl`) steer later Run Script / Open URL / Open File / Write File / Terminal steps, so such a workflow could look passive | `workflow/trust.rs`, `gui/importprompt.rs` | `script_filter_results_steering_later_steps_are_flagged`, `script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged` (trust.rs); `script_filter_steering_is_stated` (importprompt.rs) | Fixed by disclosure, see 9d |
+| SEC-38 | Low | `ashdash import` ignored unknown `--` flags (`--yess` silently meant "ask") and the preferences drop zone accepted fewer package extensions than the launcher, so the same package was handled differently per path | `main.rs`, `gui/prefs/app.rs`, `gui/prefs/workflows.rs`, `workflow/package.rs` | `import_rejects_unknown_flags_and_wrong_file_counts` (main.rs), `the_drop_zone_accepts_every_workflow_extension_the_launcher_does` | Fixed, see 9d |
+| SEC-39 | Low | `write_workflow_value` trusted its caller to check the variable: the preferences window did not, so any key could be stored in `workflow-config/<bundle id>.json` and reach the workflow's scripts as an environment variable | `settings_view.rs` | `write_workflow_value_only_accepts_variables_on_the_sheet` | Fixed, see 9d |
+| SEC-R4-01 | Medium | Open File `openwith` and Open URL `browser` (and "Search the web" `browser`) were not read by the trust summary, and a relative literal `sourcefile` went to `open` unresolved (the launcher's working directory): a workflow that launches an app shipped in its own package was called passive ("Runs no scripts...") | `workflow/trust.rs`, `workflow/exec.rs`, `gui/importprompt.rs` | `open_file_openwith_and_open_url_browser_are_launched_applications`, `a_relative_literal_file_is_a_file_shipped_with_the_workflow` (trust.rs); `relative_open_targets_and_apps_resolve_against_the_workflow_folder` (exec.rs); `a_launched_application_is_a_capability_line_and_a_shipped_one_is_called_out`, `the_harmless_sentence_is_only_for_workflows_that_do_nothing_else` (importprompt.rs) | Fixed, see 9e |
+| SEC-R4-02 | Medium | Write File could still rewrite the workflow's `info.plist` through a package symlink (`notes.txt -> info.plist`): the refusal compared path text and the parent folder only, and `perform` followed links | `workflow/exec.rs` | `write_file_does_not_follow_a_package_symlink_to_info_plist`, `write_file_still_writes_through_a_link_to_an_ordinary_file` (exec.rs) | Fixed, see 9e |
+| SEC-R4-04 | Medium | File Filter ran `mdfind` with no timeout and no output cap (a types-only predicate matched 430 572 files, 58.7 MB, 18 s) on the single query worker | `workflow/filefilter.rs`, `workflow/filter.rs`, `providers/workflow.rs` | `mdfind_goes_through_the_bounded_runner_with_the_search_budget`, `mdfind_output_is_capped_before_strings_are_built`, `an_empty_argument_with_a_types_only_predicate_stays_bounded` (filefilter.rs); `a_file_filter_runs_through_the_engines_os_with_the_configured_budget` (providers/workflow.rs) | Fixed, see 9e |
+| SEC-R4-09 | Low | A cross-volume install removed the old version before a long copy, and `load_all` read the hidden `.import-*` folders, so a reload or crash could show a phantom duplicate; leftovers were never swept | `workflow/package.rs`, `workflow/model.rs` | `load_all_skips_dot_directories_so_a_swap_in_progress_is_not_a_second_workflow`, `the_old_version_stays_visible_until_the_new_copy_is_complete`, `interrupted_installs_are_swept_and_a_lost_workflow_is_put_back`, `staging_a_package_sweeps_the_workflows_folder`, `a_failed_same_volume_install_gives_the_staged_tree_back` (package.rs) | Fixed, see 9e |
+| SEC-R4-10 | Low | `config set web_searches '<array>'` compared the number of bad entries, so a new list with a different bad entry passed when an old bad entry existed | `settings_view.rs` | `replacing_the_whole_web_search_list_checks_every_entry_not_the_count` | Fixed, see 9e |
+| SEC-R4-14 | Low | The spawn guard test matched only the one-line form `Command::new("name")`; `system_program`'s behaviour for a missing tool was undocumented | `tests/system_programs.rs`, `actions.rs` | `no_bare_system_tool_names_are_spawned`, `the_scan_sees_calls_the_old_line_match_missed`, `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path` | Tightened and documented, see 9e |
+| SEC-50 | Medium | A ~2 MB property list of nested `<array>` elements (a theme opened from Finder, `ashdash theme`, an app's `Info.plist`) overflowed the stack inside the `plist` crate and aborted the launcher | `theme.rs`, `apps.rs`, `mac/opendocs.rs` | `a_deeply_nested_theme_is_refused_not_a_stack_overflow`, `nesting_up_to_the_cap_parses_and_one_more_level_does_not`, `binary_plists_are_checked_too`, `every_kind_of_value_passes_the_probe_in_both_encodings` (theme.rs); `a_hostile_info_plist_is_ignored_not_fatal` (apps.rs); `a_deeply_nested_theme_is_refused_not_fatal` (opendocs.rs) | Fixed, see 9e; workflow `info.plist` and the value bound added later (SEC-R5-01, SEC-R5-02, 9g) |
+| SEC-51 | Medium | `ashdash://search` typed attacker text into the launcher *and ran it*, so a web page could start a workflow's Script Filter with `{query}` chosen by the page, with no consent dialog | `urlscheme.rs`, `events.rs`, `gui/glue.rs`, `gui/mod.rs` | `search_from_a_url_never_becomes_a_query` (urlscheme.rs); the GUI side is on-screen only (QA) | Fixed: the URL only fills the field, see 9e and section 6 |
+| SEC-52 | Low | URL consent dialog: one dialog per link (a page could stack dozens, each living up to 60 s); a timeout was stored as a permanent "deny"; `url-trust.json` was read once, so "delete the entry to be asked again" needed a restart and a hand edit was overwritten | `urlscheme.rs` | `only_one_question_per_bundle_is_open_at_a_time`, `the_claim_is_released_when_the_question_fails`, `a_timeout_or_dismissed_dialog_is_not_a_decision`, `the_dialog_result_maps_to_an_answer`, `edits_to_the_consent_file_are_seen_without_a_restart` | Fixed, see 9e |
+| SEC-53 | Medium | Snippet auto-paste went through the pasteboard (`pbcopy`, no marker type), so a snippet holding a token or password was recorded in `clipboard.json` in clear text | `clipboard/{command,history,watch,filter}.rs` | `a_snippet_pasted_by_ashdash_is_not_recorded_but_the_users_own_copies_are`, `an_old_note_does_not_hide_a_later_copy`, `markers_still_win_over_the_own_paste_note` (watch.rs); `snippet_pastes_are_noted_for_the_watcher_but_history_pastes_are_not`, `a_failed_snippet_copy_leaves_no_note_behind` (command.rs) | Fixed; live pasteboard not run, see 9e |
+| SEC-54 | Low | `urlscheme::parse` sliced the URL at a byte offset: `ashdash:/é` panicked the dispatch thread | `urlscheme.rs` | `multibyte_text_anywhere_never_panics_the_parser` | Fixed |
+| SEC-55 | Low | The IPC connection counter was decremented after the handler returned: sixteen panicking handlers locked the socket out until restart | `ipc.rs` | `panicking_handlers_do_not_use_up_the_connection_slots`, `a_connection_slot_is_released_when_its_guard_drops_even_while_unwinding` | Fixed |
+| SEC-56 | Low | AppleScript `search` / `run trigger` skipped the length caps of the socket and the URL scheme; Finder import messages showed raw file names (bidi, zero-width); a theme was read three times (check vs. copy) | `scripting.rs`, `mac/opendocs.rs` | `script_commands_apply_the_same_length_caps_as_the_other_entry_points`; `finder_messages_clean_file_names_like_the_import_prompt`, `theme_install_reads_the_file_once_and_installs_what_it_validated` | Fixed |
 
 No Critical finding: there is no network listener, no URL handler yet, and untrusted *archives* cannot
 write outside the workflows directory (verified, see 4.1). The two Highs that touch untrusted data
@@ -118,8 +120,8 @@ Tests prove `BASH_ENV` and `PATH` take effect.
 
 Fix: in `script_env`, drop (or refuse with a warning) a deny-list of loader/interpreter variables when
 they come from *dynamic* variables (script or item level); allow them only when the workflow author sets
-them statically in `info.plist`. Never let dynamic variables override `alfred_*` or `PATH`/`HOME`/`USER`.
-The reference launcher itself exports all variables; deviating for this deny-list is a deliberate, documented compatibility cost.
+them statically in `info.plist`. Never let dynamic variables override the workflow variables the engine defines (see [WORKFLOWS.md](WORKFLOWS.md#variables-and-environment)) or `PATH`/`HOME`/`USER`.
+Other launchers export all variables; deviating for this deny-list is a deliberate, documented compatibility cost.
 
 ### SEC-03 Medium: `{query}` substitution into script source
 
@@ -127,7 +129,7 @@ Argument modes: argv (`scriptargtype 1`) and stdin (`2`) are safe (tests pass ho
 literally). "with input as {query}" (`0`) pastes text into source. The default mask 102 escapes `` ` `` `"` `$`
 and `\` only, so inside double quotes it is safe, but unquoted or single-quoted use is injectable:
 `;`, `|`, `&`, `'`, `<`, `>` and newline stay live (pinned by `documents_default_mask_leaves_shell_metacharacters_live`).
-This matches the reference launcher's behaviour, so it is a UI problem more than an engine one:
+This matches the behaviour existing workflow packages rely on, so it is a UI problem more than an engine one:
 - the workflow importer should warn when a script uses `{query}` in mode 0 (see 3);
 - the editor/inspector should prefer argv, show a "unsafe unless quoted" badge for mode 0;
 - the engine may add an opt-in "escape everything" mask for new workflows (single-quote wrapping).
@@ -178,7 +180,7 @@ Fix: carry a depth counter in `Parser`, return `None` beyond ~200; also cap quer
 
 `fuzzy::score` recurses per word (`words_prefix_match`, `initials_match`); ~30,000 query words, or
 30,000 combining sequences, overflow a 2 MiB stack. Needs an absurd paste; the same cap on query length
-as SEC-08 fixes it. WP5 is rewriting this module: carry the cap into the new implementation.
+as SEC-08 fixes it. Keep the cap when this module is rewritten.
 
 ### SEC-10, SEC-11 import robustness
 
@@ -199,13 +201,13 @@ symlinks after extraction (already done by `Workflow::load`'s reads) is sufficie
 
 `script_env` builds `paths.data/workflow-data/<bundle id or id>`. `import_package` sanitises the *install*
 directory name, but the bundle id inside `info.plist` is used raw at run time. `bundleid` = `../../../x` makes
-the engine `create_dir_all` outside the data root and hands that path to scripts as `alfred_workflow_data`.
+the engine `create_dir_all` outside the data root and hands that path to scripts as the workflow data variable.
 Fix: sanitise with the same function as the import, in one shared helper (`workflow::safe_key`).
 
 ### SEC-13 Medium: Terminal Command and URL objects
 
 `Effect::Terminal(render(text, query, vars))` substitutes `{query}` with no escaping into text that Terminal
-executes as a shell line. The reference launcher offers escaping options for this object; the importer ignores them. Any
+executes as a shell line. The package format offers escaping options for this object; the importer ignores them. Any
 untrusted item argument therefore is code in Terminal (after SEC-01 is fixed it is still a shell line).
 `openurl` percent-encodes the query only when `utf8` is set, and `open_url` accepts any scheme: a Script Filter
 returning `file:///Applications/Foo.app`, `x-apple.systempreferences:`, `ssh://`, `smb://` launches those
@@ -218,7 +220,7 @@ confirmation for others.
 Scripts run with the launcher's full environment (documented by test). A GUI app launched from Finder has a
 small environment, but a launcher started from a shell exposes everything in it (cloud credentials, tokens).
 Fix: start from a minimal allow-list (`HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`, a fixed
-`PATH`) plus workflow variables, as the reference launcher does for GUI-launched apps. Compatibility cost: low.
+`PATH`) plus workflow variables, as other launchers do for GUI-launched apps. Compatibility cost: low.
 
 ### SEC-15 Low: temp script permissions
 
@@ -236,7 +238,7 @@ See the table. Fix: write stdin from its own thread, after the timeout supervisi
 `icns_path` joins `CFBundleIconFile` to `Contents/Resources`. A hostile bundle can name `../../../etc/x` or an
 absolute path, and `sips` then parses an arbitrary file as an image (information leak is limited to
 the converted PNG; the exposure is parser bugs). Fix: reject names containing `/` or `..`, and `canonicalize`
-the result to verify it stays inside the bundle. WP5 owns this file.
+the result to verify it stays inside the bundle. Keep this in mind when changing that file.
 
 ### SEC-18 Medium: stored data privacy
 
@@ -248,7 +250,7 @@ the result to verify it stays inside the bundle. WP5 owns this file.
   `fchmod` after open.
 - `Config::save` uses `fs::write` (default umask, 0644). The file lists directories and web searches; low value, but
   should use `write_private` for consistency. The data directory itself is created with default permissions; create it 0700.
-- Clipboard history: concealed/transient pasteboard types are not filtered (WP2's work item; verify that
+- Clipboard history: concealed/transient pasteboard types are not filtered (since fixed, see SEC-19; verify that
   `org.nspasteboard.ConcealedType` entries never reach disk) and `push` rewrites the whole file synchronously under the mutex.
 
 ### SEC-19 Low: secrets in the UI
@@ -276,7 +278,7 @@ product must:
 6. Not run workflows found in `workflow_dirs` of a *different* user or world-writable directories; warn if the directory is.
 7. Make a kill switch visible (disable workflow, kill running scripts).
 
-**Status after wave 3.** Points 1 and 2 are implemented for every install path: the launcher window, Finder
+**Status.** Points 1 and 2 are implemented for every install path: the launcher window, Finder
 (`opendocs.rs`), `ashdash import [--yes]` and the preferences window all show `prompt_text` built from
 `Workflow::trust_summary()` (scripts and interpreters, `{query}`-in-source, Terminal commands, Write File targets, clipboard
 replacement, URL schemes, files outside the folder, external triggers, replacement and saved-settings notices; SEC-30..34)
@@ -342,12 +344,12 @@ hostile-input boundary from day one:
 
 1. Allow-list of verbs: `search`, `show`, `trigger` (external trigger of an *enabled* workflow), plus the harmless `reload`, `theme` (by name from the themes folder) and `prefs` (opens the preferences window). No verbs for
    import-and-run, run-script, system commands, clipboard read, or file open.
-   **`search` does not search** (W4-R2, SEC-51): it shows the launcher with the text in the field (`AppEvent::Prefill`) and runs *no* query, so no workflow keyword or Script
+   **`search` does not search** (SEC-51): it shows the launcher with the text in the field (`AppEvent::Prefill`) and runs *no* query, so no workflow keyword or Script
    Filter sees text chosen by a web page until the user edits the field (a keystroke then runs the query as usual; the footer is set to "Text from a link: edit it to search" - the footer text is code-only, not seen on screen).
    The CLI socket and AppleScript `search` are local, same-user controls and still run the query (`AppEvent::Search`).
 2. `trigger` must require that the workflow's External Trigger object opts in to URL invocation, and a
    per-workflow, user-visible allow setting (default: ask once, remember per bundle id). At most one question per bundle id is on
-   screen (further links for it are dropped, W4-R2); only "Allow" and "Don't Allow" are stored, a timeout or dismissed dialog is
+   screen (further links for it are dropped); only "Allow" and "Don't Allow" are stored, a timeout or dismissed dialog is
    not (the next link asks again); `url-trust.json` is re-read when its modification time or size changes, and `set` merges over the
    current file, so deleting an entry takes effect in a running launcher and a hand edit is not overwritten (a file that does not parse keeps the last good decisions in memory and is moved to `url-trust.json.bad` before the next write, SEC-R5-03). Residual: different
    bundle ids can each have their own dialog open (bounded by the 6-per-10-s limiter and the number of installed workflows with an External Trigger).
@@ -373,7 +375,7 @@ hostile-input boundary from day one:
 | Query length | `calc` 512 chars + depth 200, `fuzzy` 256 chars (SEC-08/09, fixed) | a single cap at the engine entry point would be tidier |
 | Clipboard history | max entries, text entries capped at 1 MiB (`MAX_TEXT_BYTES`), images size-capped; whole file still rewritten per copy | async writes |
 | Script Filter item count | capped at 5,000 (core-followups) | ok |
-| Icon cache | 500 files LRU, concurrent `sips` limited (WP5, done) | ok |
+| Icon cache | 500 files LRU, concurrent `sips` limited | ok |
 
 ## 8. Suggested fix order
 
@@ -383,7 +385,7 @@ hostile-input boundary from day one:
 4. SEC-18/15/14 privacy and hygiene.
 5. Import confirmation UI (3) before workflows are advertised to users.
 
-## 9. Fix log (wave 2, FIX-B, branch `fix/security`)
+## 9. Fix log: first fix round
 
 All `known: SEC-nn` regression tests for the fixed findings are un-ignored and pass.
 
@@ -396,7 +398,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 - **SEC-02** `workflow/script.rs::script_env`. Decision: *workflow-author variables stay as they are*
   (`info.plist` variables, configuration defaults and user-saved values are exported verbatim, even `PATH`);
   *dynamic variables* (anything that arrives through the variable set at run time: Script Filter output, scripts,
-  Arg and Utility objects) are exported unless they are in the protected set, start with `alfred_`, or are not valid
+  Arg and Utility objects) are exported unless they are in the protected set, collide with a variable the engine defines, or are not valid
   environment entries (empty name, `=` or NUL). Protected set (case-insensitive): `PATH HOME USER LOGNAME SHELL TMPDIR
   BASH_ENV ENV IFS SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND CDPATH GLOBIGNORE FPATH ZDOTDIR NODE_OPTIONS NODE_PATH RUBYOPT
   RUBYLIB PERL5OPT PERL5LIB PERLLIB PHPRC PHP_INI_SCAN_DIR GEM_HOME GEM_PATH CLASSPATH JAVA_TOOL_OPTIONS _JAVA_OPTIONS
@@ -425,15 +427,15 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   the data dir is created 0700). `usage.rs`: queries over 100 characters are not stored (the pick still counts
   globally), ids over 200 bytes are not recorded, at most 2,000 queries and 50 ids per query are kept, `Usage::set_enabled`
   is the opt-out switch (off: nothing is recorded, nothing is boosted), `Usage::clear` wipes memory and file.
-  *Done afterwards (wave 3):* the `learn_usage` config field calls `set_enabled` at start-up and on every live reload,
-  and "Forget what I picked..." / the `clear-usage` verb wipe the data; the clipboard concealed-type filter is WP2's.
+  *Done afterwards:* the `learn_usage` config field calls `set_enabled` at start-up and on every live reload,
+  and "Forget what I picked..." / the `clear-usage` verb wipe the data; the clipboard concealed-type filter is SEC-19.
   Disabling learning leaves the old `usage.json` on disk until it is cleared.
-- **SEC-03/13/14** are reference-compatible behaviours and unchanged. `Workflow::trust_summary()` (`workflow/trust.rs`)
+- **SEC-03/13/14** are behaviours that existing workflow packages rely on, and are unchanged. `Workflow::trust_summary()` (`workflow/trust.rs`)
   returns a `TrustSummary` (serialisable): script-running object count, interpreters used, scripts that paste `{query}`
   into source, Open URL schemes (`{dynamic}` when not literal, `(none)` when absent), Terminal Command templates, files
   outside the workflow directory, and External Trigger count. The import confirmation (section 3) should be built on it.
 
-## 9b. Fix log (wave 3, CORE follow-ups, branch `wp/core-followups`)
+## 9b. Fix log: follow-ups
 
 - **SEC-17** new `crates/core/src/confine.rs::confined_file(root, candidate)`: no `..`/root/prefix components, no symlink
   anywhere below the root (also links that stay inside), a regular file whose canonical path is inside the canonical root;
@@ -477,7 +479,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   it now warms up and takes the best of five independent rounds (a real regression slows every round) against the
   unchanged 25 ms ceiling and prints all rounds.
 
-## 9c. Fix log (wave 3 review, FIX-TRUST, branch `fix/w3-trust`)
+## 9c. Fix log: trust prompt and staged import
 
 - **SEC-30** `TrustSummary` (`workflow/trust.rs`) gained `file_writes` (one `FileWriteInfo` per Write File object: the file
   name template as written, write kind overwrite/append/prepend, where it lands, whether it is decided at run time) and
@@ -492,7 +494,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   in Finder and neither opens, runs nor changes anything. Notification, Large Type and the other output objects are likewise
   harmless. Open File/Launch Files that run an app were still only visible as "files outside its folder" (a gap closed by SEC-35 in the re-review fixes).
 - **SEC-31** `workflow::stage_package(&Paths, file)` opens the package **once**: it extracts into a private (0700) directory
-  `<data>/import-staging/.import-*` (normally the same volume as the workflows folder, so the install is a rename; on `EXDEV` it is copied beside the destination first, see FIX-R2), parses and describes
+  `<data>/import-staging/.import-*` (normally the same volume as the workflows folder, so the install is a rename; on `EXDEV` it is copied beside the destination first, see 9c, re-review), parses and describes
   it (`StagedPackage::preview()`); `StagedPackage::install()` moves exactly that tree into place and the file is never read
   again. Dropping a `StagedPackage` (Esc, hide, a newer prompt, "no") deletes the copy; copies older than 24 h from a crashed
   run are swept when the next one is staged; if the copy has vanished, install fails with "open the file again" instead of
@@ -510,7 +512,7 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
   `saved_settings` (a `workflow-config/<id>.json` exists). Every prompt says "This replaces "X" 1.0 (installed)." (title
   "Replace workflow ...") and, when values exist, that "Settings saved for this workflow identifier are kept and the new package
   can read them (they may include tokens or passwords)". *Decision:* saved values stay keyed by bundle id and are inherited,
-  exactly like the reference launcher (an update must keep the user's configuration); the answer to "a hostile package claims a trusted bundle id" is
+  so that an update keeps the user's configuration; the answer to "a hostile package claims a trusted bundle id" is
   the disclosure, since the package's own scripts could read those files anyway.
 - **SEC-34** `importprompt::clean` strips Unicode format characters (category Cf: bidi embeddings/overrides/isolates,
   zero-width space/joiners, BOM, soft hyphen, tag characters; explicit table `is_format_char`, no new dependency) besides control
@@ -519,12 +521,12 @@ All `known: SEC-nn` regression tests for the fixed findings are un-ignored and p
 
 ### Status of every finding (checked in core-followups)
 
-SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired in wave 3; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (reference-compatible), mitigated by
-`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed (FIX-TRUST); SEC-33: fixed by disclosure; SEC-35, 36: fixed (FIX-R2); SEC-37..39: fixed (W4-FIX); SEC-R4-01, 02, 04, 09, 10, 14: fixed or tightened (W4-R1; the `SEC-R4-nn` ids are the issue numbers of `docs/reviews/wave4.md`). Nothing is without a status.
+SEC-01, 02, 04-12, 15, 16, 17, 18 (opt-out and clear wired; old data stays until Forget), 19: fixed. SEC-03, 13, 14: open by design (compatibility with existing packages), mitigated by
+`Workflow::trust_summary()` and the import prompt. SEC-20: design constraint. SEC-30, 31, 32, 34: fixed; SEC-33: fixed by disclosure; SEC-35, 36: fixed; SEC-37..39: fixed; SEC-R4-01, 02, 04, 09, 10, 14: fixed or tightened (the `SEC-R4-nn` ids are the issue numbers of an internal review). Nothing is without a status.
 
-## 9c. Fix log (wave 3 review, FIX-LIVE, branch `fix/w3-live`)
+## 9c. Fix log: live reload
 
-Items refer to `docs/reviews/wave3.md`.
+Items refer to an internal review of the preceding changes.
 
 - **Hotkeys (item 2, SEC-20)** `Engine::run_node(workflow_id, node_uid, arg, vars)` now finds the workflow by its directory
   identity (`Workflow::id`), not by bundle id: workflows without a bundle id work, and a copy of a bundle id in a second
@@ -540,7 +542,7 @@ Items refer to `docs/reviews/wave3.md`.
   import prompt is *not* the only way a workflow becomes active; `workflow_dirs` and `config.json` are another. (Item 15.)
 - **No scan on the window thread (item 9)** `Engine::apply_config` returns at once when `workflow_dirs` changed; the rescan
   runs in `Engine::reload_content_background` (`reload_pending()` is true meanwhile, so the "Reloading..." state shows).
-  (Wave 3: the hotkey registry still read the folders itself on the window thread when it re-registered; fixed in 9d.)
+  (Earlier: the hotkey registry still read the folders itself on the window thread when it re-registered; fixed in 9d.)
 - **Web-search URLs (item 8)** `websearch::validate_url_template` is the single rule (http/https only, a host, no userinfo,
   only `{query}`); `providers::registry_checked` skips web searches that fail it, for hand edits, `ashdash config set` and the
   preferences window alike, and `ApplyReport.warnings` / the launcher status list each skipped entry. `prefs_model` calls the
@@ -548,21 +550,21 @@ Items refer to `docs/reviews/wave3.md`.
 - **SEC-17 (item 10)** `apps.rs::icns_path` passes the *bundle* as the confinement root and `Contents/Resources/<name>` as the
   relative path, so a `Resources` that is a symlink to another folder no longer exposes that folder's images.
   `confine::confined_file_strict` additionally refuses a root that is itself a symlink (not used for app bundles or workflow
-  folders: both may legitimately be links). Hard links were not detected in wave 3; see 9d.
+  folders: both may legitimately be links). Hard links were not detected at first; see 9d.
 - **Config writers (item 11)** `Config::edit_locked(paths, |cfg| ...)` / `config::ConfigLock` take an exclusive `flock` on
   `<data>/run/config.lock` (0600) around read-modify-write; `Store::edit` (prefs), `ashdash config set` and `install_theme`
   use it. Reads are strict (an unreadable file is never replaced by defaults) and nothing is written when nothing changed.
-  (Wave 3: keys this build does not know were dropped by a save; fixed in 9d.) A file from a newer config version is
+  (Earlier: keys this build does not know were dropped by a save; fixed in 9d.) A file from a newer config version is
   refused. Writers that bypass the lock (an editor, `jq`) are not coordinated.
 - **PATH (item 13)** `actions::system_program` maps `open`, `osascript`, `osacompile`, `ditto`, `qlmanage`, `sips`, `mdfind`,
   `unzip`, `tar`, `pbcopy`, `pbpaste`, `pmset` and `screencapture` to fixed `/usr/bin` (`/usr/sbin`) paths in `actions::build`, in
   the `engine.rs` open/reveal/copy/osascript wrappers and in the icon conversion. The other spawn sites (`system.rs`,
-  `workflow/filefilter.rs`, `clipboard/restore.rs`, ...) were moved to `actions::system_command` by FIX-R2 (below).
+  `workflow/filefilter.rs`, `clipboard/restore.rs`, ...) were moved to `actions::system_command` in the re-review round (below).
 - **Script Filter reruns (item 12)** `schedule::RERUN_CEILING` (5 minutes): reruns of one request stop that long after its first
   run; typing (a new request) starts a new period. Mouse or arrow-key activity does not extend it.
 
 
-## 9c. Fix log (wave 3 re-review, FIX-R2, branch `fix/w3-r2`)
+## 9c. Fix log: re-review of the live-reload fixes
 
 - **SEC-35 (N1)** `TrustSummary.opens_at_run_time` lists Open File / Launch Files targets that are produced at run time: an empty
   file field (the executor then opens the incoming argument; shown as "(the incoming argument)") and any path with a
@@ -573,8 +575,8 @@ Items refer to `docs/reviews/wave3.md`.
   ("Can modify its own files (scripts, settings) after you install it") and is no longer listed under the data/cache line. *Decision
   on the executor:* the executor refuses to write the workflow's own `info.plist` (compared after resolving `.`/`..`, ignoring case,
   and by real location when both exist), whatever the path is spelled like, in every mode, with a warning; this closes "add
-  objects after the prompt". (The wave 4 review found that a package symlink got around the textual comparison; SEC-R4-02 below
-  resolves the file itself and checks the opened file's identity.) Other files in the folder stay writable (the reference launcher semantics; a workflow may keep a settings file there).
+  objects after the prompt". (A later review found that a package symlink got around the textual comparison; SEC-R4-02 below
+  resolves the file itself and checks the opened file's identity.) Other files in the folder stay writable (a workflow may keep a settings file there).
   Residual: a script file the workflow already runs can still be rewritten, and a Run Script can write anywhere anyway, so this is
   a disclosure plus one hard rule, not a sandbox.
 - **Cross-volume install (N3)** *(order changed by SEC-R4-09, see 9e)* `package::install_with` falls back, on `EXDEV`, to copying the staged tree (modes, links)
@@ -594,7 +596,7 @@ Items refer to `docs/reviews/wave3.md`.
   collapse; a field made only of them reads as empty ("not stated" / "(unnamed)"). Variation selectors are left alone (emoji).
 - **Test hygiene** `trash_refuses_a_symlink_that_points_at_a_protected_place` creates `$HOME/Library` itself.
 
-## 9d. Fix log (wave 4, W4-FIX, branch `wp/w4-fix`): wave 3 leftovers
+## 9d. Fix log: leftovers of the earlier rounds
 
 - **Unknown config keys (SEC-18 follow-up)** `Config::save` (and so `edit_locked`, the preferences window and `ashdash config set`) merges the
   typed settings over the file's current, migrated JSON: keys `Config` has no field for survive at the top level and inside nested objects
@@ -623,9 +625,9 @@ Items refer to `docs/reviews/wave3.md`.
   preferences drop zone and the preferences file chooser (the chooser filter now offers all four).
 
 
-## 9e. Fix log (wave 4 review fixes, W4-R1, branch `fix/w4-r1`): items 1, 2, 4, 9, 10, 14 of `docs/reviews/wave4.md`
+## 9e. Fix log: fourth review, items 1, 2, 4, 9, 10, 14
 
-The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide with ids the parallel W4-R2 branch picks).
+The ids `SEC-R4-nn` are the issue numbers of that review.
 
 - **SEC-R4-01 (review 1, MUST)** `TrustSummary.launched_apps` lists the application field of Open File (`openwith`), Open URL and "Search the web"
   (`browser`) objects as `{app, shipped}`; `shipped` is true for a literal path that points into the workflow's own folder (a relative path, or an
@@ -634,18 +636,18 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   A bare app name (`Safari`) is listed but not called shipped; an application field counts as a path when it has a `/` or ends in `.app`.
   *Decision on the executor:* a relative literal is not left to `open` (which would use the launcher's working directory): the executor resolves a relative
   `sourcefile`, Launch Files path, `openwith` path or `browser` path against the workflow's own folder (after `~` expansion; lexically normalised), so the
-  classifier and the executor agree on what a relative path means (the reference launcher runs workflows with the workflow folder as the working directory). An app *name*
+  classifier and the executor agree on what a relative path means (workflows run with the workflow folder as the working directory). An app *name*
   is passed on as written. Residual: a name that happens to be an app shipped elsewhere on the machine, and what a Script Filter returns, stay invisible (SEC-37 discloses the latter).
 - **SEC-R4-02 (review 2)** `exec.rs::is_info_plist_of` also canonicalises the *final path* (so `notes.txt -> info.plist` is refused with the usual warning), and
   `WriteFile` carries `protect: Option<PathBuf>` (the workflow's `info.plist`): `perform` opens the target without truncating, compares the opened file's
   device and inode with the protected file and refuses in every mode (overwrite, append, prepend) before writing a byte. That also covers hard links to
   `info.plist` and a link made between the executor's check and the write. *Decision:* `perform` still follows a final symlink in general (a dotfile that
   is a link into a dotfiles repository keeps working; test `write_file_still_writes_through_a_link_to_an_ordinary_file`), because a no-follow open would break
-  that reference-compatible use; only the workflow's own `info.plist` is protected. SEC-36's "by real location" wording is now true; a script that is already part of the package can
+  that use; only the workflow's own `info.plist` is protected. SEC-36's "by real location" wording is now true; a script that is already part of the package can
   still be rewritten (disclosed in the prompt as "Can modify its own files").
 - **SEC-R4-04 (review 4)** File Filter's `mdfind` goes through `Os::output_bounded` with the file-search budget from `config.file_search` (time limit
   `mdfind_timeout_ms`, output limit `mdfind_max_bytes`), additionally capped at 200 hits x 1 KiB (about 200 KB), so a types-only predicate (an empty argument) is
-  killed after a few hundred kilobytes instead of printing for seconds. *Wording corrected (W4-R3, SEC-R5-06):* it is **bounded**, not cheap - see below. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
+  killed after a few hundred kilobytes instead of printing for seconds. *Wording corrected (SEC-R5-06):* it is **bounded**, not cheap - see below. At most 200 paths are built, straight from the bytes (non-UTF-8 names survive), and a path cut by the kill is
   dropped. `WorkflowProvider` takes the engine's `Os` (`registry_for` wires it); `Workflow::keyword_results` (no `Os` argument) keeps the real OS and the default budget for callers outside the engine.
   Residual: the search still runs on the single query worker, bounded by the budget (default 4 s) rather than gone.
 - **SEC-R4-09 (review 9)** `load_all` skips folders whose name starts with `.` (so `.import-*` staging, copy and previous-version folders are never loaded as a second
@@ -662,14 +664,14 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   matches nothing fails (stale). Stated limits: a text scan, not a parse; no data flow through variables, macros, benches, `tests/` or `build.rs`; it cannot tell test code from production code.
   *Decision on `system_program`:* a known tool is always its absolute path; if the file is missing the spawn fails with an explicit "starting ..." error and there is **no `PATH` fallback**;
   only a name outside the table is passed on unchanged (documented on the function; the table is checked to exist on macOS by `every_known_tool_has_one_absolute_path_and_never_falls_back_to_path`).
-## 9f. Fix log (wave 4 review, W4-R2, branch `fix/w4-r2`)
+## 9f. Fix log: fourth review, remaining items
 
 - **SEC-50 plist depth** `theme::parse_plist` is the one way the launcher parses a property list from an untrusted file (themes: `Theme::load`/`from_bytes`;
   app `Info.plist`: `apps::icns_path`). It first runs the bytes through `plist`'s event-driven serde deserializer with a probe type that
   fails at nesting depth 64 (`MAX_PLIST_DEPTH`, the workflow parser's cap), so its own recursion is bounded; only then is the tree built.
   Works for XML, binary and ASCII input. Files are read through `theme::read_limited` (themes 2 MiB, `Info.plist` 4 MiB). Measured before the
   fix: a 1.9 MB nested file aborted the test binary ("has overflowed its stack"). Not covered: a binary plist nested >64 levels *and* large enough to
-  matter was only tested at 70 levels (written by the library, which cannot write much deeper). *Correction (review `wave4b.md`, item 1):* an earlier version of this entry said the
+  matter was only tested at 70 levels (written by the library, which cannot write much deeper). *Correction (fifth review, item 1):* an earlier version of this entry said the
   workflow importer's `plist::Value::from_file(info.plist)` ran "after the capped workflow parser"; that was wrong (the 64-level cap is in the Script Filter XML parser, `xml.rs`, which never sees
   `info.plist`), and a 2.9 KB package aborted the process at staging. Fixed in 9g (SEC-R5-01).
 - **SEC-51 `ashdash://search`** see section 6, item 1. New event `AppEvent::Prefill`; `LauncherApp::show_with_prefill` shows the window, sets the field and a footer note, and does not call `request_query`.
@@ -682,7 +684,7 @@ The ids `SEC-R4-nn` are the issue numbers of the review (so they cannot collide 
   Finder import notifications and `display_name` use `importprompt::clean` (format characters, blank-looking characters, one line, 240 / 80 characters); theme install reads the file once (`install_theme_with`), validates those bytes and writes the same bytes.
 - **`ashdash --version` / `-V` / `version`** prints `ashdash <crate version>` (first word only), exit 0, before the data folder or settings are touched.
 
-## 9g. Fix log (wave 4 round 3, W4-R3, branch `fix/w4-r3`): items 1-10 of `docs/reviews/wave4b.md`
+## 9g. Fix log: fifth review, items 1-10
 
 The ids `SEC-R5-nn` are the item numbers of that review.
 
@@ -696,8 +698,8 @@ The ids `SEC-R5-nn` are the item numbers of that review.
 - **SEC-R5-02 (item 2)** `theme::parse_plist`'s probe also counts the values it visits (keys included) and fails at `MAX_PLIST_VALUES` = 500 000, because a binary plist can refer to one
   object from many places (147 bytes, 10 references per level, 8 levels = 10^8 values at depth 9, never returned). The counter is per call (thread-local, reset on entry). Test:
   `shared_references_cannot_make_the_parse_do_exponential_work` (the 147-byte plist is built in the test; returns an error in well under a second; a 5 s watchdog fails the test instead of hanging it),
-  `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); the reference launcher's bundled templates are loaded by
-  `bundled_reference_templates_load_and_report_unsupported_objects` through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
+  `a_plist_with_a_lot_of_ordinary_values_still_parses` (100 000 values, XML and binary), `real_system_plists_still_parse` (Calculator, Safari, Notes `Info.plist` when present); sample workflow templates (the folder named by `ASHDASH_COMPAT_TEMPLATES`) are loaded by
+  the compatibility test through the same reader. The bound is on values, not on time (the time of a file that stays under it was not measured beyond the 100 000-value test).
 - **SEC-R5-03 (item 3)** `TrustStore` (`urlscheme.rs`): a `url-trust.json` that is there but does not parse (not UTF-8, not JSON, not an object; a half-saved hand edit) is no longer read as an
   empty file. `refresh` keeps the last good in-memory map (a remembered "deny" still denies), prints a warning to stderr once per change of the file, and `TrustStore::warning()` (test builds) returns it.
   `set` moves the damaged file aside to `url-trust.json.bad` (`.bad.1`, `.bad.2`... if a copy is already there, so an earlier one is never replaced) before writing the in-memory map plus the new entry.
@@ -713,7 +715,7 @@ The ids `SEC-R5-nn` are the item numbers of that review.
 - **SEC-R5-05 (item 5)** `note_app` expands `~` and normalises `..` lexically before the "is it under the workflow folder" test, so `~/Library/Application Support/ashdash/workflows/<own folder>/payload.app` is
   called shipped, and `<own folder>/../<other>/payload.app` is not. Test: `a_tilde_path_into_the_workflows_own_folder_is_shipped`.
 - **SEC-R5-06 (item 6)** Wording only. The File Filter `mdfind` is *bounded by the budget* (4 s by default, `mdfind_timeout_ms`, and 200 hits / about 200 KB of output), not "cheap": `mdfind` spends about 2.3 s
-  starting up before it prints, so a types-only predicate (empty argument) still holds the single query worker for that long on a cold run (one run on one machine, `docs/reviews/wave4b.md`; not re-measured here), and
+  starting up before it prints, so a types-only predicate (empty argument) still holds the single query worker for that long on a cold run (one run on one machine, fifth review; not re-measured here), and
   a slow or hung `mdfind` for up to the timeout. The output cap shortens neither. No code change; lowering `mdfind_timeout_ms` shortens the worst case at the cost of missed results on a slow index.
 - **SEC-R5-07 (item 7)** Removing a workflow (`settings_view::remove_workflow`, the preferences window's "Remove...") also removes the `.import-old-*` previous-version leftovers that name that folder
   (`package::remove_swap_leftovers_of`; exact folder-name match, empty or path-like names remove nothing), so the sweep can no longer put the old copy back once the installed folder is gone.
@@ -721,15 +723,15 @@ The ids `SEC-R5-nn` are the item numbers of that review.
   deleted in Finder still leaves a leftover (hidden `.import-old-*`) that is restored an hour later - delete it with the workflow. Tests: `removing_a_workflow_removes_its_previous_version_leftovers_and_only_those`
   (package.rs), `removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version` (tests/prefs_core.rs).
 - **SEC-R5-08 (item 10)** `load_all` no longer sweeps. `workflow::sweep_interrupted_installs(own_root)` is called by the engine's content reload for the app's own workflows folder only (first root, built by
-  `Engine::reload_job`) and by `stage_package` (as before); roots from `workflow_dirs` (a synced reference launcher folder, a read-only share) are only read. Amends 9e, which said the sweep ran on every `load_all` of a folder.
+  `Engine::reload_job`) and by `stage_package` (as before); roots from `workflow_dirs` (a synced folder, a read-only share) are only read. Amends 9e, which said the sweep ran on every `load_all` of a folder.
   Test: `only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs` (tests/prefs_core.rs: a writable and a read-only extra root keep their stale leftovers, the own folder's lost workflow is put back).
 - **SEC-R5-09 (item 8)** `Theme::load` (the `theme` setting, `<data>/themes/`, the daemon applying a theme, `ashdash://theme?name=`) reads up to `MAX_INSTALLED_THEME_BYTES` = 8 MiB; `Theme::load_for_install`
   (`ashdash theme <file>` on the command line) and the Finder/`import_theme` paths (`read_limited(.., MAX_THEME_BYTES)`) keep 2 MiB. The probe (SEC-50, SEC-R5-02) bounds nesting and the number of values, so the larger allowance
   adds memory (at most 8 MiB read, then the parsed tree) but no new way to exhaust the stack. Test: `an_installed_theme_may_be_bigger_than_one_offered_for_installation`. Upgrade note: `CHANGELOG.md`, `docs/release-notes/v0.1.0.md`.
-- **SEC-R5-10 (item 9)** Copy to Clipboard in a workflow. The reference launcher's own templates carry a `transient` key on `alfred.workflow.output.clipboard` (checked in the installed reference launcher bundles: `Paste as plain text from hotkey`
+- **SEC-R5-10 (item 9)** Copy to Clipboard in a workflow. The Copy to Clipboard object of the workflow format carries a `transient` key (checked in sample templates: `Paste as plain text from hotkey`
   and `Paste text clip from hotkey` have `transient: true`, `Clipboard` and `Snippet Triggers` have `false`). It is now honoured: `transient: true` gives `Effect::CopyTransient`, applied by
   `engine::copy_to_clipboard_transient`, which writes the text as `public.utf8-plain-text` together with `org.nspasteboard.TransientType`, so the clipboard watcher (and any other clipboard manager) skips it
-  (`concealed_and_transient_entries_are_never_recorded`). Without the key, or with `false`, the copy is a plain `pbcopy` and **is recorded in clipboard history like a copy made by the user**, as the reference launcher does;
+  (`concealed_and_transient_entries_are_never_recorded`). Without the key, or with `false`, the copy is a plain `pbcopy` and **is recorded in clipboard history like a copy made by the user**, as other launchers do;
   a workflow that copies a secret should tick "transient". The text reaches the JXA as an argument after `--`, never in the script source. `A::CopyText` (the "Copy" universal action on a row: a path, a URL,
   a calculator result) is a user action and stays a plain `pbcopy`, recorded like any user copy. Tests: `copy_to_clipboard_honours_the_transient_box_and_only_that` (exec.rs),
   `a_transient_copy_carries_the_marker_and_the_text_only_as_an_argument` (engine.rs), `A::CopyText` -> `pbcopy` with stdin in the `actions.rs` command table. Checked live once by hand: the pasteboard held
