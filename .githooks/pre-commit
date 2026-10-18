@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# pre-commit: fast checks of the STAGED changes only (about a second on a small change). It runs every check, then fails if any failed.
+#   rustfmt          staged .rs files, as they are in the index (cargo fmt's rules: rustfmt.toml, the edition of the crates)
+#   shell scripts    linted with the shellcheck tool, and workflows with actionlint, when installed (the skipped ones are listed)
+#   large files      over 1 MiB, unless .githooks/large-files.allow lists them (or ALLOW_LARGE_FILES=1)
+#   whitespace       trailing whitespace and merge-conflict markers on the lines you added (git diff --cached --check)
+#   secrets          gitleaks when installed, else a built-in scan (private keys, token shapes, .env/.pem/id_rsa file names)
+#   names            the retired product names (derived from format_ids.rs; crates/core/tests/names.rs stays the authority)
+#   e-mail           a warning when user.email is not a users.noreply.github.com address
+# Skip in an emergency with `git commit --no-verify`; CI repeats the checks that matter (docs/CI.md).
+HOOK=pre-commit
+# shellcheck source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT" || exit 1
+
+FAILED=0
+SKIPPED=""
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/pre-commit.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT
+bad() { FAILED=$((FAILED + 1)); }
+skip() { SKIPPED="$SKIPPED $1"; say "$1 ... skipped ($2)"; }
+
+STAGED=()
+while IFS= read -r -d '' f; do STAGED+=("$f"); done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+# ---- e-mail (a warning, never a block) -------------------------------------------------------------------------------------------
+email=$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -n 's/.*<\(.*\)>.*/\1/p')
+case $email in
+  *@users.noreply.github.com) ;;
+  *) warn "the author e-mail \"${email:-unknown}\" is not a users.noreply.github.com address: it will be public in the history.
+    Use the one from GitHub > Settings > Emails (\"Keep my email addresses private\"):  git config user.email <id>+<name>@users.noreply.github.com" ;;
+esac
+
+if [ "${#STAGED[@]}" = 0 ]; then
+  say "nothing staged for these checks (message-only or empty commit)"
+  exit 0
+fi
+say "checking ${#STAGED[@]} staged file(s)"
+
+# ---- rustfmt ---------------------------------------------------------------------------------------------------------------------
+rs=()
+for f in "${STAGED[@]}"; do case $f in *.rs) rs+=("$f") ;; esac; done
+if [ "${#rs[@]}" -gt 0 ]; then
+  if have rustfmt; then
+    edition=$(sed -n 's/^edition *= *"\([0-9]*\)".*/\1/p' crates/*/Cargo.toml Cargo.toml 2>/dev/null | head -n 1)
+    n=0
+    for f in "${rs[@]}"; do
+      # `rustfmt --check` on standard input exits 0 even when it finds differences, so compare the formatted text instead
+      git show ":$f" >"$TMP/in.rs"
+      if ! rustfmt --edition "${edition:-2024}" --config-path "$ROOT" <"$TMP/in.rs" >"$TMP/out.rs" 2>"$TMP/fmt.err"; then
+        n=$((n + 1))
+        printf '%s: rustfmt cannot parse %s\n' "$HOOK" "$f" >&2
+        head -n 10 "$TMP/fmt.err" | sed 's/^/    /' >&2
+      elif ! cmp -s "$TMP/in.rs" "$TMP/out.rs"; then
+        n=$((n + 1))
+        printf '%s: not formatted: %s\n' "$HOOK" "$f" >&2
+        diff -u -L "$f" -L "$f (formatted)" "$TMP/in.rs" "$TMP/out.rs" | head -n 20 | sed 's/^/    /' >&2
+      fi
+    done
+    if [ "$n" = 0 ]; then say "rustfmt (${#rs[@]} file(s)) ... ok"; else
+      echo "$HOOK: FIX: run  cargo fmt --all  and stage the result  (git add -u)" >&2; bad
+    fi
+  else
+    skip rustfmt "not installed: rustup component add rustfmt"
+  fi
+fi
+
+# ---- shellcheck and actionlint ---------------------------------------------------------------------------------------------------
+sh=(); wf=()
+for f in "${STAGED[@]}"; do
+  case $f in
+    docs/* | crates/*) continue ;;                   # the same scope as tests/lab/ci/lint.sh
+    .github/workflows/*.yml | .github/workflows/*.yaml) wf+=("$f"); continue ;;
+  esac
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  if git show ":$f" | head -c 64 | head -n 1 | grep -Eq '^#!.*(/|env )(ba)?sh'; then sh+=("$f"); fi
+done
+if [ "${#sh[@]}" -gt 0 ]; then
+  if have shellcheck; then
+    if shellcheck -x -S warning "${sh[@]}"; then say "shellcheck (${#sh[@]} script(s)) ... ok"; else
+      echo "$HOOK: FIX: the findings above (same options as CI: shellcheck -x -S warning)" >&2; bad
+    fi
+  else
+    skip shellcheck "not installed: brew install shellcheck"
+  fi
+fi
+if [ "${#wf[@]}" -gt 0 ]; then
+  if have actionlint; then
+    if actionlint "${wf[@]}"; then say "actionlint (${#wf[@]} workflow(s)) ... ok"; else
+      echo "$HOOK: FIX: the findings above" >&2; bad
+    fi
+  else
+    skip actionlint "not installed: brew install actionlint"
+  fi
+fi
+
+# ---- large files -----------------------------------------------------------------------------------------------------------------
+limit=1048576
+allow_patterns() { grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$ROOT/.githooks/large-files.allow" 2>/dev/null; }
+printf ':%s\n' "${STAGED[@]}" | git cat-file --batch-check='%(objectsize)' >"$TMP/sizes" 2>/dev/null
+n=0; i=0
+while IFS= read -r size; do
+  f=${STAGED[$i]}; i=$((i + 1))
+  case $size in '' | *[!0-9]*) continue ;; esac
+  [ "$size" -gt "$limit" ] || continue
+  allowed=0
+  if [ "${ALLOW_LARGE_FILES:-0}" = 1 ]; then allowed=1; fi
+  while IFS= read -r pat; do
+    # shellcheck disable=SC2254  # the pattern is meant to be a glob
+    case $f in $pat) allowed=1 ;; esac
+  done < <(allow_patterns)
+  if [ "$allowed" = 0 ]; then
+    n=$((n + 1))
+    printf '%s: too large: %s (%d KiB, the limit is 1024 KiB)\n' "$HOOK" "$f" $((size / 1024)) >&2
+  fi
+done <"$TMP/sizes"
+if [ "$n" = 0 ]; then say "file sizes (limit 1 MiB) ... ok"; else
+  echo "$HOOK: FIX: do not commit big files (git reset -q -- <file>). Images under docs/assets and fonts are allowed; for another file add a pattern to .githooks/large-files.allow in its own commit." >&2; bad
+fi
+
+# ---- whitespace and conflict markers on added lines --------------------------------------------------------------------------------
+if git diff --cached --check >"$TMP/ws.out" 2>&1; then say "whitespace and conflict markers (added lines only) ... ok"; else
+  grep -E ':[0-9]+: ' "$TMP/ws.out" | head -n 30 >&2
+  if grep -q 'conflict marker' "$TMP/ws.out"; then echo "$HOOK: FIX: resolve the merge conflict markers above" >&2; fi
+  echo "$HOOK: FIX: remove the trailing whitespace on the lines listed above (only lines you added are checked); see them with  git diff --cached --check" >&2
+  bad
+fi
+
+# ---- added lines (for the secret scan and the names check): path <TAB> line number <TAB> text ----------------------------------------
+git diff --cached -U0 --no-color --no-ext-diff --diff-filter=ACMR | awk '
+  /^\+\+\+ / { f = substr($0, 7); if ($0 == "+++ /dev/null") f = ""; next }
+  /^@@ /     { split($3, a, ","); ln = substr(a[1], 2) + 0; next }
+  /^\+/      { if (f != "") print f "\t" ln "\t" substr($0, 2); ln++ }' >"$TMP/added" 2>/dev/null
+
+# ---- secrets ---------------------------------------------------------------------------------------------------------------------
+secrets=0
+for f in "${STAGED[@]}"; do
+  b=${f##*/}
+  case $b in
+    .env.example | .env.sample | .env.template | .env.dist) ;;
+    .env | .env.* | *.pem | *.p12 | *.pfx | *.p8 | *.key | *.keystore | *.jks | id_rsa | id_dsa | id_ecdsa | id_ed25519 | credentials.json)
+      secrets=$((secrets + 1)); printf '%s: secret-looking file name: %s\n' "$HOOK" "$f" >&2 ;;
+  esac
+done
+if have gitleaks; then
+  if gitleaks git --help >/dev/null 2>&1; then gl=(gitleaks git --pre-commit --staged --redact --no-banner); else gl=(gitleaks protect --staged --redact --no-banner); fi
+  if "${gl[@]}" >"$TMP/gl.out" 2>&1; then scanner="gitleaks"; else secrets=$((secrets + 1)); cat "$TMP/gl.out" >&2; fi
+else
+  scanner="built-in patterns (gitleaks is not installed)"
+  grep -v 'secret-scan:allow' "$TMP/added" >"$TMP/scan" || true
+  scan() { # scan <what> <extended regex>
+    if grep -nE -e "$2" "$TMP/scan" >"$TMP/hits"; then
+      secrets=$((secrets + 1))
+      cut -d: -f2- "$TMP/hits" | awk -F'\t' -v what="$1" -v hook="$HOOK" '{ printf "%s: %s:%s looks like %s (value not shown)\n", hook, $1, $2, what }' | head -n 5 >&2
+    fi
+  }
+  scan "a private key"                 '-----BEGIN ((RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED) )?PRIVATE KEY( BLOCK)?-----'
+  scan "a GitHub token"                '(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})'
+  scan "an AWS access key id"          '(AKIA|ASIA)[0-9A-Z]{16}'
+  scan "an AWS secret access key"      'aws_secret_access_key[[:space:]]*[=:][[:space:]]*.?[A-Za-z0-9/+=]{40}'
+  scan "a Slack token or webhook"      '(xox[abprs]-[A-Za-z0-9-]{10,}|hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+)'
+  scan "a Google API key"              'AIza[0-9A-Za-z_-]{35}'
+  scan "a Stripe live key"             '(sk|rk)_live_[0-9A-Za-z]{24,}'
+fi
+if [ "$secrets" = 0 ]; then say "secret scan (${scanner:-file names}) ... ok"; else
+  echo "$HOOK: FIX: remove the secret and rotate it if it was ever real (git reset -q -- <file>; edit; stage again). A false positive: end the line with a comment containing secret-scan:allow" >&2; bad
+fi
+
+# ---- the retired product names (the words come from format_ids.rs; the guard test names.rs is the authority) ---------------------------
+name=$(forbidden_name)
+if [ -z "$name" ]; then skip names "scripts/format-id.sh or format_ids.rs is missing"; else
+  hits=0
+  working="${name}o"
+  for f in "${STAGED[@]}"; do
+    low=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
+    case $low in *"$name"*) hits=$((hits + 1)); printf '%s: the path contains a name that must not appear: %s\n' "$HOOK" "$f" >&2 ;; esac
+  done
+  names_allowed_files >"$TMP/allowed"
+  low_added() { tr 'A-Z' 'a-z' <"$TMP/added" | awk -F'\t' -v w="$1" 'index($0, w) { print NR }' ; }
+  # line numbers (in the added-lines file) that contain the name / the working name
+  for pair in "$working:any" "$name:restricted"; do
+    needle=${pair%:*}; kind=${pair#*:}
+    while IFS= read -r nr; do
+      row=$(sed -n "${nr}p" "$TMP/added")
+      path=${row%%$'\t'*}
+      if [ "$kind" = restricted ] && grep -qxF "$path" "$TMP/allowed"; then continue; fi
+      lnum=${row#*$'\t'}; lnum=${lnum%%$'\t'*}
+      hits=$((hits + 1))
+      printf '%s: %s:%s contains a name that must not appear in the repository\n' "$HOOK" "$path" "$lnum" >&2
+    done < <(low_added "$needle")
+  done
+  if [ "$hits" = 0 ]; then say "names guard ... ok"; else
+    echo "$HOOK: FIX: remove or reword the text above (CONTRIBUTING.md, \"Names\"; the authority is  cargo test -p ashdash-core --test names )" >&2; bad
+  fi
+fi
+
+if [ "$FAILED" -gt 0 ]; then
+  echo "$HOOK: $FAILED check(s) failed; the commit was NOT created. (Emergency only: git commit --no-verify; CI will still run the checks.)" >&2
+  exit 1
+fi
+[ -z "$SKIPPED" ] || say "skipped:$SKIPPED"
+say "all checks passed"

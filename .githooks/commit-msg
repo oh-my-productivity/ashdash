@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# commit-msg: the message must follow Conventional Commits (scripts/commit-lint.sh) and must not contain the retired product names.
+# Skip in an emergency with `git commit --no-verify`; CI checks the pull request title and every commit again.
+HOOK=commit-msg
+# shellcheck source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+say "Conventional Commits check of the message"
+if "$ROOT/scripts/commit-lint.sh" --file "$1" --forbid-names; then exit 0; fi
+{
+  echo
+  echo "$HOOK: the commit was NOT created. Your text is kept in $(git rev-parse --git-path COMMIT_EDITMSG)."
+  echo "$HOOK: fix it and run   git commit -e -F \"$(git rev-parse --git-path COMMIT_EDITMSG)\""
+  echo "$HOOK: (set a template once with   git config commit.template .gitmessage )"
+} >&2
+exit 1

@@ -1,0 +1,19 @@
+# Files the pre-commit hook may commit even when they are over 1 MiB. One shell glob per line (matched against the whole path; `*`
+# also matches `/`). Lines starting with # and empty lines are ignored. Keep this list short: add a pattern in its own commit, with a reason.
+
+# Screenshots and artwork of the documentation
+docs/assets/*.png
+docs/assets/*.jpg
+docs/assets/*.jpeg
+docs/assets/*.gif
+docs/assets/*.webp
+docs/assets/*.svg
+docs/assets/*.ico
+docs/assets/*.icns
+
+# Fonts
+*.ttf
+*.otf
+*.ttc
+*.woff
+*.woff2

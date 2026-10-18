@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# pre-push: the commits being pushed must follow Conventional Commits, then the same gate as CI's `check` job runs locally:
+#   cargo clippy --workspace --all-targets -- -D warnings      cargo test --workspace
+# Skip the two cargo steps (the message check still runs) with  SKIP_PREPUSH=1 git push ... ; skip everything with  git push --no-verify.
+# CI repeats all of it, so a skipped hook only moves the failure to the pull request.
+# Cargo runs with a throw-away HOME (the tests must never touch your real data); RUSTUP_HOME and CARGO_HOME keep pointing at the real
+# toolchain. Runs from the pre-commit framework too (it passes PRE_COMMIT_FROM_REF / PRE_COMMIT_TO_REF instead of standard input).
+HOOK=pre-push
+# shellcheck source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+cd "$ROOT" || exit 1
+remote=${1:-origin}
+zero=0000000000000000000000000000000000000000
+
+# ---- which commits are being pushed ----------------------------------------------------------------------------------------------
+ranges=()
+if [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+  if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && git rev-parse -q --verify "${PRE_COMMIT_FROM_REF}^{commit}" >/dev/null 2>&1; then
+    ranges+=("${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}")
+  else
+    ranges+=("${PRE_COMMIT_TO_REF} --not --remotes=$remote")
+  fi
+else
+  while read -r local_ref local_sha _ remote_sha; do
+    case $local_ref in refs/heads/*) ;; *) continue ;; esac              # tags and deletions are not linted
+    [ "$local_sha" != "$zero" ] || continue
+    if [ "$remote_sha" != "$zero" ] && git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+      ranges+=("$remote_sha..$local_sha")
+    else                                                                 # a new branch, or a remote tip we do not have
+      ranges+=("$local_sha --not --remotes=$remote")
+    fi
+  done
+fi
+
+# ---- 1. commit messages ----------------------------------------------------------------------------------------------------------
+rc=0
+if [ "${#ranges[@]}" = 0 ]; then say "no branch commits to check"; else
+  for r in "${ranges[@]}"; do
+    say "Conventional Commits check of the pushed commits ($r)"
+    "$ROOT/scripts/commit-lint.sh" --range "$r" --forbid-names || rc=1
+  done
+fi
+if [ "$rc" != 0 ]; then
+  echo "$HOOK: the push was NOT done. Reword with  git rebase -i <base>  (mark the commits r), or squash them:  git reset --soft <base> && git commit" >&2
+  exit 1
+fi
+
+# ---- 2. clippy and tests ---------------------------------------------------------------------------------------------------------
+if [ "${SKIP_PREPUSH:-0}" = 1 ]; then
+  say "SKIP_PREPUSH=1: clippy and tests skipped (CI will run them)"
+  exit 0
+fi
+if ! have cargo; then
+  echo "$HOOK: cargo not found; install Rust (https://rustup.rs) or push with SKIP_PREPUSH=1" >&2
+  exit 1
+fi
+export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
+export CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
+tmp_home=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-home.XXXXXX")
+trap 'rm -rf "$tmp_home"' EXIT
+say "cargo clippy --workspace --all-targets -- -D warnings"
+if ! HOME=$tmp_home cargo clippy --workspace --all-targets -- -D warnings; then
+  echo "$HOOK: clippy found problems: fix them (cargo clippy --fix) or push with SKIP_PREPUSH=1 to let CI judge" >&2
+  exit 1
+fi
+say "cargo test --workspace"
+if ! HOME=$tmp_home cargo test --workspace; then
+  echo "$HOOK: tests failed: fix them, or push with SKIP_PREPUSH=1 to let CI judge" >&2
+  exit 1
+fi
+say "all checks passed"

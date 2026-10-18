@@ -1,0 +1,32 @@
+# Optional: for people who use the pre-commit framework (https://pre-commit.com). Nothing here is required; the plain git hooks in
+# .githooks/ (installed with scripts/setup-hooks.sh) do the same without any tool. Use ONE of the two: the framework refuses to install
+# while core.hooksPath is set, so run  scripts/setup-hooks.sh --uninstall  first.
+#
+#   pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+#
+# Every entry below only calls the scripts of this repository, so the checks are identical to the plain hooks and to CI.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: ashdash-pre-commit
+        name: staged files - rustfmt, shell and workflow lint, sizes, whitespace, secrets, names
+        entry: .githooks/pre-commit
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: ashdash-commit-msg
+        name: Conventional Commits message
+        entry: scripts/commit-lint.sh --forbid-names --file
+        language: script
+        stages: [commit-msg]
+
+      - id: ashdash-pre-push
+        name: commit messages, clippy -D warnings, tests (SKIP_PREPUSH=1 skips the cargo steps)
+        entry: .githooks/pre-push
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
