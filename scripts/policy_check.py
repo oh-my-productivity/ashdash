@@ -164,13 +164,15 @@ def rust_functions(code, skel):
         end = match_brace(skel, body)
         # attributes and doc comments directly above: walk back over attribute blocks, qualifiers and blank space
         head = m.start()
-        pre = skel[:head]
+        base = max(0, head - 6000)            # a window: slicing the whole prefix for every function would be quadratic
+        pre = skel[base:head]
         qual = re.search(r"((?:\b(?:pub(?:\([^)]*\))?|async|unsafe|const|extern(?:\s+\"[^\"]*\")?)\s+)*)$", pre)
         top = head - (len(qual.group(1)) if qual else 0)
         attrs = []
         pos = top
         while True:
-            seg = skel[:pos].rstrip()
+            seg = skel[max(0, pos - 3000):pos].rstrip()
+            off = max(0, pos - 3000)
             if seg.endswith("]"):
                 # find the matching '[' backwards, then the '#'
                 depth, q = 0, len(seg) - 1
@@ -185,8 +187,8 @@ def rust_functions(code, skel):
                 h = seg.rfind("#", 0, q + 1)
                 if q < 0 or h < 0 or seg[h + 1:q].strip() not in ("", "!"):
                     break
-                attrs.append(code[h:len(seg)])
-                pos = h
+                attrs.append(code[off + h:off + len(seg)])
+                pos = off + h
             else:
                 break
         out.append({"name": m.group(1), "start": top, "attr_top": pos, "body_start": body, "body_end": end, "attrs": attrs})
@@ -512,7 +514,7 @@ def check_shell_file(root, rel, findings, mark_files):
 
         def report(rule, message):
             if rule in file_allow:
-                Allowed.used.append((rel, no, rule, "file-wide opt-out"))
+                Allowed.used.append((rel, 1, rule, "file-wide opt-out"))
                 return
             why = allowed_at(line_allow, lines, no, rule, "#")
             if why:

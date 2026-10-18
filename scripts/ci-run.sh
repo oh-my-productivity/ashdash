@@ -10,9 +10,10 @@
 #   smoke         the GUI smoke test on macOS 15 and 26 (e2e.yml)
 #   checklist     the full scripted QA checklist on macOS 15 and 26 (e2e.yml; --sections "s31 s32" runs some of it)
 #   screenshots   the preferences window, every page, dark and light, as an artifact (e2e.yml)
+#   focus         the focus regression checks: Quick Look, panel, click, idle (e2e.yml)
 #   x86-64        tests, native build and GUI smoke test on the Intel image (e2e.yml)
 #   bundle        the universal .app and the DMG, verified (e2e.yml)
-#   e2e           smoke, checklist, screenshots, x86-64 and bundle together (e2e.yml)
+#   e2e           smoke, checklist, screenshots, focus, x86-64 and bundle together (e2e.yml)
 #   ignored       the #[ignore = "ci: ..."] Rust tests and the full fuzz counts, in release mode (stress.yml)
 #   timing        the formerly clock-dependent tests, many times, under CPU load (stress.yml; --runs N, --slow-runs N)
 #   perf-gui      start-up, hotkey latency, idle CPU and memory of the real app (stress.yml)
@@ -64,12 +65,12 @@ done
 # suite -> workflow file and its `suite` input ("" = the workflow has none)
 case $suite in
   ci) workflow=ci.yml; wf_suite="" ;;
-  smoke | checklist | screenshots | x86-64 | bundle) workflow=e2e.yml; wf_suite=$suite ;;
+  smoke | checklist | screenshots | focus | x86-64 | bundle) workflow=e2e.yml; wf_suite=$suite ;;
   e2e) workflow=e2e.yml; wf_suite=all ;;
   ignored | timing | perf-gui | bench | test-times) workflow=stress.yml; wf_suite=$suite ;;
   stress) workflow=stress.yml; wf_suite=all ;;
   soak) workflow=soak.yml; wf_suite="" ;;
-  *) die "unknown suite '$suite'. Suites: ci smoke checklist screenshots x86-64 bundle e2e ignored timing perf-gui bench test-times stress soak" ;;
+  *) die "unknown suite '$suite'. Suites: ci smoke checklist screenshots focus x86-64 bundle e2e ignored timing perf-gui bench test-times stress soak" ;;
 esac
 
 # the branch to run

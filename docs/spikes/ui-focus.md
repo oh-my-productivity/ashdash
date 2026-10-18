@@ -69,7 +69,7 @@ Not verified: full-screen apps, multiple physical monitors, release build timing
 
 ## Launcher stays on screen after another app is activated (fixed)
 
-Symptom (QA 3.4.1, `tests/lab/qa/checklist.sh` s34): after `set frontmost of process "Finder" to true` the launcher stayed
+Symptom (QA 3.4.1, `tests/e2e/qa/checklist.sh` s34): after `set frontmost of process "Finder" to true` the launcher stayed
 up in 3 of 5 trials; Cmd+Tab hid it every time.
 
 **Root cause.** The hide decision lived in `LauncherApp::ui` and read: `focused == Some(false) && shown_at.elapsed() > 400 ms`.
@@ -82,7 +82,7 @@ long after `show()` the other app took the focus: an `osascript` activation star
 340 ms (inside the grace), a Cmd+Tab typed by a script about 420-490 ms (outside), which is the "3 of 5 / 5 of 5" split.
 A user who clicks another app within 400 ms of showing the launcher hit it as well.
 
-Evidence (lab VM, release bundle, `ASHDASH_TRACE=1`, `tests/lab/focus/probe.sh`; the log of one failing trial, with the
+Evidence (lab VM, release bundle, `ASHDASH_TRACE=1`, `tests/e2e/focus/probe.sh`; the log of one failing trial, with the
 per-frame lines added by the fix to show the missing frame):
 
 ```
@@ -127,8 +127,8 @@ Verification in the lab (macOS 15.7.7 guest, bundle built with the fix, one VM a
 | idle CPU, shown and focused, 30 s | 0.34 CPU-s | 0.33-0.40 CPU-s (caret blink; same as before, the extra trace line only costs when `ASHDASH_TRACE` is set) |
 | `checklist.sh s33 w45` (keys, Large Type, held Return, import prompt, URL consent) | - | no new failures; 3.3.3b (Tab on an app row) is fixed separately |
 
-Re-run: `tests/lab/lab-run <vm> -- bash tests/lab/focus/probe.sh --trials 20` (`--after-show S`, `--race MS`, `--only act|tab`),
-`bash tests/lab/focus/regress.sh [--only ql|panel|click|idle]`; both build `Ashdash.app` into `~/focus-dist` (`FOCUS_DIST`).
+Re-run: `tests/e2e/lab-run <vm> -- bash tests/e2e/focus/probe.sh --trials 20` (`--after-show S`, `--race MS`, `--only act|tab`),
+`bash tests/e2e/focus/regress.sh [--only ql|panel|click|idle]`; both build `Ashdash.app` into `~/focus-dist` (`FOCUS_DIST`).
 `ASHDASH_TRACE=1` now also prints one `frame focused=... +Nms after show` line per drawn frame while the launcher is shown.
 
 Lab notes from this work: (1) in one clone `tcc-grant.sh` was not enough for System Events keystrokes (`1002 not allowed to send

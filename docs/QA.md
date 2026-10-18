@@ -20,7 +20,7 @@ see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live 
 | `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON | ~3 s |
 | `ASHDASH_COMPAT_TEMPLATES=<folder> cargo test -p ashdash-core --test 'compat_*' -- --nocapture` | imports every workflow package in the folder named by `ASHDASH_COMPAT_TEMPLATES` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes, with a message) when the variable is unset. Nothing from that folder is copied into the repository | ~1 s |
 
-Environment variables: `PROPTEST_CASES=N` scales the fuzz suites (try 20000 before a release);
+Environment variables: `PROPTEST_CASES=N` sets the case count of every fuzz property (CI runs the full counts, `ASHDASH_FUZZ_FULL=1`; docs/TESTING.md);
 `RUST_BACKTRACE=1` as usual.
 
 Rules the suites follow (keep them when adding tests): everything lives in a unique temp dir
@@ -72,7 +72,7 @@ It shows windows and drives System Events on the **host desktop**, so it takes t
 screenshots in a temp folder that you look at and delete. Run it from a clean desktop session, not from CI. GUI checks belong in the VM lab
 (`docs/LAB.md`) instead: the script runs unchanged inside a clone (`lab-run "$vm" -- bash scripts/qa/ui-glue-smoke.sh <bare binary>`).
 
-### 2.1 Lab QA scripts (`tests/lab/qa/`)
+### 2.1 Lab QA scripts (`tests/e2e/qa/`)
 
 The manual checklist below is scripted as far as a VM allows. Everything runs **inside a lab VM**, never on the host desktop; screenshots are window-only
 (`screencapture -l`), read back by OCR (`qa/ocr.swift`, Vision) and by eye, and are not committed.
@@ -87,17 +87,17 @@ The manual checklist below is scripted as far as a VM allows. Everything runs **
 | `qa/report.py` | merges result files into the tables of a run document |
 | `qa/lib.sh`, `qa/qa-tool.swift`, `qa/ocr.swift`, `qa/fixtures.py` | helpers: dialogs read through the accessibility tree, window listing, held keys with the auto-repeat flag, pasteboard with the nspasteboard.org marker types, a seeded data folder (workflows, snippets, files) |
 
-Run: `tests/lab/lab-up --id qa --max-age 14400`, then `tests/lab/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/lab/qa/pkg-install.sh`
-(and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/lab/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
+Run: `tests/e2e/lab-up --id qa --max-age 14400`, then `tests/e2e/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/e2e/qa/pkg-install.sh`
+(and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/e2e/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
 display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
 The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs; fixed afterwards, see 3.2.4c), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
 
 ### 2.2 The same scripts in CI
 
-`tests/lab/ci/run-smoke.sh`, `run-checklist.sh` and `run-soak.sh` run `smoke.sh`, `qa/checklist.sh` and `qa/soak.sh` directly on a
+`tests/e2e/ci/run-smoke.sh`, `run-checklist.sh` and `run-soak.sh` run `smoke.sh`, `qa/checklist.sh` and `qa/soak.sh` directly on a
 GitHub-hosted macOS runner (no `tart`, no `ssh`): the runner is an Apple virtual machine with a logged-in GUI session, SIP off and
 passwordless sudo, i.e. the same kind of machine as a lab clone. They refuse to run anywhere else (they take over the keyboard, screen and
-global hotkey). Checklist rows that cannot work on a hosted runner are listed with the reason in `tests/lab/ci/blocked.tsv` and are
+global hotkey). Checklist rows that cannot work on a hosted runner are listed with the reason in `tests/e2e/ci/blocked.tsv` and are
 reported as BLOCKED, never as PASS; any other FAIL fails the job. The smoke test runs on every push to `main`, the checklist and the soak
 every night (`.github/workflows/nightly.yml`). Differences from the lab VM, how to reproduce a failure and what still needs a physical Mac:
 [CI.md](CI.md).
@@ -196,7 +196,7 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 ### 3.10 Preferences window and live reload
 - [ ] Menu-bar item > Preferences..., `ashdash prefs` and `open ashdash://prefs` open one window with its own title bar (drag it; the traffic lights stay) and a sidebar (General, Search, Clipboard, Snippets, Workflows, Permissions, About; Cmd+1...7 switch, Cmd+K focuses "Go to a setting..."; dark and light follow the system); a second request brings it forward instead of opening another. The launcher hotkey still behaves as before while the window is open.
 - [ ] General (default 760x560 window, attention card shown: no scrolling; at 640x480 nothing is cut off, it may scroll): the shortcut is one box. Click it, or Tab to it and press Return or Space: orange outline, "Press the new shortcut...", "was ..." at the right; Esc cancels; Backspace sets the default; a bare letter shows the refusal and the red row outline; a system shortcut such as Cmd+Space is warned about; pressing Cmd+2 while recording records it and does not switch pages. Launch at login (bundle only), theme: dropdown and "Import theme..." only (no path field; dropping a file on the window still imports), results per search, switch learning off (and check that `usage.json` is still there), press "Forget usage..." (the file is emptied).
-- [ ] Permissions (Cmd+6): Accessibility, Automation (System Events, Finder, Terminal) and Full Disk Access each show a light and one of Granted / Not granted / Asked on first use / Unknown. **No macOS prompt may appear while the page is open or on Cmd+R** (watch for a dialog; this is the point of the check). Revoke Full Disk Access for Ashdash in System Settings, restart, with Safari bookmarks on: General shows the "Full Disk Access not granted" card, the DISK ACCESS light, and Return (nothing focused) or "Fix..." opens this page; "Open System Settings" opens the matching pane; after granting and restarting Ashdash the card and light are gone. Needs a real Mac with a signed or ad-hoc bundle; the VM lab only exercises the probes (`docs/design/settings-v4/tools/lab-shots.sh`).
+- [ ] Permissions (Cmd+6): Accessibility, Automation (System Events, Finder, Terminal) and Full Disk Access each show a light and one of Granted / Not granted / Asked on first use / Unknown. **No macOS prompt may appear while the page is open or on Cmd+R** (watch for a dialog; this is the point of the check). Revoke Full Disk Access for Ashdash in System Settings, restart, with Safari bookmarks on: General shows the "Full Disk Access not granted" card, the DISK ACCESS light, and Return (nothing focused) or "Fix..." opens this page; "Open System Settings" opens the matching pane; after granting and restarting Ashdash the card and light are gone. Needs a real Mac with a signed or ad-hoc bundle; CI only exercises the probes (`tests/e2e/screenshots/prefs-shots.sh`).
 - [ ] Features: switch `calc` off and on; add a web search with a bad URL (`file:///x/{query}`) and see it refused; add a good one and use its keyword at once; change clipboard retention and an ignored app; add/edit/delete a snippet.
 - [ ] Workflows: enable/disable a workflow (its keyword appears/disappears within a second), "Configure..." saves a value, "What can it do?" shows the summary, Remove asks twice.
 - [ ] Break `config.json` by hand (`echo '{' > ...`): the launcher keeps working with the previous settings, one notification appears, the preferences window shows the problem, and fixing the file clears it. Change `app_dirs`: the window says a restart is needed.

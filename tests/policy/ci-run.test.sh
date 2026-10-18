@@ -28,6 +28,7 @@ expect_line "ci" "gh workflow run ci.yml --ref feature/x" ci --ref feature/x
 expect_line "smoke" "gh workflow run e2e.yml --ref feature/x -f suite=smoke" smoke --ref feature/x
 expect_line "checklist with sections" "gh workflow run e2e.yml --ref feature/x -f suite=checklist -f sections=s31 s32" checklist --ref feature/x --sections "s31 s32"
 expect_line "screenshots" "gh workflow run e2e.yml --ref feature/x -f suite=screenshots" screenshots --ref feature/x
+expect_line "focus" "gh workflow run e2e.yml --ref feature/x -f suite=focus" focus --ref feature/x
 expect_line "x86-64" "gh workflow run e2e.yml --ref feature/x -f suite=x86-64" x86-64 --ref feature/x
 expect_line "bundle" "gh workflow run e2e.yml --ref feature/x -f suite=bundle" bundle --ref feature/x
 expect_line "all of e2e" "gh workflow run e2e.yml --ref feature/x -f suite=all" e2e --ref feature/x
@@ -71,7 +72,7 @@ refuses "a branch name that looks like an option" "unknown option" smoke --ref=-
 refuses "an input without a value" "needs name=value" smoke --ref feature/x -f novalue
 
 echo "== the script and the workflows agree on the suites"
-for pair in "e2e.yml:smoke checklist screenshots x86-64 bundle all" "stress.yml:ignored timing perf-gui bench test-times all"; do
+for pair in "e2e.yml:smoke checklist screenshots focus x86-64 bundle all" "stress.yml:ignored timing perf-gui bench test-times all"; do
   wf=${pair%%:*}; file="$repo/.github/workflows/$wf"
   [ -f "$file" ] || { bad "$wf is missing"; continue; }
   for s in ${pair#*:}; do

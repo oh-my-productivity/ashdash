@@ -68,7 +68,7 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
   the packaging inputs and lint every shell script and workflow. Pushes to `main` also run the GUI smoke test on macOS 15 and 26, the
   tests on Intel and a universal build; a nightly workflow runs the scripted QA checklist and a soak. What runs where, and how to
   reproduce a CI failure locally, is in [docs/CI.md](docs/CI.md). Workflows pin every action by commit SHA; use
-  `tests/lab/ci/lint.sh` (shellcheck and actionlint) after changing a script or a workflow.
+  `tests/e2e/ci/lint.sh` (shellcheck and actionlint) after changing a script or a workflow.
 * Risky areas (workflow execution, import, anything that runs processes or touches the clipboard) get a behavioural code review
   before merging; say in the pull request what could go wrong.
 * Merge hot spots where concurrent branches collide: `crates/core/src/engine.rs` (its test module in particular),

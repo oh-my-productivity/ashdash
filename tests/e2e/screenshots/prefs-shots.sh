@@ -163,4 +163,4 @@ if [ "$SIZES" != "" ]; then
   SIZE=760x560; PERMS="accessibility=denied,automation=ask,fda=denied"
   for THEME in $THEMES; do launch; cmd "${DIGIT[6]}" 1.5; shot "permissions-mixed"; done
 fi
-log done
+log "done"

@@ -22,12 +22,12 @@ Required status checks on `main`: `check` and `deny`.
   [Timing-sensitive tests](#timing-sensitive-tests). Not a required status check.
 * **deny** (ubuntu): `cargo deny check licenses bans sources` (`deny.toml`). Advisories are deliberately not part of pull requests: a new
   RustSec entry for a crate a change does not touch would turn every pull request red. They run weekly in `advisories.yml`.
-* **lab-scripts** (macos-15): `tests/lab/test/run-tests.sh`, the host tests of the lab scripts against a fake `tart` and `ssh`: slot
-  semaphore, `lab-with-vm`, the guards of `tests/lab/guest/tcc-grant.sh` (including the CI mode) and of the CI wrappers, `finalize.py`.
-* **packaging** (macos-15): `packaging/selftest.sh`, `scripts/gen-notice.py --check` (NOTICE is up to date), and `tests/lab/ci/lint.sh`:
+* **lab-scripts** (macos-15): `tests/e2e/test/run-tests.sh`, the host tests of the lab scripts against a fake `tart` and `ssh`: slot
+  semaphore, `lab-with-vm`, the guards of `tests/e2e/guest/tcc-grant.sh` (including the CI mode) and of the CI wrappers, `finalize.py`.
+* **packaging** (macos-15): `packaging/selftest.sh`, `scripts/gen-notice.py --check` (NOTICE is up to date), and `tests/e2e/ci/lint.sh`:
   shellcheck (warnings and errors) on every shell script in the repository and actionlint on the workflows. Both linters are downloaded as
   pinned releases and verified against a SHA-256 in the workflow.
-* **gui-smoke** (macos-15, macos-26): `tests/lab/ci/run-smoke.sh` = the lab's `tests/lab/smoke.sh --quick` on the runner: debug build, native
+* **gui-smoke** (macos-15, macos-26): `tests/e2e/ci/run-smoke.sh` = the lab's `tests/e2e/smoke.sh --quick` on the runner: debug build, native
   `Ashdash.app` with `packaging/build-app.sh`, launch in the GUI session, `ashdash show/search/query`, the `ashdash://` scheme, the global
   hotkey Option+Shift+Space through System Events (the window must toggle), window state read back as text, a screenshot, login item
   enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it).
@@ -36,13 +36,13 @@ Required status checks on `main`: `check` and `deny`.
   cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when the label
   stops working.
 * **bundle** (macos-15): `packaging/build-app.sh` (universal arm64 + x86_64, ad-hoc signed) and `packaging/make-dmg.sh`, then
-  `tests/lab/ci/verify-bundle.sh`: both architectures present, `codesign --verify --deep --strict`, `plutil -lint`, the DMG checksum and
+  `tests/e2e/ci/verify-bundle.sh`: both architectures present, `codesign --verify --deep --strict`, `plutil -lint`, the DMG checksum and
   `hdiutil verify`, the app inside the mounted image, and the bundled binary starts. The DMG and its checksum are uploaded as a workflow
   artifact for 7 days (not a release).
-* **checklist** (nightly): `tests/lab/ci/run-checklist.sh` = `qa/prep.sh` (grants, native bundle, install to `/Applications`) +
+* **checklist** (nightly): `tests/e2e/ci/run-checklist.sh` = `qa/prep.sh` (grants, native bundle, install to `/Applications`) +
   `qa/checklist.sh` (all sections: hotkey and window, search, keys, focus, clipboard and snippets, workflows, permissions, preferences,
-  actions panel, measurements, the later behaviours) + `tests/lab/ci/finalize.py`. About 140 rows; a run takes about 22 minutes.
-* **soak** (nightly): `tests/lab/ci/run-soak.sh` = `qa/soak.sh` for 7200 s (the 2-hour version of the lab): show, type, hide every 30 s,
+  actions panel, measurements, the later behaviours) + `tests/e2e/ci/finalize.py`. About 140 rows; a run takes about 22 minutes.
+* **soak** (nightly): `tests/e2e/ci/run-soak.sh` = `qa/soak.sh` for 7200 s (the 2-hour version of the lab): show, type, hide every 30 s,
   sample RSS, footprint, CPU time, threads and open files every 5 minutes, count crash reports, check the hotkey at the end. The dispatch
   input `soak_seconds` shortens it. A hosted job may run for up to 6 hours; the job limit here is 5.
 
@@ -107,7 +107,7 @@ A spike on 2026-10-18 (all three images, same commit) established that a hosted 
 | Launch the bundle in the GUI session | yes, window visible | yes | yes |
 | Global hotkey through System Events | toggles the launcher (1 window -> 0) | same | same |
 | `ashdash://` through `open` | handler registered with `lsregister`, `open` returns 0 | same | same |
-| `tests/lab/guest/tcc-grant.sh` (CI mode) | accepted (VirtualMac, user `runner`) | accepted | refused: the model is not `VirtualMac*`; not needed, the grants exist already |
+| `tests/e2e/guest/tcc-grant.sh` (CI mode) | accepted (VirtualMac, user `runner`) | accepted | refused: the model is not `VirtualMac*`; not needed, the grants exist already |
 | Spotlight | on, indexes slowly | on | on |
 
 Differences from the lab VM (macOS 15 on Tart) that matter for results:
@@ -128,7 +128,7 @@ Differences from the lab VM (macOS 15 on Tart) that matter for results:
 
 The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`) refuse to run unless
 `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, the account is `runner` and it owns the console. `tcc-grant.sh` additionally
-requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/lab/test/run-tests.sh`).
+requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/e2e/test/run-tests.sh`).
 
 ## Timing-sensitive tests
 
@@ -157,9 +157,9 @@ saturated, on macOS 15 (arm64) and macOS 15 Intel, and fails if a single run fai
 developer machine: anything that saturates the CPUs runs in the pipeline. `target_ref` points the same script at older code, to prove that
 a test failed before a fix. Add new timing-sensitive tests to the list in the script.
 
-## Rows that differ or cannot run: `tests/lab/ci/blocked.tsv`
+## Rows that differ or cannot run: `tests/e2e/ci/blocked.tsv`
 
-`finalize.py` turns a **FAIL** into **BLOCKED** with the reason only for rows listed in `tests/lab/ci/blocked.tsv` (optionally for one
+`finalize.py` turns a **FAIL** into **BLOCKED** with the reason only for rows listed in `tests/e2e/ci/blocked.tsv` (optionally for one
 image); a PASS stays a PASS and every other FAIL fails the job. The BLOCKED and NEEDS-OWNER rows that `checklist.sh` itself reports are the
 same ones as in the lab (no second display, display sleep locks the session, restart/logout/lock would end the session, no network switch,
 Full Disk Access is not enforced with SIP off, nothing to type with an IME, ...).
@@ -170,7 +170,7 @@ job, and one that passes the second time is listed in the job summary as flaky (
 bring-up, all on macOS 26 and all passing on the second pass or in the next run: 3.2.9b (twice), 3.3.6b and 3.5.5b (once each; the Large
 Type check now waits up to 5 s for the window to go away).
 
-`tests/lab/ci/blocked.tsv` is empty at the moment: every row that failed on a hosted runner while this was set up was a real bug, now
+`tests/e2e/ci/blocked.tsv` is empty at the moment: every row that failed on a hosted runner while this was set up was a real bug, now
 fixed, or flaky. Add a row there (with the reason and, if it applies to one image only, the image) when a check needs something a hosted
 runner cannot give.
 
@@ -218,17 +218,17 @@ Measured on the proof runs of 2026-10-18 (warm `rust-cache`; a cold cache adds 3
    post-process the results.
 
    ```sh
-   vm=$(tests/lab/lab-up --id repro --max-age 14400 | cut -d' ' -f1)
-   tests/lab/lab-run "$vm" -- bash tests/lab/smoke.sh --quick                 # what gui-smoke runs
-   tests/lab/lab-run "$vm" -- bash tests/lab/qa/prep.sh                       # what run-checklist.sh runs, step 1
-   tests/lab/lab-run "$vm" -- bash tests/lab/qa/checklist.sh s31 s32          # a few sections only
-   tests/lab/lab-down "$vm"
+   vm=$(tests/e2e/lab-up --id repro --max-age 14400 | cut -d' ' -f1)
+   tests/e2e/lab-run "$vm" -- bash tests/e2e/smoke.sh --quick                 # what gui-smoke runs
+   tests/e2e/lab-run "$vm" -- bash tests/e2e/qa/prep.sh                       # what run-checklist.sh runs, step 1
+   tests/e2e/lab-run "$vm" -- bash tests/e2e/qa/checklist.sh s31 s32          # a few sections only
+   tests/e2e/lab-down "$vm"
    ```
 3. `workflow_dispatch` runs a workflow from any branch of this repository: `gh workflow run ci.yml --ref <branch>`. (A *new* workflow file
    can only be dispatched once it exists on `main`; until then trigger it with a pull request or a temporary `push` trigger on a scratch branch.)
    `nightly.yml` takes `soak_seconds` and `sections` as inputs: `gh workflow run nightly.yml -f soak_seconds=600 -f sections="s31 s32"`.
 4. The hosted-runner specifics (screen size, Spotlight, image content) cannot be reproduced in the Tart lab. To see the real thing, dispatch
-   the workflow, or run `tests/lab/ci/lint.sh` and `tests/lab/test/run-tests.sh` on your Mac for the parts that need no GUI.
+   the workflow, or run `tests/e2e/ci/lint.sh` and `tests/e2e/test/run-tests.sh` on your Mac for the parts that need no GUI.
 
 ## What needs a physical Mac
 

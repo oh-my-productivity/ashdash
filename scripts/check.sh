@@ -29,8 +29,8 @@ report() { # report: the table of stage times
   local i total_ms=$(( $(now_ms) - t_start ))
   echo
   echo "== stage times"
-  for i in "${!names[@]}"; do printf '  %-8s %6.1f s\n' "${names[$i]}" "$(awk -v ms="${times[$i]}" 'BEGIN { print ms / 1000 }')"; done
-  printf '  %-8s %6.1f s   (budget %s s, target %s s)\n' total "$(awk -v ms="$total_ms" 'BEGIN { print ms / 1000 }')" "$budget" "$TARGET"
+  for i in "${!names[@]}"; do printf '  %-14s %6.1f s\n' "${names[$i]}" "$(awk -v ms="${times[$i]}" 'BEGIN { print ms / 1000 }')"; done
+  printf '  %-14s %6.1f s   (budget %s s, target %s s)\n' total "$(awk -v ms="$total_ms" 'BEGIN { print ms / 1000 }')" "$budget" "$TARGET"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
       echo "### scripts/check.sh stage times"

@@ -72,7 +72,7 @@ rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
 
 echo "== CI wrappers (tests/e2e/ci)"
 ci="$e2e/ci"
-for f in common.sh run-smoke.sh run-checklist.sh run-soak.sh run-screenshots.sh verify-bundle.sh; do check "ci/$f parses" bash -n "$ci/$f"; done
+for f in common.sh run-smoke.sh run-checklist.sh run-soak.sh run-screenshots.sh run-focus.sh run-perf-gui.sh verify-bundle.sh; do check "ci/$f parses" bash -n "$ci/$f"; done
 # They drive the real keyboard and screen: outside a hosted runner they must refuse before doing anything.
 # (On a real runner these variables are set, so the tests clear them; the "spoofed" case fakes the account instead.)
 for w in run-smoke.sh run-checklist.sh run-soak.sh; do

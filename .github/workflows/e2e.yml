@@ -8,6 +8,7 @@ name: e2e
 #                 repository and every push to main, so a branch is validated before it is merged.
 #   checklist     the full scripted QA checklist (tests/e2e/qa/checklist.sh) on macOS 15 and 26. Nightly and on demand.
 #   screenshots   every page of the preferences window, dark and light, as an artifact (7 days). On pushes to main and on demand.
+#   focus         the focus regression checks (Quick Look, panel, click, idle; tests/e2e/focus). On demand.
 #   x86-64        the last Intel image: tests, a native build and the GUI smoke test. On pushes to main and on demand.
 #   bundle        the universal .app and the DMG, ad-hoc signed and verified (7 days). On pushes to main and on demand.
 # Dispatch inputs: `suite` (one of the above or `all`), `ref` (branch, tag or SHA to test; empty = the dispatched ref), `sections`
@@ -33,6 +34,7 @@ on:
           - smoke
           - checklist
           - screenshots
+          - focus
           - x86-64
           - bundle
           - all
@@ -151,6 +153,31 @@ jobs:
         with:
           name: preferences-screenshots
           path: ${{ runner.temp }}/ashdash-ci/screenshots
+          retention-days: 7
+          if-no-files-found: ignore
+
+  focus:
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["focus","all"]'), inputs.suite)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: focus
+      - run: bash tests/e2e/ci/run-focus.sh regress
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: focus
+          path: ${{ runner.temp }}/ashdash-ci/focus
           retention-days: 7
           if-no-files-found: ignore
 
