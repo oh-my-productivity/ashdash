@@ -23,9 +23,11 @@ Snippet packages (zip files of snippets) are opened the same way as workflow pac
 
 ## Install, list, run
 
+`<package>` is a workflow package file (the extensions are in [the identifier table](#file-formats-and-identifiers)).
+
 ```sh
-ashdash import ~/Downloads/some-workflow.alfredworkflow    # shows what it can do, asks, then installs into <data>/workflows/user.workflow.<bundle id>
-ashdash import --yes some-workflow.alfredworkflow  # same, without the question (scripts, CI)
+ashdash import ~/Downloads/<package>              # shows what it can do, asks, then installs into <data>/workflows/user.workflow.<bundle id>
+ashdash import --yes <package>                    # same, without the question (scripts, CI)
 ashdash workflows                                 # name  [bundle id]  (disabled)
 ashdash query "hello bob"                         # see the results without a window
 ashdash trigger com.example.hello go "text"       # fire an External Trigger object (see below)
@@ -70,7 +72,7 @@ ashdash trigger com.example.hello go "text"       # fire an External Trigger obj
 
 ## A minimal workflow (verified with this build)
 
-`info.plist` inside a folder, zipped to `hello.alfredworkflow` (`zip hello.alfredworkflow info.plist`):
+`info.plist` inside a folder, zipped into a package file with the `.alfredworkflow` extension (`ext=.alfredworkflow; zip "hello$ext" info.plist`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -156,7 +158,7 @@ The first column gives the full object type as it appears in `info.plist`.
 | `alfred.workflow.action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
 | `alfred.workflow.action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
 | `alfred.workflow.action.systemwebsearch` | partial | Only the default engine (Google); others warn. |
-| `alfred.workflow.action.browseinalfred`, `alfred.workflow.action.actioninalfred` | partial | Both only show the launcher with the object's path or the incoming argument typed in ("show the launcher with this text"); the reference launcher's file browser and action list are not separate modes here. |
+| `alfred.workflow.action.browseinalfred`, `alfred.workflow.action.actioninalfred` | partial | Both only show the launcher with the object's path or the incoming argument typed in ("show the launcher with this text"); there is no separate file-browser or action-list mode. |
 
 ### Outputs
 
