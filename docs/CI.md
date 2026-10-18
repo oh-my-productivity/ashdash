@@ -57,7 +57,7 @@ Third-party actions are pinned by commit SHA; the comment on each line names the
 | `actions/download-artifact` | v8.0.2 | `9000827ccba6bdab643e8b6fd33ac0654aef8333` |
 | `Swatinem/rust-cache` | v2.9.2 | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` |
 | `EmbarkStudios/cargo-deny-action` | v2.1.1 | `3c6349835b2b7b196a839186cb8b78e02f7b5f25` |
-| `dtolnay/rust-toolchain` | branch `stable` | `b725eda525362e7cf34af9a7243cac1e3f01a7ec` (the project publishes no release tags for it; Dependabot moves the SHA) |
+| `dtolnay/rust-toolchain` | branch `stable` | `b725eda525362e7cf34af9a7243cac1e3f01a7ec` (the head of the action's `stable` branch on 2026-10-16: it tracks the toolchain by branch, its only release tag is from 2022) |
 | shellcheck (downloaded) | v0.11.0 | tarball SHA-256 in `ci.yml` |
 | actionlint (downloaded) | v1.7.12 | tarball SHA-256 in `ci.yml` |
 
