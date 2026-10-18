@@ -271,6 +271,11 @@ OUT=$(g push -u origin second 2>&1); expect_rc 0 "a new branch: only commits not
 g checkout -q -b third main
 stage third.md 'x'; try 'Third thing' --no-verify
 OUT=$(g push -u origin third 2>&1); RC=$?; expect_rc 1 "a new branch with a bad commit is refused" "$RC" "$OUT"
+# a brand-new remote (a fork you just added) has no remote-tracking branches: the old history must not be judged
+git init -q --bare "$TMP/fork.git"; g remote add fork "$TMP/fork.git"
+g checkout -q -b fourth main
+stage fourth.md 'x'; try 'fix: fourth'
+OUT=$(g push -u fork fourth 2>&1); expect_rc 0 "a first push to a new remote judges only commits no remote has" "$?" "$OUT"
 g tag v9.9.9 main
 OUT=$(g push origin v9.9.9 2>&1); expect_rc 0 "pushing a tag is not linted" "$?" "$OUT"
 OUT=$(g push origin :second 2>&1); expect_rc 0 "deleting a branch is not linted" "$?" "$OUT"

@@ -9,7 +9,6 @@ HOOK=pre-push
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$ROOT" || exit 1
-remote=${1:-origin}
 zero=0000000000000000000000000000000000000000
 
 # ---- which commits are being pushed ----------------------------------------------------------------------------------------------
@@ -18,7 +17,7 @@ if [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
   if [ -n "${PRE_COMMIT_FROM_REF:-}" ] && git rev-parse -q --verify "${PRE_COMMIT_FROM_REF}^{commit}" >/dev/null 2>&1; then
     ranges+=("${PRE_COMMIT_FROM_REF}..${PRE_COMMIT_TO_REF}")
   else
-    ranges+=("${PRE_COMMIT_TO_REF} --not --remotes=$remote")
+    ranges+=("${PRE_COMMIT_TO_REF} --not --remotes")
   fi
 else
   while read -r local_ref local_sha _ remote_sha; do
@@ -27,7 +26,7 @@ else
     if [ "$remote_sha" != "$zero" ] && git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
       ranges+=("$remote_sha..$local_sha")
     else                                                                 # a new branch, or a remote tip we do not have
-      ranges+=("$local_sha --not --remotes=$remote")
+      ranges+=("$local_sha --not --remotes")
     fi
   done
 fi
