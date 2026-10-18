@@ -46,7 +46,7 @@ HOME=$(mktemp -d) target/debug/ashdash query "saf"
 
 `ashdash` with no arguments starts the real launcher: it registers a **global hotkey**, a control socket and a status item,
 and it reads your clipboard. Do that with a temporary `HOME`, never while another instance is running, and not in an environment
-shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual checklist and `scripts/qa/gui-smoke.sh`.
+shared with other people or agents. See [docs/QA.md](docs/QA.md) for the checklist; the scripted GUI tests run on CI only (next section).
 
 ## Workflow: branches, worktrees, review
 
@@ -63,12 +63,13 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
 * Commit small steps with a message that says why, written as a [Conventional Commit](#commit-messages-and-pull-requests)
   (`type(scope): subject`). Do not `git push --force` to shared branches and do not rewrite history that
   others have fetched.
-* **Gate for every change:** `scripts/check.sh` must print `check.sh: OK`. CI (`.github/workflows/ci.yml`) runs it on macOS
-  (job `check`), `cargo deny` runs in the job `deny` ([below](#dependencies-and-licences)), and two more jobs test the lab scripts and
-  the packaging inputs and lint every shell script and workflow. Pushes to `main` also run the GUI smoke test on macOS 15 and 26, the
-  tests on Intel and a universal build; a nightly workflow runs the scripted QA checklist and a soak. What runs where, and how to
-  reproduce a CI failure locally, is in [docs/CI.md](docs/CI.md). Workflows pin every action by commit SHA; use
-  `tests/e2e/ci/lint.sh` (shellcheck and actionlint) after changing a script or a workflow.
+* **Gate for every change:** `scripts/check.sh` must print `check.sh: OK`, within its 3-minute budget (about a minute with a warm cache).
+  CI (`.github/workflows/ci.yml`) runs it on macOS (job `check`), `cargo deny` runs in the job `deny`
+  ([below](#dependencies-and-licences)), and further jobs check the commit messages, the git hooks, the [testing policy](docs/TESTING.md),
+  the packaging inputs, and lint every shell script and workflow. Pull requests from this repository also run the GUI smoke test on
+  macOS 15 and 26; pushes to `main` the tests on Intel and a universal build; nightly workflows run the scripted QA checklist, the soak, the
+  stress and performance suites. What runs where is in [docs/CI.md](docs/CI.md). Workflows pin every action by commit SHA; use
+  `scripts/ci/lint.sh` (shellcheck and actionlint) after changing a script or a workflow.
 * Risky areas (workflow execution, import, anything that runs processes or touches the clipboard) get a behavioural code review
   before merging; say in the pull request what could go wrong.
 * Merge hot spots where concurrent branches collide: `crates/core/src/engine.rs` (its test module in particular),
@@ -80,15 +81,25 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
 
 ## Tests
 
+**Where tests run.** Only unit tests and integration tests run on your machine (`scripts/check.sh`, the git hooks). **Everything else runs on
+CI**: end-to-end and GUI tests, the QA checklist, soak, stress, timing and latency measurements, benchmarks, packaging and universal builds,
+other macOS versions and Intel. There is no local VM lab; you validate such work by pushing your branch and running
+`scripts/ci-run.sh <suite> --watch` (suites: `smoke`, `checklist`, `screenshots`, `ignored`, `timing`, `perf-gui`, `bench`, `soak`, ...), then
+reading the run and its artifacts. A test that needs more than about 2 s, loops over 1000 items, asserts on wall-clock time, touches the
+real GUI, pasteboard or network, or is a large fuzz run is marked `#[ignore = "ci: <reason>"]` (with a fast variant if it has regression
+value). `scripts/policy-check.sh` fails when a test or a script of the gate breaks these rules. The whole policy, with how to add an
+end-to-end test: [docs/TESTING.md](docs/TESTING.md).
+
 * Unit tests sit next to the code (`#[cfg(test)] mod tests`); integration suites are in `crates/core/tests/`
   (`engine_e2e`, `import_security`, `scripts_security`, `fuzz` with proptest, the workflow compatibility suite). Commands and run times:
   [docs/QA.md](docs/QA.md).
 * Use a temporary directory and `Paths::under(&root)`; use `Engine::with_env` with a fake `Os` (inside the core crate: `actions::testing::FakeOs`) so
   nothing touches the real machine. Tests of the core crate that use `providers::ambient_home()` get a folder that does not exist.
 * The launcher's pure logic (key names, monitor placement, scheduling) is kept in functions that take plain values so they are
-  unit-testable without a window. Window behaviour is verified by hand or with the QA script and described in the pull request.
-* Anything that shows a window, registers a hotkey, URL handler or login item, or sends keystrokes must not run on a shared
-  desktop. Use the VM-based test lab for that ([docs/LAB.md](docs/LAB.md)).
+  unit-testable without a window. Window behaviour is verified on CI (the smoke test, a checklist row) and the pull request says which
+  suite was run.
+* Anything that shows a window, registers a hotkey, URL handler or login item, or sends keystrokes **never runs on your machine**: it is an
+  end-to-end test under `tests/e2e/` and runs on CI ([docs/TESTING.md](docs/TESTING.md#how-to-add-an-end-to-end-test)).
 
 ## How to add a provider
 
@@ -175,7 +186,7 @@ Refs: #123
 
 * **Types:** `feat` (new feature), `fix` (bug fix), `perf`, `refactor`, `docs`, `test`, `build` (build, packaging, dependencies),
   `ci`, `chore`, `style` (formatting only), `revert`.
-* **Scope** is optional and free: `gui`, `core`, `prefs`, `lab`, `packaging`, `deps`, `gui/prefs` ...
+* **Scope** is optional and free: `gui`, `core`, `prefs`, `e2e`, `packaging`, `deps`, `gui/prefs` ...
 * **Subject:** imperative ("add", not "added"), starts in lower case, no trailing period; the whole header is at most **72 characters**.
   Say what the change does; the body says why.
 * **Breaking change:** a `!` before the colon (`refactor(core)!: rename the snippets store`) or a `BREAKING CHANGE: <text>` footer.

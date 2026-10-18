@@ -3,12 +3,20 @@
 Measured for the v0.1.0 release candidate on 2026-10-16, release profile (`cargo bench` = optimized).
 Nothing in the product was tuned for these numbers.
 
+> **How the numbers are produced now (2026-10-18).** Performance work runs on CI, never on a developer's machine
+> ([TESTING.md](TESTING.md)): benchmarks, the GUI performance run and the release-mode latency ceilings are the `bench`, `perf-gui` and `ignored` suites of
+> `stress.yml`, nightly and on demand (`scripts/ci-run.sh bench|perf-gui|ignored --watch`; the commands in this document are what those jobs run).
+> Each run puts its table in the job summary and its raw results (`results.jsonl`, `footprint` and `vmmap` dumps, criterion output) in an artifact for 7 days.
+> A hosted runner is a shared virtual machine with 3 CPUs and no GPU: **its numbers are for comparing runs of the same image over time and for orders
+> of magnitude, not for absolute claims**, and they are not comparable with the M3 Pro numbers below, which were measured once on a physical Mac before this policy.
+> Absolute figures for a release come from that kind of physical-Mac run, by the owner.
+
 > **Update 2026-10-17:** the rows below that say the GUI process was "not measured" are superseded by the section **GUI process** at the end of this file (start-up, idle RSS/CPU, memory after use, hotkey latency of the real release binary).
 
 ## Machine and conditions
 
 * Apple M3 Pro, 12 cores, 36 GB RAM, macOS 26.5.2, rustc 1.95.0.
-* **The machine was not idle.** It is the user's working desktop: a Tart VM was running, another build and test run was going on in a different checkout, WindowServer and iTerm were busy.
+* **The machine was not idle.** It is the user's working desktop: a virtual machine was running, another build and test run was going on in a different checkout, WindowServer and iTerm were busy.
   `uptime` load averages (1/5/15 min) around the runs: 4.7/5.8/5.8 (run 1), 7.0/6.2/5.9 (run 2), 6.3/6.1/5.9 (run 3), 4.8/5.7/5.8 before the criterion run and 6.0/6.3/6.0 after it.
   Summed `%CPU` of all other processes at the start of the three runs: 126 %, 229 %, 190 % (of 1,200 %). 12 cores means the benches (single-threaded query loops) still had a free core,
   but treat every number as "measured on a busy laptop"; the spread across the three runs is given so you can judge it.
@@ -16,6 +24,9 @@ Nothing in the product was tuned for these numbers.
   No user data was read. The "real scan" line counts apps in `/Applications` only.
 
 ## Commands
+
+These are the commands the CI jobs run (`bench`, `perf-gui`). Do not run them on a developer's machine: benchmarks and GUI measurements are CI work
+([TESTING.md](TESTING.md)); `perf-gui.sh` and the other desktop scripts refuse to run outside a hosted runner.
 
 ```sh
 # human-readable report: apps at 500 and 5,000, clipboard history, file-search walk budget, real app folders
@@ -97,8 +108,7 @@ are unit-tested with a fake `Os` only. A real-`mdfind` timing is a manual item.
 
 * No target that could be measured without the GUI was missed.
 * `ashdash` has no headless daemon mode: running the binary with no arguments starts the launcher window, which needs the desktop. So the idle RSS/CPU of the real process, the time to
-  hotkey-ready and the time to show the window are all open. Suggested manual check (in a lab VM, see LAB.md): `ashdash &` , wait 10 s, then
-  `ps -o rss=,cputime= -p $(pgrep -x ashdash)` twice 60 s apart.
+  hotkey-ready and the time to show the window are all open. This is measured by the `perf-gui` suite on CI (`scripts/ci-run.sh perf-gui`).
 * 47 MB at 5,000 apps is the bench process (it also holds the synthetic name list and the benchmark's allocations), so it is an upper bound for the engine alone, but egui/eframe plus a
   hidden window typically add tens of MB on top. The 80 MB target is plausible at ~80 apps (a real Mac; engine about 15 MB) and uncertain at 5,000 apps. Measure before claiming it.
 * The no-cache start (225-252 ms at 5,000 apps) happens once per cache loss and runs on the construction path. It is inside the 300 ms target alone but would exceed it with any additional start-up work.

@@ -50,7 +50,7 @@ Not yet: contacts, dictionary, system-wide snippet expansion, a workflow editor.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, branches, how to add a provider |
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model and findings |
 | [docs/PERF.md](docs/PERF.md) | measured speed and memory, and how they were measured |
-| [docs/RELEASING.md](docs/RELEASING.md), [docs/QA.md](docs/QA.md), [docs/LAB.md](docs/LAB.md), [docs/CI.md](docs/CI.md) | releasing, testing, the VM test lab, what CI runs where |
+| [docs/RELEASING.md](docs/RELEASING.md), [docs/TESTING.md](docs/TESTING.md), [docs/QA.md](docs/QA.md), [docs/CI.md](docs/CI.md) | releasing, the testing policy (what runs on your machine and what on CI), the QA guide, what CI runs where |
 | [SECURITY policy](.github/SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | reporting a vulnerability, community rules |
 
 ## Configuration in one minute

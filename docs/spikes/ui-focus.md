@@ -82,7 +82,7 @@ long after `show()` the other app took the focus: an `osascript` activation star
 340 ms (inside the grace), a Cmd+Tab typed by a script about 420-490 ms (outside), which is the "3 of 5 / 5 of 5" split.
 A user who clicks another app within 400 ms of showing the launcher hit it as well.
 
-Evidence (lab VM, release bundle, `ASHDASH_TRACE=1`, `tests/e2e/focus/probe.sh`; the log of one failing trial, with the
+Evidence (VM run, release bundle, `ASHDASH_TRACE=1`, `tests/e2e/focus/probe.sh`; the log of one failing trial, with the
 per-frame lines added by the fix to show the missing frame):
 
 ```
@@ -108,11 +108,11 @@ in every trial), Quick Look, `hide_app`, throttled repaints of invisible windows
   calls `request_repaint_after(rest)`: one frame at the end of the grace period decides. Never a repeating timer.
 * While a Quick Look preview is open the watch does not hold the focus; when the preview ends, `tick_quicklook` restarts
   `shown_at` and the launcher gets the grace period again to take the focus back (a first version that kept `gained` across
-  the preview hid the launcher in the frame after the preview closed; the lab check `quicklook-N` caught it).
+  the preview hid the launcher in the frame after the preview closed; the check `quicklook-N` caught it).
 * The decision is a pure function, unit-tested (`gui::focus::tests`: loss 345 ms after show, loss at 1..5000 ms, stale
   `false` right after show, never focused, unknown focus, Quick Look in and out, a second `show`).
 
-Verification in the lab (macOS 15.7.7 guest, bundle built with the fix, one VM at a time):
+Verification in a VM (macOS 15.7.7 guest, bundle built with the fix, one VM at a time; this was before the local VM lab was retired):
 
 | Check | Before | After |
 |---|---|---|
@@ -127,7 +127,7 @@ Verification in the lab (macOS 15.7.7 guest, bundle built with the fix, one VM a
 | idle CPU, shown and focused, 30 s | 0.34 CPU-s | 0.33-0.40 CPU-s (caret blink; same as before, the extra trace line only costs when `ASHDASH_TRACE` is set) |
 | `checklist.sh s33 w45` (keys, Large Type, held Return, import prompt, URL consent) | - | no new failures; 3.3.3b (Tab on an app row) is fixed separately |
 
-Re-run: `tests/e2e/lab-run <vm> -- bash tests/e2e/focus/probe.sh --trials 20` (`--after-show S`, `--race MS`, `--only act|tab`),
+Re-run on CI (these scripts refuse to run elsewhere): `bash tests/e2e/focus/probe.sh --trials 20` (`--after-show S`, `--race MS`, `--only act|tab`),
 `bash tests/e2e/focus/regress.sh [--only ql|panel|click|idle]`; both build `Ashdash.app` into `~/focus-dist` (`FOCUS_DIST`).
 `ASHDASH_TRACE=1` now also prints one `frame focused=... +Nms after show` line per drawn frame while the launcher is shown.
 

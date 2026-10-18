@@ -10,9 +10,9 @@ The tokens in `SPEC.md` and `tools/sampled.json` were sampled from the earlier r
 | `general-dark.jpg` | primary: General page, dark, sidebar |
 | `general-light.jpg` | light twin |
 | `reference-v4.jpg` | the V4 first pass (top tabs) |
-| `impl-general-{dark,light}.png` | the real window (`ashdash prefs-window`) in the VM lab, General with the Full Disk Access card, 760 x 560 pt at 2x |
+| `impl-general-{dark,light}.png` | the real window (`ashdash prefs-window`) on a CI runner, General with the Full Disk Access card, 760 x 560 pt at 2x |
 | `impl-permissions-{dark,light}.png` | the real Permissions page with simulated states (Accessibility not granted, Automation asked on first use, Full Disk Access not granted; `ASHDASH_PREFS_FAKE_PERMISSIONS`) |
-| `tools/lab-shots.sh` | the script that takes them inside a lab VM (every page, dark/light, 760x560 / 640x480, recorder states, Cmd+K, Tab focus, Return-Fix) |
+| `../../../tests/e2e/screenshots/prefs-shots.sh` | the script that takes them on a CI runner (`scripts/ci-run.sh screenshots`; every page, dark/light, 760x560 / 640x480, recorder states, Cmd+K, Tab focus, Return-Fix; the artifact lasts 7 days) |
 | `SPEC.md` | tokens (dark + light), type, geometry, components, egui 0.36 mapping |
 | `contrast.md` | WCAG ratios for every text/background pair, from `tools/contrast.py` |
 | `tools/sample_tokens.py`, `tools/sampled.json` | pixel sampling of the images; `tools/contrast.py` palette + check |

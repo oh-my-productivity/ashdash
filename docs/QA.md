@@ -4,11 +4,16 @@ Two parts: how to run the automated suites, and a manual checklist for what auto
 see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live in
 [SECURITY.md](SECURITY.md).
 
+**Where things run** ([TESTING.md](TESTING.md) is the policy): on your machine only unit and integration tests
+(section 1). Everything that starts the app, shows a window or measures time (sections 2 and the end-to-end
+rows of 3) runs **on CI**: push your branch and run `scripts/ci-run.sh <suite> --watch`. There is no local VM
+and no local GUI run.
+
 ## 1. Automated suites
 
 | Command | What it runs | Time |
 |---|---|---|
-| `scripts/check.sh` | fmt, clippy `-D warnings`, `cargo test --workspace`: the gate for every change | ~1 min cold |
+| `scripts/check.sh` | fmt, clippy `-D warnings`, `cargo test --workspace`, commit-lint tests, the policy check: the gate for every change, with a 3-minute hard budget | ~1 min warm |
 | `cargo test -p ashdash-core` | unit tests + all integration suites below | seconds |
 | `cargo test -p ashdash-core --test engine_e2e` | public `Engine` API in a temp environment: ranking, exclusivity precedence, usage learning across engine instances, destructive-command confirmation (never run), triggers | <1 s |
 | `cargo test -p ashdash-core --test import_security` | `import_workflow` / `import_package` with hostile synthetic zips: `../`, absolute paths, symlinks and chains, bundle-id tricks, malformed archives | <1 s |
@@ -17,7 +22,7 @@ see (hotkey, focus, permissions). Security findings referenced as `SEC-nn` live 
 | `cargo test -p ashdash-core --test clipboard_privacy` | concealed/transient/ignored-app copies never reach rows, usage or disk (SEC-19) | <1 s |
 | `cargo test -p ashdash-core --test prefs_core` | the core half of the preferences window: live `apply_config` (providers, web searches and their URL check, restart-required keys, usage switch, clipboard settings), the file watcher, workflow list/enable/remove, package preview, themes, snippet library | ~2 s |
 | `cargo test -p ashdash-core --test ui_glue_api` | engine behaviour behind the launcher glue: "open launcher" outcomes, a Script Filter's running text, Open With listing, Quick Look through the `Os` handle (fake OS) | <1 s |
-| `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON | ~3 s |
+| `cargo test -p ashdash-core --test fuzz` | proptest: `calc::eval`, `fuzzy::score`, `percent_encode` round trip, config load/migration on random JSON and bytes, Script Filter fed arbitrary bytes / wrong JSON types / mangled JSON; a tenth of every case count locally, the full counts on CI (`ASHDASH_FUZZ_FULL=1`) | ~1 s |
 | `ASHDASH_COMPAT_TEMPLATES=<folder> cargo test -p ashdash-core --test 'compat_*' -- --nocapture` | imports every workflow package in the folder named by `ASHDASH_COMPAT_TEMPLATES` into a temp dir, loads it, generates keyword items, runs each graph, and prints the node types seen vs unsupported. Skips (passes, with a message) when the variable is unset. Nothing from that folder is copied into the repository | ~1 s |
 
 Environment variables: `PROPTEST_CASES=N` sets the case count of every fuzz property (CI runs the full counts, `ASHDASH_FUZZ_FULL=1`; docs/TESTING.md);
@@ -28,81 +33,81 @@ Rules the suites follow (keep them when adding tests): everything lives in a uni
 clipboard, or another application's data folder; never execute destructive actions (shutdown, logout,
 trash); no third-party assets are copied into the repo; the compatibility suite only reads the folder you point it at.
 
-### Known-issue tests
+### CI-only tests and known-issue tests
 
-Tests with `#[ignore = "known: SEC-nn ..."]` demonstrate an open finding and are **expected to fail**
-today. Run them to check whether a fix landed:
-
-```
-cargo test -p ashdash-core --tests -- --ignored --no-fail-fast
-```
-
-Caveats: `zip_bomb_is_rejected` writes ~300 MB to a temp dir, `huge_script_output_is_bounded` allocates
-~200 MB, `timeout_kills_grandchildren` / `unread_stdin_cannot_defeat_the_timeout` / the pipe test take 6-14 s, and
-`notification_text_cannot_inject_applescript` may flash a notification (it only `touch`es a temp file).
+Tests with `#[ignore = "ci: ..."]` do not run on your machine: they need more than about 2 s, move big data, wait for the OS
+or touch the real pasteboard, Finder, Spotlight or `osascript` (`zip_bomb_is_rejected` writes ~300 MB,
+`timeout_kills_grandchildren` / `unread_stdin_cannot_defeat_the_timeout` wait for a 10 s timeout,
+`notification_text_cannot_inject_applescript` shows a real notification). CI runs them in release mode with
+`scripts/ci-run.sh ignored` (nightly, and on demand); the list and the reasons are in [TESTING.md](TESTING.md).
 `calc_deep_nesting_*` and `fuzzy_pathologically_*` re-run the test binary as a child process, because a stack
-overflow aborts the process. When a finding is fixed, delete the `#[ignore]` in the same commit.
+overflow aborts the process.
+
+A test with `#[ignore = "known: SEC-nn ..."]` demonstrates an open finding and is **expected to fail** today; it is
+un-ignored in the commit that fixes the finding. (There is none open at the moment.)
 
 `documents_*` tests pin intentional behaviour that existing workflow packages rely on (for example that the default query mask
 leaves `;` and `|` live). If one fails because behaviour got *safer*, update the test and SECURITY.md together.
 
-## 2. GUI smoke test (scripted, one window, one machine)
+## 2. GUI tests (CI only)
+
+These start the app, press the global hotkey and take screenshots. **They refuse to run anywhere but on a GitHub-hosted runner**
+(`GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`): they take over the keyboard and the screen, and on a laptop that is somebody's working
+desktop. Run them for your branch with `scripts/ci-run.sh`:
 
 ```
-QA_GUI_OK=1 scripts/qa/gui-smoke.sh            # types "saf"
-QA_GUI_OK=1 scripts/qa/gui-smoke.sh "vsc"      # other query
+git push -u origin HEAD
+scripts/ci-run.sh smoke --watch                         # 2.0: the smoke test, macOS 15 and 26
+scripts/ci-run.sh checklist --sections "s31 s32" --watch --download out
+scripts/ci-run.sh screenshots --watch --download shots
+scripts/ci-run.sh perf-gui --watch --download perf      # PERF.md
 ```
 
-It builds the debug binary, starts it with a throwaway `HOME`, presses Option+Shift+Space via System Events,
-types the query, takes a screenshot, prints the screenshot path on the last line, then kills the app and
-deletes the throwaway HOME. Requirements and cautions:
+### 2.0 The smoke tests
 
-- The terminal needs **Accessibility** (to send keys) and **Screen Recording** (for `screencapture`) permission.
-- It owns the global hotkey and the keyboard for ~8 s: close other Ashdash instances; do not run two copies of it,
-  and do not run it while another agent or person is using the screen.
-- The screenshot is the **entire desktop**. Open it, inspect it, delete it. Never commit it or attach it to a PR.
-- It passes if the app is still alive after hotkey and typing; *what is on screen* is judged by a human.
-  Look for: the launcher visible near the top centre, query text "saf", Safari first in the list, no error row.
-- The clipboard watcher runs against the real pasteboard; its history goes into the throwaway HOME and is deleted.
+`tests/e2e/smoke.sh` (through `tests/e2e/ci/run-smoke.sh`, job `smoke` of `e2e.yml`, on every pull request from this repository) builds the
+debug binary and the bundle, starts it with a throw-away `HOME`, presses Option+Shift+Space via System Events, types a query, takes a screenshot,
+checks `ashdash show/search`, the `ashdash://` scheme, the login item and `quit`, and writes `smoke-report.txt` (a PASS / FAIL / SKIP line per stage).
+*What is on screen* is judged by a person from the screenshot artifact (kept for failures): the launcher near the top centre, the query text,
+Safari first in the list, no error row.
 
-`scripts/qa/ui-glue-smoke.sh [binary]` is the longer version (actions panel and buffer, in-window import prompt with
-a synthetic workflow, Script Filter rerun and pending rows, Quick Look layering, held-modifier subtitle, scrolling Large Type).
-It shows windows and drives System Events on the **host desktop**, so it takes the lock `/tmp/ashdash-desktop.lock`
-(`mkdir`; always `rmdir` it afterwards), runs with a throw-away HOME and a non-default hotkey, and leaves whole-desktop
-screenshots in a temp folder that you look at and delete. Run it from a clean desktop session, not from CI. GUI checks belong in the VM lab
-(`docs/LAB.md`) instead: the script runs unchanged inside a clone (`lab-run "$vm" -- bash scripts/qa/ui-glue-smoke.sh <bare binary>`).
+`scripts/qa/gui-smoke.sh [query]` (`QA_GUI_OK=1`) is the older single-window version of the same thing, and `scripts/qa/ui-glue-smoke.sh [binary]`
+the longer one (actions panel and buffer, in-window import prompt with a synthetic workflow, Script Filter rerun and pending rows, Quick Look
+layering, held-modifier subtitle, scrolling Large Type). Both source `scripts/qa/require-ci.sh` and refuse to run outside a hosted runner; a
+workflow runs them on demand when needed.
 
-### 2.1 Lab QA scripts (`tests/e2e/qa/`)
+### 2.1 QA scripts (`tests/e2e/qa/`)
 
-The manual checklist below is scripted as far as a VM allows. Everything runs **inside a lab VM**, never on the host desktop; screenshots are window-only
-(`screencapture -l`), read back by OCR (`qa/ocr.swift`, Vision) and by eye, and are not committed.
+The manual checklist below is scripted as far as a virtual machine allows. Everything runs **on a CI runner**, never on a developer's desktop; screenshots are window-only
+(`screencapture -l`), read back by OCR (`qa/ocr.swift`, Vision) and by eye, and are artifacts for failures only.
 
 | Script | What it does |
 |---|---|
-| `qa/pkg-install.sh` | fresh clone: `build-app.sh` + `make-dmg.sh`, quarantined DMG, copy to /Applications, Gatekeeper switched on, the refusal dialog, "Open Anyway", `xattr -dr`, first launch with no TCC rows for the app, login item, `ashdash://prefs`, the first Automation / Accessibility prompts |
+| `qa/pkg-install.sh` | fresh machine: `build-app.sh` + `make-dmg.sh`, quarantined DMG, copy to /Applications, Gatekeeper switched on, the refusal dialog, "Open Anyway", `xattr -dr`, first launch with no TCC rows for the app, login item, `ashdash://prefs`, the first Automation / Accessibility prompts |
 | `qa/checklist.sh [section...]` | sections 3.1-3.9, 3.11, the later behaviours (crash reports, selection tracking, Tab completion) and the "known unverified" items; one `result id PASS/FAIL/BLOCKED/NEEDS-OWNER evidence` line per check, a tsv in `$QA_ART/results.tsv` |
 | `qa/soak.sh [seconds] [interval]` | show, type, hide every 30 s for 2 h; footprint, RSS, CPU time, threads and open files every 5 minutes; crash reports; hotkey check at the end |
-| `qa/prep.sh` | grants, `build-app.sh`, install to /Applications (no quarantine): the starting point of `checklist.sh` and `soak.sh` in a fresh clone |
+| `qa/prep.sh` | grants, `build-app.sh`, install to /Applications (no quarantine): the starting point of `checklist.sh` and `soak.sh` |
 | `qa/verify-tab.sh`, `qa/repro-placeholder.sh`, `qa/sleep.sh` | single-purpose re-checks: Tab on an application row, the "placeholder with results" screenshot (40 trials), `pmset displaysleepnow` / `sleepnow` and the hotkey |
 | `qa/report.py` | merges result files into the tables of a run document |
 | `qa/lib.sh`, `qa/qa-tool.swift`, `qa/ocr.swift`, `qa/fixtures.py` | helpers: dialogs read through the accessibility tree, window listing, held keys with the auto-repeat flag, pasteboard with the nspasteboard.org marker types, a seeded data folder (workflows, snippets, files) |
 
-Run: `tests/e2e/lab-up --id qa --max-age 14400`, then `tests/e2e/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/e2e/qa/pkg-install.sh`
-(and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/e2e/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
-display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
-The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs; fixed afterwards, see 3.2.4c), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
+What a virtual machine cannot do (no second display, display sleep locks the session, no physical keyboard, Full Disk Access is not enforced
+with SIP off) shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
+The release-candidate run on the earlier VM lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs; fixed afterwards, see 3.2.4c), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
 
-### 2.2 The same scripts in CI
+### 2.2 How CI runs them
 
-`tests/e2e/ci/run-smoke.sh`, `run-checklist.sh` and `run-soak.sh` run `smoke.sh`, `qa/checklist.sh` and `qa/soak.sh` directly on a
-GitHub-hosted macOS runner (no `tart`, no `ssh`): the runner is an Apple virtual machine with a logged-in GUI session, SIP off and
-passwordless sudo, i.e. the same kind of machine as a lab clone. They refuse to run anywhere else (they take over the keyboard, screen and
-global hotkey). Checklist rows that cannot work on a hosted runner are listed with the reason in `tests/e2e/ci/blocked.tsv` and are
-reported as BLOCKED, never as PASS; any other FAIL fails the job. The smoke test runs on every push to `main`, the checklist and the soak
-every night (`.github/workflows/nightly.yml`). Differences from the lab VM, how to reproduce a failure and what still needs a physical Mac:
-[CI.md](CI.md).
+`tests/e2e/ci/run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`, `run-screenshots.sh` and `run-perf-gui.sh` run the scripts directly on a
+GitHub-hosted macOS runner: an Apple virtual machine with a logged-in GUI session, SIP off and passwordless sudo. They refuse to run
+anywhere else. Checklist rows that cannot work on a hosted runner are listed with the reason in `tests/e2e/ci/blocked.tsv` and are
+reported as BLOCKED, never as PASS; any other FAIL fails the job. The smoke test runs on every pull request from this repository and every
+push to `main` (`e2e.yml`), the checklist every night (`e2e.yml`) and the soak every night (`soak.yml`). The runners, how to reproduce a
+failure and what still needs a physical Mac: [CI.md](CI.md).
 
 ## 3. Manual checklist
+
+This checklist is for a person, on a physical Mac, before a release (the owner or a release tester). Developers and agents do not run it; they run
+the scripted rows on CI (section 2), and the remaining rows are marked NEEDS-OWNER in the run report.
 
 Run on a debug build (`cargo run -p ashdash`) with a clean profile
 (`HOME=$(mktemp -d) cargo run ...` after building, or delete `~/Library/Application Support/ashdash`).
@@ -150,12 +155,12 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] `clip` lists recent copies (use harmless text). Newest first; duplicate copies move to top.
 - [ ] Return on an entry copies it; Cmd+V into a text editor pastes it.
 - [ ] Copy from a password manager (1Password/Bitwarden "copy password"; marked concealed): the entry must **not**
-  appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist; the pasteboard side with the real `org.nspasteboard.ConcealedType` marker was verified in the lab (3.5.3), **this check with a real password manager has still never been done**).
+  appear in `clip` nor in `clipboard.json` (SEC-19; the code and its tests exist; the pasteboard side with the real `org.nspasteboard.ConcealedType` marker was verified in a CI/VM run (3.5.3), **this check with a real password manager has still never been done**).
 - [ ] Per-app ignore list: copies made in an app listed in `clipboard.ignored_apps` (or added in Preferences > Clipboard) are skipped, without a restart.
 - [ ] `ls -l@ ~/Library/Application\ Support/ashdash/*.json` shows `-rw-------` for `clipboard.json` and `usage.json`.
 - [ ] Image / file copies: a title is shown, copying back restores the original type.
 - [ ] `snip` lists snippets from `snippets.json`; `{clipboard}`, `{date}`, `{time}`, `{datetime}` expand; `{cursor}` handling.
-- [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Verified in the lab with a real Cmd+V into TextEdit: 3.5.8b, 3.5.10.)
+- [ ] Auto-paste: Return on a `clip`/`snip` row pastes into the frontmost app with Accessibility granted; with it denied the error says so. (Verified in a VM run with a real Cmd+V into TextEdit: 3.5.8b, 3.5.10.)
 
 ### 3.6 Workflows
 - [ ] `ashdash import <workflow package>` for a trusted sample workflow prints the trust summary, asks `Install this workflow? [y/N]`, and installs only on `y`; with stdin not a terminal and without `--yes` it refuses; `--yes` installs without asking. The keyword works afterwards (within a second, no reload needed).
@@ -209,7 +214,7 @@ Test with a fresh app identity if possible (`tccutil reset All <bundle id>` for 
 
 ## 4. Checks that need a physical Mac
 
-The lab VM cannot do these (no second display, no sleep state, no physical keyboard, Spotlight and Full Disk Access are not enforced). Use the installed
+A hosted runner cannot do these (no second display, no sleep state, no physical keyboard, Spotlight and Full Disk Access are not enforced). Use the installed
 `/Applications/Ashdash.app`, preferably with SIP on and one display unless the step says otherwise. Each takes a few minutes.
 
 1. **Real browser download.** In Safari, download the DMG from the release page (not with `curl`, so the browser sets the quarantine flag), drag Ashdash to Applications and double-click it.

