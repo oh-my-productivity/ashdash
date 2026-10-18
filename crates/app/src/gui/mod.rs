@@ -104,6 +104,8 @@ struct LauncherApp {
     automation: crate::events::Automation,
     /// Actions panel, buffer, import prompt (see `glue.rs`).
     glue: glue::Glue,
+    /// Which system CJK fonts were looked for (see `crate::fonts`): none until CJK text is on screen.
+    cjk_fonts: crate::fonts::Fallbacks,
 }
 
 pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result<()> {
@@ -223,6 +225,7 @@ impl LauncherApp {
             hot_reload,
             automation,
             glue: glue::Glue::new(),
+            cjk_fonts: crate::fonts::Fallbacks::default(),
         };
         if !hotkey_ok {
             // Without a hotkey the window would be unreachable; show it now.
@@ -354,6 +357,22 @@ impl LauncherApp {
     }
 }
 
+impl LauncherApp {
+    /// Load a system CJK font the first time something on screen needs one. Cheap otherwise: a scan of
+    /// the visible strings for non-ASCII characters, and nothing at all once every font was looked for.
+    fn ensure_cjk_fonts(&mut self, ctx: &egui::Context) {
+        if self.cjk_fonts.done() {
+            return;
+        }
+        let texts = std::iter::once(self.query.as_str())
+            .chain(self.items.iter().flat_map(|i| [i.title.as_str(), i.subtitle.as_str()]))
+            .chain(self.status.as_deref())
+            .chain(self.large_type.as_deref())
+            .chain(self.glue.panels.top().map(|l| l.title.as_str()));
+        self.cjk_fonts.ensure(ctx, &crate::fonts::SystemFonts, texts);
+    }
+}
+
 impl eframe::App for LauncherApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background(ctx);
@@ -380,6 +399,7 @@ impl eframe::App for LauncherApp {
             return;
         }
         self.frames_since_show = self.frames_since_show.saturating_add(1);
+        self.ensure_cjk_fonts(&ctx);
         if mac::is_cloaked() {
             // the next frame lifts the transparent state (reveal_if_drawn)
             ctx.request_repaint();

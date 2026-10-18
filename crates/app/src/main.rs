@@ -2,6 +2,7 @@ mod automation;
 mod clipboard_watch;
 mod crash;
 mod events;
+mod fonts;
 mod gui;
 mod hotkeys;
 mod ipc;

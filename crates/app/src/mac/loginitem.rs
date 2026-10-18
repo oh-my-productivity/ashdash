@@ -477,7 +477,12 @@ mod tests {
         assert!(!f.marker.get());
         // after a disable the OS may say notFound again; still just "off"
         f.status.set(Status::NotFound);
-        assert!(run(Command::Status, &f).unwrap().message().contains("launch at login: off"));
+        assert!(
+            run(Command::Status, &f)
+                .unwrap()
+                .message()
+                .contains("launch at login: off")
+        );
     }
 
     #[test]
