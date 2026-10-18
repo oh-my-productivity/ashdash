@@ -6,8 +6,8 @@ are free for public repositories, macOS included). The rest is listed in [What n
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every pull request and push to `main`; `workflow_dispatch` | `check`, `deny`, `lab-scripts`, `packaging`, `perf` |
+| `ci.yml` | manual runs with `stress=true` only | `stress` (macOS 15 and macOS 15 Intel), see [Timing-sensitive tests](#timing-sensitive-tests) |
 | `ci.yml` | pushes to `main` and manual runs only | `gui-smoke` (macOS 15 and 26), `x86-64` (macOS 15 Intel), `bundle` |
-| `stress.yml` | manual only (`workflow_dispatch`, inputs `target_ref`, `runs`, `slow_runs`) | `stress` (macOS 15 and macOS 15 Intel) |
 | `commit-lint.yml` | every pull request (opened, edited, synchronize, reopened) | `commit-lint`, `hooks-tests` |
 | `nightly.yml` | every night 02:41 UTC; `workflow_dispatch` | `checklist` (macOS 15 and 26), `soak` (macOS 15) |
 | `advisories.yml` | Mondays 06:17 UTC; `workflow_dispatch` | RustSec advisories for the locked dependencies |
@@ -151,7 +151,7 @@ this way: 166 ms against a 150 ms ceiling, and a 25 ms ceiling at 5,000 apps). T
 * **A wait for something that must not happen** (`recv_timeout(..).is_err()`) can only make a test pass too easily, never fail; keep it
   short, and make sure the positive case before it proves the machinery is running.
 
-To see how these tests behave on a slow runner, dispatch the **`stress`** workflow (`gh workflow run stress.yml --ref <branch> -f target_ref=<branch or SHA>`). It
+To see how these tests behave on a slow runner, dispatch `ci.yml` with the **`stress`** input (`gh workflow run ci.yml --ref <branch> -f stress=true -f target_ref=<branch or SHA>`). It
 runs `scripts/stress-timing.sh`: each formerly clock-dependent test 100 times in a row while four busy loops per CPU keep the runner
 saturated, on macOS 15 (arm64) and macOS 15 Intel, and fails if a single run fails; the table goes to the job summary. Do not do this on a
 developer machine: anything that saturates the CPUs runs in the pipeline. `target_ref` points the same script at older code, to prove that

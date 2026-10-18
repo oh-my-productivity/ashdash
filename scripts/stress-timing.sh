@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the tests that used to depend on wall-clock time many times in a row while every core is kept busy, the way a slow, shared CI
-# runner behaves (docs/CI.md, "Timing-sensitive tests"). It is meant for the `stress` workflow: it deliberately uses all CPUs, so do not
+# runner behaves (docs/CI.md, "Timing-sensitive tests"). It is meant for the `stress` job of ci.yml: it deliberately uses all CPUs, so do not
 # run it on a developer machine.
 #   scripts/stress-timing.sh [--runs N] [--slow-runs N] [--loops N] [SRC_DIR]
 # SRC_DIR is the checkout to test (default: this repository); its tests are built and run, the list of tests below is this script's.

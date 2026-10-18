@@ -12,12 +12,30 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      stress:
+        description: "Also run the timing tests many times under CPU load (job `stress`, hours; scripts/stress-timing.sh)"
+        type: boolean
+        default: false
+      target_ref:
+        description: "stress: branch, tag or SHA whose tests are stressed (empty = the dispatched ref)"
+        default: ""
+        required: false
+      runs:
+        description: "stress: runs per test"
+        default: "100"
+        required: false
+      slow_runs:
+        description: "stress: runs of the tests that take about 10 s each"
+        default: "40"
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # a stress dispatch gets a group of its own, so that it neither cancels nor is cancelled by the ordinary runs of the same ref
+  group: ci-${{ github.event.pull_request.number || github.ref }}${{ inputs.stress && format('-stress-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
@@ -120,7 +138,7 @@ jobs:
   # ---- only on pushes to main and manual runs (they use more runner minutes than a pull request needs) -------------------------------
   # The lab smoke job on the hosted runner: bundle, launch in the GUI session, show/search, ashdash://, global hotkey, login item, quit.
   gui-smoke:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !inputs.stress
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +168,7 @@ jobs:
 
   # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests, a native build and the GUI smoke test on x86-64.
   x86-64:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !inputs.stress
     runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
@@ -179,7 +197,7 @@ jobs:
 
   # Universal .app and DMG as a release would produce them (ad-hoc signed), verified, kept for 7 days as a workflow artifact.
   bundle:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !inputs.stress
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -208,3 +226,42 @@ jobs:
             dist/*.sha256
           retention-days: 7
           if-no-files-found: error
+
+  # Manual only (`gh workflow run ci.yml --ref <branch> -f stress=true [-f target_ref=<branch or SHA>]`). Runs the formerly clock-dependent
+  # tests many times in a row while four busy loops per CPU keep the runner saturated, the way a slow shared runner behaves. Anything that
+  # saturates CPUs runs here, never on a developer machine. `target_ref` selects the code under test; the script comes from the dispatched
+  # ref, so it can be pointed at older code to show that a test failed before a fix. See docs/CI.md.
+  stress:
+    if: github.event_name == 'workflow_dispatch' && inputs.stress
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-15-intel]
+    name: stress (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.target_ref || github.sha }}
+          path: src
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src
+          key: stress-${{ matrix.image }}
+      - name: Show what is tested
+        working-directory: src
+        run: git log -1 --format='%H %s'
+      - name: Stress the timing tests
+        env:
+          RUNS: ${{ inputs.runs }}
+          SLOW_RUNS: ${{ inputs.slow_runs }}
+        run: tools/scripts/stress-timing.sh --runs "$RUNS" --slow-runs "$SLOW_RUNS" src
