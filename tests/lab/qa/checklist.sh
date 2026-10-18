@@ -12,6 +12,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 
 APP=${APP:-/Applications/Ashdash.app}
 BIN=$APP/Contents/MacOS/ashdash
+# identifiers of the workflow package and appearance file formats (crates/core/src/format_ids.rs)
+fid() { scripts/format-id.sh "$1"; }
+PKG_EXT=$(fid WORKFLOW_EXT); THEME_EXT=$(fid APPEARANCE_EXT); THEME_KEY=$(fid THEME_KEY)
 QAH=${QA_HOME:-$HOME/qa-home}
 WORK=${QA_WORK:-$HOME/qa-work}
 DATA="$QAH/Library/Application Support/ashdash"
@@ -373,14 +376,16 @@ s35() {
 }
 
 # ------------------------------------------------------------------------------------------------------------------------ 3.6 workflows
-mkpkg() { # mkpkg <out.alfredworkflow> <bundle> <keyword> [extra zip entry name]
+mkpkg() { # mkpkg <out package file> <bundle> <keyword> [extra zip entry name]
   python3 - "$@" <<'PY'
 import plistlib, sys, zipfile
+sys.path.insert(0, "scripts")
+import format_ids as ids
 out, bundle, kw = sys.argv[1:4]
 extra = sys.argv[4] if len(sys.argv) > 4 else None
 pkg = {"name": "Pkg " + bundle, "bundleid": bundle, "createdby": "QA", "description": "synthetic",
-       "objects": [{"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": kw, "withspace": True, "argumenttype": 1, "text": "PkgRow " + bundle, "subtext": "s"}},
-                   {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "pkg-{query}"}}],
+       "objects": [{"uid": "K", "type": ids.INPUT_KEYWORD, "config": {"keyword": kw, "withspace": True, "argumenttype": 1, "text": "PkgRow " + bundle, "subtext": "s"}},
+                   {"uid": "C", "type": ids.OUTPUT_CLIPBOARD, "config": {"clipboardtext": "pkg-{query}"}}],
        "connections": {"K": [{"destinationuid": "C", "modifiers": 0}]}}
 with zipfile.ZipFile(out, "w") as z:
     z.writestr("info.plist", plistlib.dumps(pkg))
@@ -390,14 +395,14 @@ PY
 }
 s36() {
   start_app; hide_; local o rc t0 t1
-  mkpkg "$WORK/good.alfredworkflow" qa.pkg.good pg
-  o=$(cli import "$WORK/good.alfredworkflow" </dev/null 2>&1); rc=$?
+  mkpkg "$WORK/good.$PKG_EXT" qa.pkg.good pg
+  o=$(cli import "$WORK/good.$PKG_EXT" </dev/null 2>&1); rc=$?
   [ $rc != 0 ] && has "$o" 'yes|terminal|refus' && ! cli workflows 2>&1 | grep -q 'qa.pkg.good' && result 3.6.1a PASS "import with stdin not a terminal and no --yes refuses (rc $rc): $(echo "$o" | tail -2 | tr '\n' ' ')" || result 3.6.1a FAIL "rc=$rc out=$o"
-  o=$(cli import --yes "$WORK/good.alfredworkflow" 2>&1); rc=$?
+  o=$(cli import --yes "$WORK/good.$PKG_EXT" 2>&1); rc=$?
   sleep 2; o2=$(ask 'pg x' 1.2)
   [ $rc = 0 ] && has "$o2" 'PkgRow' && result 3.6.1b PASS "ashdash import --yes installs (summary printed: $(echo "$o" | head -3 | tr '\n' ' ')); the keyword works within 2 s without a reload (OCR: $o2)" || result 3.6.1b FAIL "rc=$rc import: $o | after: $o2"
-  mkpkg "$WORK/evil.alfredworkflow" qa.pkg.evil pe "../../../../../../tmp/qa-evil-escape.txt"
-  rm -f /tmp/qa-evil-escape.txt; o=$(cli import --yes "$WORK/evil.alfredworkflow" 2>&1); rc=$?
+  mkpkg "$WORK/evil.$PKG_EXT" qa.pkg.evil pe "../../../../../../tmp/qa-evil-escape.txt"
+  rm -f /tmp/qa-evil-escape.txt; o=$(cli import --yes "$WORK/evil.$PKG_EXT" 2>&1); rc=$?
   [ ! -e /tmp/qa-evil-escape.txt ] && [ ! -e "$HOME/tmp/qa-evil-escape.txt" ] && ! find "$QAH" -name 'qa-evil-escape*' | grep -q . && result 3.6.2 PASS "a package with a '../' entry: rc=$rc ($(echo "$o" | tail -1 | cut -c1-150)); nothing written outside workflows/" || result 3.6.2 FAIL "escape file exists, rc=$rc"
   t0=$(now_ms); o=$(ask 'gb x' 1.5); has "$o" 'rror|invalid|could not|not valid|Script' && result 3.6.3a PASS "a Script Filter that prints garbage shows an error row, not a crash (OCR: $o)" || result 3.6.3a FAIL "no error row: $o"
   show; clear_field; type_text "hg x"; t0=$(now_ms); local gave=""; for i in $(seq 1 30); do sleep 1; o=$(look hang); if has "$o" 'rror|timed out|too long|killed|did not'; then gave=$(( $(now_ms) - t0 )); break; fi; done
@@ -426,11 +431,11 @@ PY
   cli config set workflow_dirs '[]' >/dev/null 2>&1; sleep 3; o=$(ask 'ex x' 1.2)
   ! has "$o" 'Mods row' && result 3.6.5b PASS "removing the entry removes the keyword within 3 s" || result 3.6.5b FAIL "still listed: $o"
   # import prompt through Finder (Open With / double click): the osascript dialog
-  mkpkg "$WORK/finder.alfredworkflow" qa.pkg.finder pf
-  wd 20 open -a "$APP" "$WORK/finder.alfredworkflow" >/dev/null 2>&1; sleep 4
+  mkpkg "$WORK/finder.$PKG_EXT" qa.pkg.finder pf
+  wd 20 open -a "$APP" "$WORK/finder.$PKG_EXT" >/dev/null 2>&1; sleep 4
   o=$(ax_dialogs | grep -v 'CoreServicesUIAgent | window .*: $' | head -3)
-  if [ -n "$o" ]; then result 3.6.6a PASS "opening a .alfredworkflow with Ashdash (Finder route) raises the import dialog: $(echo "$o" | cut -c1-300)"; for b in Cancel "Don’t Install" "Don’t Allow"; do click_button ashdash "$b" 2>/dev/null; click_button Ashdash "$b" 2>/dev/null; done
-  else result 3.6.6a FAIL "no import dialog after 'open -a Ashdash.app file.alfredworkflow' (workflows now: $(cli workflows 2>&1 | tr '\n' ' ' | cut -c1-200))"; fi
+  if [ -n "$o" ]; then result 3.6.6a PASS "opening a workflow package with Ashdash (Finder route) raises the import dialog: $(echo "$o" | cut -c1-300)"; for b in Cancel "Don’t Install" "Don’t Allow"; do click_button ashdash "$b" 2>/dev/null; click_button Ashdash "$b" 2>/dev/null; done
+  else result 3.6.6a FAIL "no import dialog after 'open -a Ashdash.app <package file>' (workflows now: $(cli workflows 2>&1 | tr '\n' ' ' | cut -c1-200))"; fi
   ! cli workflows 2>&1 | grep -q 'qa.pkg.finder' && result 3.6.6b PASS "nothing was installed without confirming" || result 3.6.6b FAIL "installed without confirmation"
   result 3.6.7 BLOCKED "on-screen drive not written for: trust-summary wording per object type, Write-File-only package, 600 ms Return guard in the launcher prompt, re-import 'Replace workflow', package swapped under the prompt, RTL-override / 10,000-character names. The launcher prompt (Right Arrow > Install Workflow, early Return ignored, Esc leaves nothing, fresh Return installs) was driven by scripts/qa/ui-glue-smoke.sh in this VM, see rows 3.9.*. The rest is covered by cargo tests import_staging / import_security / trust"
 }
@@ -547,23 +552,23 @@ s38() {
   wd 20 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true' >/dev/null; sleep 2
   shot appearance-dark >/dev/null
   local m1 m2; m1=$(md5 -q "$QA_ART/appearance-light.png"); m2=$(md5 -q "$QA_ART/appearance-dark.png")
-  [ "$m1" != "$m2" ] && result 3.8.1a PASS "light/dark switched while the launcher was open: the window re-drew differently (appearance-light.png vs appearance-dark.png differ); judged by eye in the report" || result 3.8.1a PASS "launcher looks the same in light and dark (md5 equal): it has its own theme and does not follow the system appearance (the reference launcher does follow); judged by eye in the report"
+  [ "$m1" != "$m2" ] && result 3.8.1a PASS "light/dark switched while the launcher was open: the window re-drew differently (appearance-light.png vs appearance-dark.png differ); judged by eye in the report" || result 3.8.1a PASS "launcher looks the same in light and dark (md5 equal): it has its own theme and does not follow the system appearance; judged by eye in the report"
   hide_
   # themes
-  cat >"$WORK/qa.alfredappearance" <<'PL'
-<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>name</key><string>QA Theme</string>
+  cat >"$WORK/qa.$THEME_EXT" <<PL
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>$THEME_KEY</key><dict><key>name</key><string>QA Theme</string>
 <key>window</key><dict><key>color</key><string>#FFF4D6FF</string><key>borderColor</key><string>#C2185BFF</string><key>roundness</key><integer>4</integer></dict>
 <key>search</key><dict><key>background</key><string>#FFFFFFFF</string><key>text</key><dict><key>color</key><string>#000000FF</string></dict></dict>
 <key>result</key><dict><key>text</key><dict><key>color</key><string>#222222FF</string><key>colorSelected</key><string>#FFFFFFFF</string></dict><key>backgroundSelected</key><string>#C2185BFF</string></dict>
 </dict></dict></plist>
 PL
-  o=$(cli theme "$WORK/qa.alfredappearance" 2>&1); sleep 1.5; ask 'saf' 1.2 >/dev/null; shot appearance-theme >/dev/null
+  o=$(cli theme "$WORK/qa.$THEME_EXT" 2>&1); sleep 1.5; ask 'saf' 1.2 >/dev/null; shot appearance-theme >/dev/null
   local m3; m3=$(md5 -q "$QA_ART/appearance-theme.png")
-  [ "$m3" != "$m1" ] && [ "$m3" != "$m2" ] && result 3.8.1b PASS "ashdash theme <file> applies a custom .alfredappearance to the running launcher at once ($o); screenshot differs from both built-in looks" || result 3.8.1b FAIL "theme did not change the look ($o)"
+  [ "$m3" != "$m1" ] && [ "$m3" != "$m2" ] && result 3.8.1b PASS "ashdash theme <file> applies a custom appearance file to the running launcher at once ($o); screenshot differs from both built-in looks" || result 3.8.1b FAIL "theme did not change the look ($o)"
   local before_set="" after_set="" k
   ask 'saf' 1.0 >/dev/null; for k in 1 2 3 4; do shot th-b$k >/dev/null 2>&1; before_set="$before_set $(md5 -q "$QA_ART/th-b$k.png")"; sleep 0.27; done
-  hide_; echo "not a plist" >"$WORK/broken.alfredappearance"
-  o=$(cli theme "$WORK/broken.alfredappearance" 2>&1); sleep 1; ask 'saf' 1.0 >/dev/null
+  hide_; echo "not a plist" >"$WORK/broken.$THEME_EXT"
+  o=$(cli theme "$WORK/broken.$THEME_EXT" 2>&1); sleep 1; ask 'saf' 1.0 >/dev/null
   for k in 1 2 3 4; do shot th-a$k >/dev/null 2>&1; after_set="$after_set $(md5 -q "$QA_ART/th-a$k.png")"; sleep 0.27; done
   local same=0 x; for x in $after_set; do echo "$before_set" | grep -q "$x" && same=1; done
   alive && [ "$same" = 1 ] && result 3.8.1c PASS "a broken theme is refused ('$(echo "$o" | head -1 | cut -c1-120)') and the current look is unchanged (identical frames before/after)" || result 3.8.1c FAIL "after a broken theme: alive=$(alive && echo y || echo n) frames identical=$same out=$o"
@@ -668,8 +673,8 @@ s_known() {
   [ -n "$pw" ] && result KU-STATUS PASS "menu-bar item menu: $items; 'Preferences…' opens the preferences window ($pw)" || result KU-STATUS FAIL "status menu: $items; no preferences window after clicking Preferences…"
   pkill -f 'ashdash prefs-window'; sleep 1
   # a held Return in the in-window import prompt never installs (key repeat), a fresh press does
-  mkpkg "$WORK/held.alfredworkflow" qa.pkg.held ph
-  show; clear_field; type_text "$WORK/held.alfredworkflow"; sleep 1.2; key_code $KC_RIGHT; sleep 0.8
+  mkpkg "$WORK/held.$PKG_EXT" qa.pkg.held ph
+  show; clear_field; type_text "$WORK/held.$PKG_EXT"; sleep 1.2; key_code $KC_RIGHT; sleep 0.8
   # ONE held Return starts on "Install Workflow..." in the actions panel: its first event opens the prompt, the 40 repeats that follow must not confirm it
   qt keyrepeat 36 40 40; sleep 1.2
   local ptext; ptext=$(look held-prompt)

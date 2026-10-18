@@ -13,6 +13,9 @@ plus three snippets and one file tree under <work>/files.
 """
 import json, os, plistlib, sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts"))
+import format_ids as ids  # noqa: E402  (identifiers of the workflow package format)
+
 home, work = sys.argv[1], sys.argv[2]
 data = os.path.join(home, "Library/Application Support/ashdash")
 wfs = os.path.join(data, "workflows")
@@ -30,13 +33,13 @@ def wf(folder, name, bundle, objects, connections):
 
 
 def sf(uid, kw, script, running=""):
-    return {"uid": uid, "type": "alfred.workflow.input.scriptfilter",
+    return {"uid": uid, "type": ids.INPUT_SCRIPTFILTER,
             "config": {"keyword": kw, "withspace": True, "argumenttype": 1, "type": 0, "scriptargtype": 1,
                        "title": kw, "subtext": "", "runningsubtext": running, "script": script}}
 
 
 def run(uid, script):
-    return {"uid": uid, "type": "alfred.workflow.action.script", "config": {"type": 0, "script": script, "concurrently": False, "scriptargtype": 1}}
+    return {"uid": uid, "type": ids.ACTION_SCRIPT, "config": {"type": 0, "script": script, "concurrently": False, "scriptargtype": 1}}
 
 
 pick = f'printf "%s" "$1" > "{picked}"'
@@ -59,11 +62,11 @@ rows = ",".join('{"uid":"p%02d","title":"Pick %02d","subtitle":"row %d","arg":"P
 wf("qa.pick", "QA pick", "qa.pick", [sf("S", "pk", "echo '{\"items\":[%s]}'" % rows), run("R", pick)],
    {"S": [{"destinationuid": "R", "modifiers": 0}]})
 wf("qa.trigger", "QA trigger", "qa.trigger",
-   [{"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "go"}},
+   [{"uid": "T", "type": ids.TRIGGER_EXTERNAL, "config": {"triggerid": "go"}},
     run("R", f'printf "%s" "$1" > "{work}/trigger.txt"')], {"T": [{"destinationuid": "R", "modifiers": 0}]})
 wf("qa.url", "QA url", "qa.url",
-   [{"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "u"}},
-    {"uid": "U", "type": "alfred.workflow.action.openurl", "config": {"url": "https://example.invalid/{query}"}}],
+   [{"uid": "T", "type": ids.TRIGGER_EXTERNAL, "config": {"triggerid": "u"}},
+    {"uid": "U", "type": ids.ACTION_OPENURL, "config": {"url": "https://example.invalid/{query}"}}],
    {"T": [{"destinationuid": "U", "modifiers": 0}]})
 
 lt = 'text=$(for i in $(seq 1 3000); do printf "L%03d " $i; done); echo "{\\"items\\":[{\\"title\\":\\"Long text\\",\\"valid\\":false,\\"text\\":{\\"largetype\\":\\"$text\\"}}]}"'
@@ -71,14 +74,14 @@ wf("qa.long", "QA long", "qa.long", [sf("S", "lt", lt)], {})
 
 
 def kw(uid, word, title):
-    return {"uid": uid, "type": "alfred.workflow.input.keyword",
+    return {"uid": uid, "type": ids.INPUT_KEYWORD,
             "config": {"keyword": word, "withspace": True, "argumenttype": 1, "text": title, "subtext": "QA keyword"}}
 
 
 wf("qa.copy", "QA copy", "qa.copy",
-   [kw("K1", "cp", "Copy transient"), {"uid": "C1", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "TRANSIENT-{query}", "transient": True}},
-    kw("K2", "cq", "Copy plain"), {"uid": "C2", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "PLAINCOPY-{query}", "transient": False}},
-    kw("K3", "nt", "Notify"), {"uid": "N1", "type": "alfred.workflow.output.notification", "config": {"title": "QA", "text": "hello {query}"}}],
+   [kw("K1", "cp", "Copy transient"), {"uid": "C1", "type": ids.OUTPUT_CLIPBOARD, "config": {"clipboardtext": "TRANSIENT-{query}", "transient": True}},
+    kw("K2", "cq", "Copy plain"), {"uid": "C2", "type": ids.OUTPUT_CLIPBOARD, "config": {"clipboardtext": "PLAINCOPY-{query}", "transient": False}},
+    kw("K3", "nt", "Notify"), {"uid": "N1", "type": ids.OUTPUT_NOTIFICATION, "config": {"title": "QA", "text": "hello {query}"}}],
    {"K1": [{"destinationuid": "C1", "modifiers": 0}], "K2": [{"destinationuid": "C2", "modifiers": 0}], "K3": [{"destinationuid": "N1", "modifiers": 0}]})
 
 # files for path browsing, file actions and the trash test
