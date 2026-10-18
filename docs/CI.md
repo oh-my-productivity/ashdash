@@ -27,7 +27,7 @@ Required status checks on `main`: `check` and `deny`.
   `Ashdash.app` with `packaging/build-app.sh`, launch in the GUI session, `ashdash show/search/query`, the `ashdash://` scheme, the global
   hotkey Option+Shift+Space through System Events (the window must toggle), window state read back as text, a screenshot, login item
   enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it).
-* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash` and a native x86-64 bundle. **GitHub retires the
+* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash`, and the same GUI smoke test as above with the native x86-64 bundle. **GitHub retires the
   `macos-15-intel` image in August 2027**; it is the last Intel hosted runner. After that, x86-64 is only built (the `bundle` job
   cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when the label
   stops working.
