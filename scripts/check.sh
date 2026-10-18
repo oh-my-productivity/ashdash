@@ -23,7 +23,7 @@ fi
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time() * 1000'; }
 names=(); times=()
 t_start=$(now_ms)
-elapsed_s() { echo $(( ($(now_ms) - t_start) / 1000 )); }
+elapsed_ms() { echo $(( $(now_ms) - t_start )); }
 
 report() { # report: the table of stage times
   local i total_ms=$(( $(now_ms) - t_start ))
@@ -61,7 +61,7 @@ stage() { # stage <name> <command...>
     echo "check.sh: FAILED in stage '$name' (exit status $rc)" >&2
     exit "$rc"
   fi
-  if [ "$(elapsed_s)" -gt "$budget" ]; then over_budget; fi
+  if [ "$(elapsed_ms)" -gt $((budget * 1000)) ]; then over_budget; fi
 }
 
 stage fmt     cargo fmt --all -- --check
@@ -73,6 +73,6 @@ stage policy  scripts/policy-check.sh
 stage policy-tests tests/policy/run-tests.sh
 
 report
-if [ "$(elapsed_s)" -gt "$budget" ]; then over_budget; fi
-if [ "$(elapsed_s)" -gt "$TARGET" ]; then echo "check.sh: note: over the ${TARGET} s target (budget ${budget} s)"; fi
+if [ "$(elapsed_ms)" -gt $((budget * 1000)) ]; then over_budget; fi
+if [ "$(elapsed_ms)" -gt $((TARGET * 1000)) ]; then echo "check.sh: note: over the ${TARGET} s target (budget ${budget} s)"; fi
 echo "check.sh: OK"

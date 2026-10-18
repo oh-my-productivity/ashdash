@@ -4,4 +4,4 @@
 #   scripts/policy-check.sh [--root DIR] [--list-allowed]
 # Pure text analysis, about a second. Runs in scripts/check.sh and in the `policy` job of ci.yml. The rules are in scripts/policy_check.py.
 set -euo pipefail
-exec python3 "$(dirname "$0")/policy_check.py" "$@"
+exec python3 -B "$(dirname "$0")/policy_check.py" "$@"
