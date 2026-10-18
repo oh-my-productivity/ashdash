@@ -1,7 +1,7 @@
 # Ashdash user guide
 
 Ashdash is a keyboard launcher for macOS: press a hotkey, type, press Return. It is pre-release software (version 0.1.0,
-no published release yet) and "Ashdash" is a working name ([CLEAN_ROOM.md](CLEAN_ROOM.md)). It is independent of the reference launcher
+no stable release yet). It is independent of the reference launcher
 application and not affiliated with its publisher.
 
 How to read this guide: statements about the window are taken from the code and from [QA.md](QA.md); parts nobody has been

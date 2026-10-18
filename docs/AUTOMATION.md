@@ -61,7 +61,7 @@ tell application "Ashdash" to search "saf"
 tell application "Ashdash" to run trigger "go" in workflow "com.x" with argument "hello"
 tell application "Ashdash" to reload   -- / show
 ```
-JXA: use the bundle id (`Application('dev.ashdash.launcher').search('saf')`); `Application('/path/Ashdash.app')` fails
+JXA: use the bundle id (`Application('io.github.oh-my-productivity.ashdash').search('saf')`); `Application('/path/Ashdash.app')` fails
 with -1701 for custom commands (the path form works for properties only; cause not investigated).
 The bundle needs `NSAppleScriptEnabled=YES` and `OSAScriptingDefinition=Ashdash.sdef` with the sdef in `Contents/Resources`.
 `run trigger` returns Large Type text, raises a script error for failures, and answers an empty result when the workflow takes

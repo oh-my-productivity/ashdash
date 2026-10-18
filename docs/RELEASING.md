@@ -27,8 +27,8 @@ Useful switches: `ARCHS=native` (one architecture, about half the time), `OUT_DI
 `BUILD_NUMBER=7`, `MIN_OS=13.0`, `SKIP_ICON=1`.
 
 The version comes from `crates/app/Cargo.toml`; the bundle id, product name and URL scheme come from
-`crates/core/src/brand.rs`. Nothing is duplicated, so a rename (docs/PLAN.md WP12) is a one-file change plus
-`Info.plist.template` if you want different copy.
+`crates/core/src/brand.rs`. Nothing is duplicated there. A rename also touches the Cargo package names, the scripting dictionary file name, `Info.plist.template`
+and the docs (list: [CLEAN_ROOM.md](CLEAN_ROOM.md#where-the-name-lives)).
 
 What `build-app.sh` checks for you: `codesign --verify --deep --strict`, and it prints what `spctl` thinks.
 `spctl` **rejects** ad-hoc and un-notarized bundles; the script reports that as a warning, not an error.
@@ -118,12 +118,12 @@ git commit -am "Release 0.2.0" && git tag v0.2.0 && git push origin main v0.2.0
 No tap is published by the pipeline. The release uploads a rendered `ashdash.rb` next to the DMG. To publish:
 
 ```sh
-packaging/homebrew/render-cask.sh --dmg dist/Ashdash-0.2.0.dmg --repo OWNER/ashdash --output ashdash.rb
+packaging/homebrew/render-cask.sh --dmg dist/Ashdash-0.2.0.dmg --repo oh-my-productivity/ashdash --output ashdash.rb
 brew audit --cask --new ./ashdash.rb      # needs a real, reachable release URL
 # copy ashdash.rb to Casks/ashdash.rb in your tap repository (homebrew-tap) and push it
 ```
 
-`--repo` defaults to `$GITHUB_REPOSITORY` and then to the placeholder `OWNER/ashdash`. A cask for the official
+`--repo` defaults to `$GITHUB_REPOSITORY` and then to the placeholder `oh-my-productivity/ashdash`. A cask for the official
 `homebrew-cask` repository additionally needs a notarized app and a stable, notable project.
 
 ## Login item and file associations

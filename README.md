@@ -1,13 +1,22 @@
+<p align="center"><img src="docs/assets/ashdash-logo.jpg" alt="Ashdash" width="560"></p>
+
 # Ashdash
 
-A keyboard launcher for macOS written in Rust: press a hotkey, type, press Return. Ashdash is modelled on the observable
-behaviour of the reference launcher and runs many reference-compatible workflows, but it is an **independent project: not affiliated with,
+A keyboard launcher for software engineers on macOS, written in Rust: press a hotkey, type, press Return. Ashdash is modelled on the
+observable behaviour of the reference launcher and runs many reference-compatible workflows, but it is an **independent project: not affiliated with,
 endorsed by or sponsored by its publisher or the reference launcher application, and it contains no reference launcher code or assets**
-([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). "Ashdash" is a working name and will probably change before a public release.
+([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). Ashdash was developed under the working name "Ashdash"; older records in `docs/reviews`, `docs/briefs` and `docs/qa-runs` use that name.
 
-Status: pre-release, v0.1.0 release candidate; no published binaries yet. When it is published, the DMG is ad-hoc signed and not notarized (install notes:
-[docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md); changes: [CHANGELOG.md](CHANGELOG.md); measured speed: [docs/PERF.md](docs/PERF.md)).
+## Install
+
+Download `Ashdash-<version>.dmg` from [GitHub Releases](https://github.com/oh-my-productivity/ashdash/releases), open it and drag
+**Ashdash** to Applications. Builds are ad-hoc signed and not notarized, so macOS blocks the first launch: right-click the app and
+choose **Open** (macOS 14 and earlier), or on macOS 15 and later use System Settings > Privacy & Security > **Open Anyway**, or run
+`xattr -dr com.apple.quarantine /Applications/Ashdash.app` once. Details and checksums:
+[docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md). Changes: [CHANGELOG.md](CHANGELOG.md); measured speed: [docs/PERF.md](docs/PERF.md).
 Read [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for what is verified and what is not.
+
+From source:
 
 ```
 cargo run -p ashdash --release        # Option+Shift+Space opens it; Esc closes; Cmd+Q quits
