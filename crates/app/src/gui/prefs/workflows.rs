@@ -39,6 +39,11 @@ impl State {
         self.list = settings_view::list_workflows(paths, &cfg.workflow_dirs);
     }
 
+    /// The names the page shows (for the font fallback).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.list.iter().map(|w| w.name.as_str())
+    }
+
     #[cfg(test)]
     pub fn list_len(&self) -> usize {
         self.list.len()

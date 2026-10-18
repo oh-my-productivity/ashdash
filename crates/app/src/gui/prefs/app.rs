@@ -81,6 +81,8 @@ pub struct PrefsApp {
     /// (content height, visible height) of the page's scroll area in the last frame.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) last_scroll: (f32, f32),
+    /// System CJK fonts, loaded when a name or typed text needs them (see `crate::fonts`).
+    cjk_fonts: crate::fonts::Fallbacks,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -149,6 +151,7 @@ impl PrefsApp {
             perms_checking: false,
             perms_at: 0,
             last_scroll: (0.0, 0.0),
+            cjk_fonts: crate::fonts::Fallbacks::default(),
         };
         app.check_permissions();
         app.enter_page();
@@ -328,6 +331,37 @@ impl PrefsApp {
         }
     }
 
+    /// Load a system CJK font when the user's own text can need it: workflow, snippet and web search
+    /// names, and anything typed into a field. The rest of the window is English.
+    fn ensure_cjk_fonts(&mut self, ctx: &egui::Context) {
+        if self.cjk_fonts.done() {
+            return;
+        }
+        let typed: Vec<String> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.clone()),
+                    egui::Event::Ime(egui::ImeEvent::Commit(t)) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        let texts = typed
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(self.nav_query.as_str()))
+            .chain(self.workflows.names())
+            .chain(self.features.user_texts())
+            .chain(
+                self.cfg
+                    .web_searches
+                    .iter()
+                    .flat_map(|w| [w.title.as_str(), w.keyword.as_str()]),
+            );
+        self.cjk_fonts.ensure(ctx, &crate::fonts::SystemFonts, texts);
+    }
+
     /// One frame of the window.
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -337,6 +371,7 @@ impl PrefsApp {
         }
         self.poll_disk();
         self.poll_tasks();
+        self.ensure_cjk_fonts(&ctx);
         self.handle_drops(&ctx);
         self.handle_shortcuts(&ctx);
         ctx.request_repaint_after(POLL_EVERY);

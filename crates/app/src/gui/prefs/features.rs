@@ -47,6 +47,20 @@ impl State {
         self.clip_form = Some(ClipboardForm::from_settings(&cfg.clipboard));
     }
 
+    /// Snippet and collection names, keywords and the text being edited (for the font fallback).
+    pub fn user_texts(&self) -> impl Iterator<Item = &str> {
+        let library = self.library.iter().flat_map(|l| {
+            l.entries()
+                .into_iter()
+                .flat_map(|(_, s)| [s.name.as_str(), s.keyword.as_str(), s.collection.as_str()])
+        });
+        library.chain(
+            self.sn_edit
+                .iter()
+                .flat_map(|(_, d)| [d.name.as_str(), d.keyword.as_str(), d.text.as_str()]),
+        )
+    }
+
     /// `config.json` changed on disk: forms that mirror it start over.
     pub fn config_changed(&mut self) {
         self.clip_form = None;
