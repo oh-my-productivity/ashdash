@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs the tests that used to depend on wall-clock time many times in a row while every core is kept busy, the way a slow, shared CI
-# runner behaves (docs/CI.md, "Timing-sensitive tests"). It is meant for the `stress` job of ci.yml: it deliberately uses all CPUs, so do not
-# run it on a developer machine.
-#   scripts/stress-timing.sh [--runs N] [--slow-runs N] [--loops N] [SRC_DIR]
+# runner behaves (docs/TESTING.md, "Timing-sensitive tests"). It is the `timing` job of stress.yml: it deliberately uses all CPUs, so it
+# never runs on a developer machine (the "ignored" tests among the list are run with --include-ignored).
+#   scripts/ci/stress-timing.sh [--runs N] [--slow-runs N] [--loops N] [SRC_DIR]
 # SRC_DIR is the checkout to test (default: this repository); its tests are built and run, the list of tests below is this script's.
 # Exit status 0 when no run failed. A Markdown table goes to $GITHUB_STEP_SUMMARY when that is set.
 set -euo pipefail
@@ -19,7 +19,8 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
-src="$(cd "${1:-$(dirname "$0")/..}" && pwd)"
+tools="$(cd "$(dirname "$0")" && pwd)"
+src="$(cd "${1:-$tools/../..}" && pwd)"
 ncpu="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN)"
 [ -n "$loops" ] || loops=$((ncpu * 4))
 
@@ -44,19 +45,9 @@ tests=(
 cd "$src"
 echo "== building the test binaries in $src"
 bins="$(mktemp -d)"
-cargo test --workspace --no-run --message-format=json 2>/dev/null | python3 -c '
-import json, os, shutil, sys
-out = sys.argv[1]
-for line in sys.stdin:
-    try:
-        m = json.loads(line)
-    except ValueError:
-        continue
-    if m.get("reason") == "compiler-artifact" and m.get("profile", {}).get("test") and m.get("executable"):
-        crate = os.path.basename(os.path.dirname(m["manifest_path"]))
-        kind = "lib" if "bin" in m["target"]["kind"] or "lib" in m["target"]["kind"] else m["target"]["name"]
-        shutil.copy(m["executable"], os.path.join(out, crate + "__" + kind))
-' "$bins"
+cargo test --workspace --no-run --message-format=json 2>/dev/null | python3 "$tools/test-bins.py" | while IFS=$'\t' read -r crate kind exe; do
+  cp "$exe" "$bins/${crate}__${kind}"
+done
 
 pids=()
 cleanup() {
@@ -81,7 +72,7 @@ for entry in "${tests[@]}"; do
   [ -x "$exe" ] || { echo "no test binary for $crate/$bin" >&2; exit 2; }
   failed=0
   for i in $(seq "$n"); do
-    if ! out="$(cd "$src/crates/$crate" && CARGO_MANIFEST_DIR="$src/crates/$crate" "$exe" --exact "$name" --test-threads=1 2>&1)"; then
+    if ! out="$(cd "$src/crates/$crate" && CARGO_MANIFEST_DIR="$src/crates/$crate" "$exe" --exact "$name" --include-ignored --test-threads=1 2>&1)"; then
       failed=$((failed + 1))
       echo "--- $name, run $i failed:"
       echo "$out" | grep -E 'panicked|assert|p95|took|left|right|ratio|not seen|cost' | head -6 || true

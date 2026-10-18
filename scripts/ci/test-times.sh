@@ -7,8 +7,8 @@
 #   --ignored   run only the `#[ignore]`d tests instead of the others
 #   --top N     how many tests to print (default 40)
 #   --out DIR   keep the full table (times.tsv: seconds, crate, binary, test) there
-# `--report-time` is not available on the stable test harness; setting RUSTC_BOOTSTRAP=1 for the test binaries (not for the build)
-# enables it. A Markdown summary goes to $GITHUB_STEP_SUMMARY when that is set.
+# `--report-time` and `--format json` are unstable options of the test harness; setting RUSTC_BOOTSTRAP=1 for the test binaries (not
+# for the build) enables them on the stable toolchain. A Markdown summary goes to $GITHUB_STEP_SUMMARY when that is set.
 set -euo pipefail
 
 release=""; mode=""; top=40; out=""
@@ -37,11 +37,21 @@ cargo test --workspace $release --no-run --message-format=json 2>/dev/null | pyt
 while IFS=$'\t' read -r crate kind exe; do
   start=$(date +%s)
   # one test at a time: the time of a test is its own, not the time of whatever ran beside it
-  (cd "$src/crates/$crate" && RUSTC_BOOTSTRAP=1 CARGO_MANIFEST_DIR="$src/crates/$crate" "$exe" -Z unstable-options --report-time \
-    --test-threads=1 $mode 2>&1) >"$work/run.txt" || true
-  grep -E '^test .* \.\.\. (ok|FAILED) <[0-9.]+s>' "$work/run.txt" \
-    | sed -E 's/^test (.*) \.\.\. (ok|FAILED) <([0-9.]+)s>.*/\3\t'"$crate"'\t'"$kind"'\t\1/' >>"$work/times.tsv" || true
-  printf '%-14s %-22s %4ss  %s\n' "$crate" "$kind" "$(( $(date +%s) - start ))" "$(grep -E '^test result' "$work/run.txt" | head -1)"
+  # --format json: one event per test with its time; the plain format loses lines when a test's child process writes to stderr
+  (cd "$src/crates/$crate" && RUSTC_BOOTSTRAP=1 CARGO_MANIFEST_DIR="$src/crates/$crate" "$exe" -Z unstable-options --format json \
+    --report-time --test-threads=1 $mode 2>/dev/null) >"$work/run.json" || true
+  python3 - "$crate" "$kind" "$work/run.json" >>"$work/times.tsv" <<'PY'
+import json, sys
+crate, kind, path = sys.argv[1:4]
+for line in open(path, encoding="utf-8", errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("type") == "test" and e.get("event") in ("ok", "failed") and "exec_time" in e:
+        print(f"{e['exec_time']:.3f}\t{crate}\t{kind}\t{e['name']}")
+PY
+  printf '%-14s %-22s %4ss\n' "$crate" "$kind" "$(( $(date +%s) - start ))"
 done <"$work/bins.tsv"
 
 sort -rn "$work/times.tsv" >"$work/sorted.tsv"
