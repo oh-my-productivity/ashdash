@@ -62,7 +62,11 @@ pub fn walk(root: &Path, max_depth: usize, prev: &Records, out: &mut Records) {
         let p = entry.path();
         // `is_dir` follows symlinks: Safari lives behind one on recent macOS.
         if p.extension().is_some_and(|e| e == "app") && p.is_dir() {
-            it.skip_current_dir();
+            // Only a real directory is skipped. For a symlink (links are not followed) walkdir's `skip_current_dir` skips the
+            // REST OF THE PARENT DIRECTORY, so one linked bundle (Safari) hid every app that came after it in directory order.
+            if entry.file_type().is_dir() {
+                it.skip_current_dir();
+            }
             if let Some(rec) = probe(p, prev.get(p)) {
                 out.entry(rec.path.clone()).or_insert(rec);
             }
