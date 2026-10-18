@@ -5,6 +5,9 @@ and the project follows [Semantic Versioning](https://semver.org/) (before 1.0, 
 A claim that nobody has been able to check on a real desktop or machine is marked **unverified**; the full list is in
 [docs/USER_GUIDE.md](docs/USER_GUIDE.md#10-known-unverified-and-missing).
 
+Releases add their section automatically from the commit messages (see [docs/RELEASING.md](docs/RELEASING.md#changelogmd-and-the-release-notes)); do not edit those sections.
+Hand-written text under `## [Unreleased]` is folded into the next release.
+
 ## [Unreleased]
 
 ### Fixed
@@ -18,7 +21,7 @@ A claim that nobody has been able to check on a real desktop or machine is marke
 
 ## [0.1.0] - unreleased (release candidate)
 
-First public version. Not yet tagged: the date is filled in when the tag is pushed. Verified by `scripts/check.sh` (format, clippy with warnings as errors, all tests);
+First public version. Verified by `scripts/check.sh` (format, clippy with warnings as errors, all tests);
 on-screen behaviour was verified only where noted.
 
 ### Added
@@ -35,9 +38,9 @@ on-screen behaviour was verified only where noted.
 - Security review findings SEC-01..20 and SEC-30..34 each have a recorded status in [docs/SECURITY.md](docs/SECURITY.md) (SEC-03, 13 and 14 stay open by design, to stay compatible with existing workflow packages).
 - Licence `MIT OR Apache-2.0`, issue templates, `cargo deny` licence and ban checks.
 
-### Release engineering (this release candidate)
+### Release engineering
 - `docs/PERF.md`: measured query, start-up, clipboard-search and file-search-budget numbers (`crates/core/benches/report.rs` now reports 500 and 5,000 apps, clipboard history search and the file-walk budget).
-- Release workflow: build job with a read-only token and a separate publish job; the GitHub release is created as a **draft** with notes from `docs/release-notes/<tag>.md`; third-party actions pinned by commit SHA.
+- Releases are one click and automatic: the version number is computed from the Conventional Commits since the previous release (`scripts/release/next-version.sh`, `cliff.toml`; in 0.x a breaking change or `feat` bumps the minor version, `fix` or `perf` the patch version, other types alone release nothing), the `CHANGELOG.md` section and the release notes are generated, the release commit and the annotated tag are pushed to the protected `main` with a deploy key, and the GitHub release is created as a **draft** by a separate job. Details, one-time setup and recovery: [docs/RELEASING.md](docs/RELEASING.md). Third-party actions are pinned by commit SHA; git-cliff is pinned by version and SHA-256.
 - Advisories (RustSec) run in a weekly `advisories.yml` workflow; the pull-request `deny` job checks `licenses bans sources` only.
 - Fixed: `packaging/selftest.sh` failed whenever `shellcheck` was installed; `dist/` is ignored by git.
 
