@@ -69,7 +69,7 @@ fi
 sh=(); wf=()
 for f in "${STAGED[@]}"; do
   case $f in
-    docs/* | crates/*) continue ;;                   # the same scope as tests/lab/ci/lint.sh
+    docs/* | crates/*) continue ;;                   # the same scope as scripts/ci/lint.sh
     .github/workflows/*.yml | .github/workflows/*.yaml) wf+=("$f"); continue ;;
   esac
   [ -f "$f" ] && [ ! -L "$f" ] || continue

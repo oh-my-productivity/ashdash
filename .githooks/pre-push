@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # pre-push: the commits being pushed must follow Conventional Commits, then the same gate as CI's `check` job runs locally:
 #   cargo clippy --workspace --all-targets -- -D warnings      cargo test --workspace
+# The two cargo steps share the time budget of scripts/check.sh (3 minutes, docs/TESTING.md): a push whose clippy and tests take longer
+# than that fails, because a test that needs more time belongs on CI (#[ignore = "ci: ..."]), not in the gate.
 # Skip the two cargo steps (the message check still runs) with  SKIP_PREPUSH=1 git push ... ; skip everything with  git push --no-verify.
 # CI repeats all of it, so a skipped hook only moves the failure to the pull request.
 # Cargo runs with a throw-away HOME (the tests must never touch your real data); RUSTUP_HOME and CARGO_HOME keep pointing at the real
@@ -57,14 +59,24 @@ export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
 export CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
 tmp_home=$(mktemp -d "${TMPDIR:-/tmp}/pre-push-home.XXXXXX")
 trap 'rm -rf "$tmp_home"' EXIT
+BUDGET=180
+t0=$SECONDS
 say "cargo clippy --workspace --all-targets -- -D warnings"
 if ! HOME=$tmp_home cargo clippy --workspace --all-targets -- -D warnings; then
   echo "$HOOK: clippy found problems: fix them (cargo clippy --fix) or push with SKIP_PREPUSH=1 to let CI judge" >&2
   exit 1
 fi
+t1=$SECONDS
 say "cargo test --workspace"
 if ! HOME=$tmp_home cargo test --workspace; then
   echo "$HOOK: tests failed: fix them, or push with SKIP_PREPUSH=1 to let CI judge" >&2
+  exit 1
+fi
+t2=$SECONDS
+say "clippy $((t1 - t0)) s, tests $((t2 - t1)) s (budget $BUDGET s for both)"
+if [ $((t2 - t0)) -gt "$BUDGET" ]; then
+  echo "$HOOK: clippy and tests took $((t2 - t0)) s, over the ${BUDGET} s budget of the local gate (docs/TESTING.md)." >&2
+  echo "$HOOK: a slow test belongs on CI: mark it #[ignore = \"ci: <reason>\"] and keep a fast variant. (A cold build is slower: push again when warm.)" >&2
   exit 1
 fi
 say "all checks passed"
