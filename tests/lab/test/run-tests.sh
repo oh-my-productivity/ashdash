@@ -189,6 +189,10 @@ python3 "$ci/finalize.py" "$fin/r4.tsv" "$fin/b.tsv" "$fin/o4.tsv" "$fin/o4.md" 
 python3 "$ci/finalize.py" "$fin/none.tsv" "$fin/b.tsv" "$fin/o5.tsv" "$fin/o5.md" >/dev/null 2>&1; rc=$?
 [ $rc = 1 ] && ok "finalize: no result file at all fails" || bad "finalize empty: rc=$rc"
 
+printf 's_setup() {\n  result SETUP PASS x\n}\ns31() {\n  result 3.1.1a PASS x; result 3.1.1b FAIL y\n}\ns32() {\n  result 3.2.1a FAIL z\n}\nw45() {\n  result W4.1 FAIL q\n}\n' >"$fin/cl.sh"
+printf '3.1.1b\tFAIL\ty\n3.2.1a\tPASS\tz\nW4.1\tFAIL\tq\n' >"$fin/rf.tsv"
+[ "$(python3 "$ci/retry-sections.py" "$fin/cl.sh" "$fin/rf.tsv" | tr '\n' ' ')" = "s31 w45 " ] && ok "retry-sections: maps FAILed rows to the sections that produce them" || bad "retry-sections: $(python3 "$ci/retry-sections.py" "$fin/cl.sh" "$fin/rf.tsv" | tr '\n' ' ')"
+
 echo "== idempotence and naming"
 "$lab/lab-down" ashdash-run-doesnotexist >/dev/null 2>&1 && ok "lab-down of a missing VM succeeds" || bad "lab-down not idempotent"
 "$lab/lab-down" ashdash-golden >/dev/null 2>&1 && bad "lab-down accepted the golden image" || ok "lab-down refuses non-run names"
