@@ -14,8 +14,7 @@ cd "$CI_ROOT" || exit 1
 art=$(ci_artifacts smoke)
 export LAB_ARTIFACTS=$art
 export LAB_AUTO_TCC=${LAB_AUTO_TCC:-1}   # tcc-grant.sh accepts a hosted runner (and refuses where it is not a VirtualMac, e.g. macos-15-intel)
-# Safari is not listed on the hosted images (docs/CI.md); Calculator is, on every image.
-SMOKE_QUERY=${SMOKE_QUERY:-calc} SMOKE_EXPECT=${SMOKE_EXPECT:-calculator} bash tests/lab/smoke.sh --quick "$@"
+bash tests/lab/smoke.sh --quick "$@"
 rc=$?
 
 {
