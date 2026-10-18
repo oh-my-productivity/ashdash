@@ -115,7 +115,7 @@ tg_fake killall 'echo "killall $*" >>"$FAKE_LOG"'
 tg_fake sleep 'exit 0'
 tg_run() { # tg_run <VAR=value>...: runs the script with the fakes first in PATH; the log shows what it wrote
   : >"$tg/log"
-  env "$@" FAKE_LOG="$tg/log" HOME="$tg/home" PATH="$tg/bin:/usr/bin:/bin" bash "$lab/guest/tcc-grant.sh" >"$tg/out" 2>&1
+  env -u GITHUB_ACTIONS -u RUNNER_ENVIRONMENT "$@" FAKE_LOG="$tg/log" HOME="$tg/home" PATH="$tg/bin:/usr/bin:/bin" bash "$lab/guest/tcc-grant.sh" >"$tg/out" 2>&1
 }
 tg_refused() { # tg_refused <description> <VAR=value>...
   local d=$1; shift
@@ -132,6 +132,24 @@ tg_refused "without a working python3" FAKE_NO_PYTHON=1
 tg_run FAKE_X=1; rc=$?
 rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
 [ $rc = 0 ] && [ "$rows" -ge 20 ] && grep -q '^killall tccd' "$tg/log" && ok "in a VM as admin with sudo and python3 it grants ($rows sqlite3 calls)" || bad "VM run: rc=$rc rows=$rows out=$(tail -3 "$tg/out")"
+# CI mode: a GitHub-hosted runner is a VirtualMac too, with the account "runner". Both variables, the VM model and the account must agree;
+# the variables alone (exported on a developer's Mac, or set by a self-hosted runner) never open the door.
+CI_ENV="GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted"
+# shellcheck disable=SC2086  # CI_ENV is a list of VAR=value words
+tg_refused "on a real Mac even with the CI variables set" $CI_ENV FAKE_HW_MODEL=Mac15,6 FAKE_USER=runner
+# shellcheck disable=SC2086
+tg_refused "in CI as the lab account admin" $CI_ENV FAKE_USER=admin
+tg_refused "on a self-hosted runner" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted FAKE_USER=runner
+tg_refused "as runner without GITHUB_ACTIONS" RUNNER_ENVIRONMENT=github-hosted FAKE_USER=runner
+tg_refused "as runner outside CI" FAKE_USER=runner
+# shellcheck disable=SC2086
+tg_refused "in CI with SIP on" $CI_ENV FAKE_USER=runner "FAKE_SIP=System Integrity Protection status: enabled."
+# shellcheck disable=SC2086
+tg_refused "in CI without passwordless sudo" $CI_ENV FAKE_USER=runner FAKE_NO_SUDO=1
+# shellcheck disable=SC2086
+tg_run $CI_ENV FAKE_USER=runner; rc=$?
+rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
+[ $rc = 0 ] && [ "$rows" -ge 20 ] && grep -q '^killall tccd' "$tg/log" && grep -q 'hosted runner' "$tg/out" && ok "on a hosted runner (VirtualMac, user runner, SIP off, sudo) it grants ($rows sqlite3 calls)" || bad "CI run: rc=$rc rows=$rows out=$(tail -3 "$tg/out")"
 # check-golden must treat a timed-out System Events call as NOT granted (it used to report "look granted")
 fake_guest="$tmp/fakeguest"; mkdir -p "$fake_guest/bin"
 cp "$lab/guest/check-golden.sh" "$fake_guest/check-golden.sh"
