@@ -134,7 +134,7 @@ hmac 0.13.0 - MIT OR Apache-2.0 - https://github.com/RustCrypto/MACs
 hybrid-array 0.4.15 - MIT OR Apache-2.0 - https://github.com/RustCrypto/hybrid-array
 image 0.25.10 - MIT OR Apache-2.0 - https://github.com/image-rs/image
 indexmap 2.14.2 - Apache-2.0 OR MIT - https://github.com/indexmap-rs/indexmap
-inout 0.2.3 - MIT OR Apache-2.0 - https://github.com/RustCrypto/utils
+inout 0.2.4 - MIT OR Apache-2.0 - https://github.com/RustCrypto/utils
 itertools 0.15.0 - MIT OR Apache-2.0 - https://github.com/rust-itertools/itertools
 itoa 1.0.18 - MIT OR Apache-2.0 - https://github.com/dtolnay/itoa
 jobserver 0.1.35 - MIT OR Apache-2.0 - https://github.com/rust-lang/jobserver-rs
