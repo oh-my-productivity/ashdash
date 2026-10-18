@@ -1,6 +1,6 @@
 # Settings V4 "Instrument" with sidebar: implementation spec
 
-Source images: `general-dark.jpg` (primary), `general-light.jpg`, `reference-v4.jpg` (the V4 the owner picked). Target: egui 0.36.2, preferences window 760 x 560 pt (outer, native title bar). Scale in the images: 2.70 view-px per pt (window 2054 px = 760 pt).
+Source images: `general-dark.jpg` (primary), `general-light.jpg`, `reference-v4.jpg` (the V4 first pass). Target: egui 0.36.2, preferences window 760 x 560 pt (outer, native title bar). Scale in the images: 2.70 view-px per pt (window 2054 px = 760 pt).
 Colours were **sampled by script** (`tools/sample_tokens.py` -> `tools/sampled.json`), rounded to the palette below, and checked with `tools/contrast.py` (full table: `contrast.md`, 0 failures). Where a sampled value failed AA it was darkened or lightened and is marked **adj**. Items marked **new** are not in the image (the image has no error state, hover or focus ring).
 
 ## 1. Colour tokens
@@ -67,9 +67,9 @@ Grid 4 pt (steps 4, 8, 12, 16, 24). Title bar 28 pt (second pass; the traffic li
 
 Hover, disabled (`disabled_alpha` 0.5), error and focus states are defined here, not drawn. Other pages (Search, Clipboard, ...) reuse rows, cards and the sidebar unchanged.
 
-## 6. Owner-approved choices (second pass)
+## 6. Design decisions (second pass)
 
-These differ from the mockup on purpose and are final unless the owner says otherwise.
+These differ from the mockup on purpose and stand unless the maintainers change them.
 
 - **Stronger control outline than the image.** Controls (buttons, dropdown, stepper, recorder, search field) use `stroke_control` (`#6A6A6A` dark / `#8C8C8C` light, 3:1) instead of the image's near-invisible border. Hairlines of the grid stay 1.2:1.
 - **Amber warnings.** Warning lights, card outlines and amber text use the `attention` / `warn_text` tokens (amber), not the image's orange-red triangle; errors are red.
