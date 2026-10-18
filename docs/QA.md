@@ -90,7 +90,7 @@ The manual checklist below is scripted as far as a VM allows. Everything runs **
 Run: `tests/lab/lab-up --id qa --max-age 14400`, then `tests/lab/lab-run "$vm" --env QA_ART=/Users/admin/qa-art -- bash tests/lab/qa/pkg-install.sh`
 (and `checklist.sh`, `soak.sh` the same way), pull `~/qa-art` back with `scp`, `tests/lab/lab-down "$vm"`. What the guest cannot do (Spotlight is off, Full Disk Access is not enforced,
 display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
-The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs, since open), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
+The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs; fixed afterwards, see 3.2.4c), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
 
 ### 2.2 The same scripts in CI
 
@@ -121,7 +121,8 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] `saf` → Safari first. `vsc` → Visual Studio Code if installed (initials). `visual studio` → same.
 - [ ] `2+3*4` → 14, Return copies the result. `= sqrt(81)` → 9. `1/0` and `((((` show nothing and do not crash.
 - [ ] Pasting a very long text (100 KB), or 5,000 `(`, does not hang or crash the app (SEC-08/09).
-- [ ] Unicode: `ü`, emoji, CJK, an IME composition (Japanese/Chinese) do not lose characters or crash.
+- [ ] Unicode: `ü`, emoji, CJK, an IME composition (Japanese/Chinese) do not lose characters or crash. 3.2.4c: CJK is **drawn**, not boxes: type `日本語`, `中文测试` and `한국어 테스트` (field, result titles), and browse a folder with such file names (`~/folder/`); the preferences window shows CJK workflow/snippet names too. A mixed query (`日本語 中文 한국어 abc`) has no boxes. Idle memory with only Latin text must not change (the font is read on first need). Re-checked in the macOS 15 VM from the packaged app after the fix: all three languages and the file names drawn; Idle RSS with Latin text only is unchanged (77.2 MB before and after, release binary); with CJK shown the packaged app reaches about 84-89 MB RSS (80-81 MB without the fix), footprint within 1-3 MB.
+- [ ] PKG-17 login item: on a fresh install `ashdash login-item status` says `off`, `enable` says `enabled`, `disable` says `off`; "not found by macOS ... moved or deleted" appears only when the item was enabled and the app has since been moved or deleted (not reproduced in the VM: the unit tests cover it).
 - [ ] Backspace to empty clears results; Cmd+A, Cmd+Backspace edit as in any text field.
 - [ ] Typing fast (hold a key) keeps up: no results from an older query overwriting the newest.
 - [ ] `g rust`, `wiki x` offer web searches; fallback searches appear last for unknown text.
