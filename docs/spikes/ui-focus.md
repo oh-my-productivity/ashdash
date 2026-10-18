@@ -131,12 +131,11 @@ Re-run on CI (these scripts refuse to run elsewhere): `bash tests/e2e/focus/prob
 `bash tests/e2e/focus/regress.sh [--only ql|panel|click|idle]`; both build `Ashdash.app` into `~/focus-dist` (`FOCUS_DIST`).
 `ASHDASH_TRACE=1` now also prints one `frame focused=... +Nms after show` line per drawn frame while the launcher is shown.
 
-Lab notes from this work: (1) in one clone `tcc-grant.sh` was not enough for System Events keystrokes (`1002 not allowed to send
+Notes from this work (done in the retired VM lab; the same applies to a CI runner): (1) in one clone `tcc-grant.sh` was not enough for System Events keystrokes (`1002 not allowed to send
 keystrokes`): `sudo killall tccd` leaves the *system* `tccd` (pid started at boot) running with its old view; `kill -9` on it
 (launchd restarts it) fixed it, the probe scripts do that after the grant. (2) `ashdash://` URLs (`open ashdash://...`) go to
 whichever `Ashdash.app` LaunchServices last registered: with two bundles in the guest the URL consent checks (W5.4/W5.5) talk to
-the wrong one; delete the other bundle or `lsregister -f` the one under test. (3) `lab-up` VMs are reaped after 30 minutes unless
-started with `--max-age`.
+the wrong one; delete the other bundle or `lsregister -f` the one under test. (3) the VMs of the retired lab were reaped after 30 minutes.
 
 ## Preferences window
 
