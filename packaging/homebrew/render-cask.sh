@@ -4,12 +4,12 @@
 # Usage: render-cask.sh --dmg Ashdash-0.1.0.dmg [--repo owner/name] [--output file.rb]
 #        render-cask.sh --version 0.1.0 --sha256 <hex> [--repo owner/name]
 # The DMG's .sha256 file (written by make-dmg.sh) is used when --dmg is given and no --sha256 is.
-# The repository defaults to $GITHUB_REPOSITORY, else the placeholder OWNER/ashdash.
+# The repository defaults to $GITHUB_REPOSITORY, else the placeholder oh-my-productivity/ashdash.
 set -euo pipefail
 # shellcheck source=../lib.sh
 . "$(dirname "$0")/../lib.sh"
 
-version="" sha="" dmg="" repo="${GITHUB_REPOSITORY:-OWNER/ashdash}" output=""
+version="" sha="" dmg="" repo="${GITHUB_REPOSITORY:-oh-my-productivity/ashdash}" output=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) version="${2:?--version needs a value}"; shift 2 ;;

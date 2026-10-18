@@ -67,46 +67,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ashdash"
-version = "0.1.0"
-dependencies = [
- "ashdash-core",
- "anyhow",
- "arboard",
- "dirs",
- "eframe",
- "egui_extras",
- "global-hotkey",
- "image",
- "libc",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "objc2-quartz-core 0.3.2",
- "serde_json",
- "winit",
-]
-
-[[package]]
-name = "ashdash-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "criterion",
- "dirs",
- "notify",
- "plist",
- "proptest",
- "regex",
- "serde",
- "serde_json",
- "shlex",
- "thiserror 2.0.21",
- "walkdir",
- "zip",
-]
-
-[[package]]
 name = "alloca"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -218,6 +178,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "ashdash"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "ashdash-core",
+ "dirs",
+ "eframe",
+ "egui_extras",
+ "global-hotkey",
+ "image",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "serde_json",
+ "winit",
+]
+
+[[package]]
+name = "ashdash-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "dirs",
+ "notify",
+ "plist",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex",
+ "thiserror 2.0.21",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]

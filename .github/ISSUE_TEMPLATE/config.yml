@@ -1,1 +1,5 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/oh-my-productivity/ashdash/blob/main/docs/TROUBLESHOOTING.md
+    about: Symptoms and fixes; please check it before opening a bug report.

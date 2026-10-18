@@ -46,7 +46,7 @@ clear_field() { se 'keystroke "a" using {command down}' >/dev/null; key_code $KC
 ask() { show || return 1; clear_field; type_text "$1"; sleep "${2:-1.2}"; look "ask-$(echo "$1" | tr -c 'A-Za-z0-9' _ | cut -c1-20)"; }
 look() { shot "$1" 2>/dev/null || { echo "(no window)"; return 1; }; ocr "$QA_ART/$1.png" 2>/dev/null | grep -v IOServiceMatching | tr '\n' '|'; }
 has() { echo "$1" | grep -qiE "$2"; }
-tcc_reset() { tccutil reset All dev.ashdash.launcher >/dev/null 2>&1; }
+tcc_reset() { tccutil reset All io.github.oh-my-productivity.ashdash >/dev/null 2>&1; }
 textedit_open() { open -a TextEdit; sleep 3; se 'tell process "TextEdit" to keystroke "n" using command down' >/dev/null; sleep 1.5; }
 textedit_text() { se 'tell process "TextEdit" to get value of text area 1 of scroll area 1 of window 1' | tail -1; }
 textedit_close() { pkill -x TextEdit; sleep 1; rm -rf "$HOME/Library/Autosave Information" 2>/dev/null; }
@@ -354,12 +354,12 @@ s35() {
   hide_
   # grant Accessibility + PostEvent to the bundle id in this clone's TCC.db (SIP is off), restart, paste for real
   for svc in kTCCServiceAccessibility kTCCServicePostEvent; do
-    sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "insert or replace into access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) values('$svc','dev.ashdash.launcher',0,2,4,1,NULL,NULL,NULL,'UNUSED',NULL,0,CAST(strftime('%s','now') AS INTEGER));"
+    sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "insert or replace into access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) values('$svc','io.github.oh-my-productivity.ashdash',0,2,4,1,NULL,NULL,NULL,'UNUSED',NULL,0,CAST(strftime('%s','now') AS INTEGER));"
   done
   sudo -n killall tccd 2>/dev/null; sleep 2; start_app
   textedit_open; show; clear_field; type_text "snip qaplain"; sleep 1.2; key_code $KC_RETURN; sleep 2
   te=$(textedit_text)
-  [ "$te" = "PLAIN-SNIPPET-TEXT" ] && result 3.5.8b PASS "with Accessibility granted to dev.ashdash.launcher, Return on a snippet pastes into the frontmost app with a real Cmd+V (TextEdit now contains '$te')" || result 3.5.8b FAIL "TextEdit contains '$te'; front=$(front)"
+  [ "$te" = "PLAIN-SNIPPET-TEXT" ] && result 3.5.8b PASS "with Accessibility granted to io.github.oh-my-productivity.ashdash, Return on a snippet pastes into the frontmost app with a real Cmd+V (TextEdit now contains '$te')" || result 3.5.8b FAIL "TextEdit contains '$te'; front=$(front)"
   se 'tell process "TextEdit" to keystroke "a" using command down' >/dev/null; se 'key code 51' >/dev/null
   # the snippet paste and a transient copy are not history entries
   o=$(ask 'clip' 1.5)
@@ -505,7 +505,7 @@ s37() {
   local dlg; dlg=$(consent "Don’t Allow" 10); sleep 2; show; o=$(look auto-deny)
   [ -n "$dlg" ] && has "$o" 'Not authorized|-1743|Terminal' && result 3.7.2a PASS "first '> cmd' raises the Automation prompt: $(echo "$dlg" | cut -c1-330) | after Don't Allow the footer says: $o" || result 3.7.2a FAIL "prompt='${dlg:-none}' footer: $o"
   has "$o" 'System Settings|Automation|Privacy' && result 3.7.2b PASS "the denial message tells the user where to fix it" || result 3.7.2b FAIL "the denial message is the raw osascript error and does not say how to grant Automation in System Settings > Privacy & Security > Automation: $o"
-  hide_; tccutil reset AppleEvents dev.ashdash.launcher >/dev/null 2>&1
+  hide_; tccutil reset AppleEvents io.github.oh-my-productivity.ashdash >/dev/null 2>&1
   ask '> echo qa-automation-allow' 1.0 >/dev/null; key_code $KC_RETURN; sleep 2; consent Allow 10 >/dev/null; sleep 4
   pgrep -f 'qa-automation-allow' >/dev/null || ls /var/folders/*/*/T/*.command 2>/dev/null | head -1 >/dev/null
   local tw; tw=$(wd 20 osascript -e 'tell application "System Events" to tell process "Terminal" to get name of every window' | tail -1)
@@ -530,12 +530,12 @@ s37fda() {
   else
     has "$o" 'Full Disk Access|Disk' && result 3.7.3a PASS "Safari bookmarks without Full Disk Access: bm shows an explanatory row (OCR: $o)" || result 3.7.3a FAIL "bm without FDA: $o"
     hide_
-    sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "insert or replace into access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) values('kTCCServiceSystemPolicyAllFiles','dev.ashdash.launcher',0,2,4,1,NULL,NULL,NULL,'UNUSED',NULL,0,CAST(strftime('%s','now') AS INTEGER));"
+    sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "insert or replace into access(service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) values('kTCCServiceSystemPolicyAllFiles','io.github.oh-my-productivity.ashdash',0,2,4,1,NULL,NULL,NULL,'UNUSED',NULL,0,CAST(strftime('%s','now') AS INTEGER));"
     sudo -n killall tccd 2>/dev/null; sleep 2; start_app; hide_
     o=$(ask 'bm' 1.8)
     has "$o" 'QA Bookmark' && result 3.7.3b PASS "with Full Disk Access granted the same query lists the bookmark (OCR: $o)" || result 3.7.3b FAIL "bm with FDA: $o"
   fi
-  sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "delete from access where client='dev.ashdash.launcher' and service='kTCCServiceSystemPolicyAllFiles'"
+  sudo -n sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "delete from access where client='io.github.oh-my-productivity.ashdash' and service='kTCCServiceSystemPolicyAllFiles'"
   QAH=$saved; stop_app
 }
 
@@ -653,8 +653,8 @@ s_known() {
   o=$(osa_try as -e 'tell application "Ashdash" to search "saf"'); sleep 1.2; local sh; sh=$(look as-search)
   has "$sh" 'saf' && result KU-AS PASS "AppleScript: tell application \"Ashdash\" to search \"saf\" shows the launcher with 'saf' ($o) (OCR: $sh)" || result KU-AS FAIL "AppleScript search: '$o' / screen: $sh"
   hide_
-  o=$(osa_try jxa1 -l JavaScript -e 'Application("dev.ashdash.launcher").search("jxa-bundle-id")'); sleep 1.2; sh=$(look jxa1)
-  has "$sh" 'jxa-bundle' && result KU-JXA1 PASS "JXA with the bundle id works (Application('dev.ashdash.launcher').search(...)) ($o)" || result KU-JXA1 FAIL "JXA bundle id form: '$o' / $sh"
+  o=$(osa_try jxa1 -l JavaScript -e 'Application("io.github.oh-my-productivity.ashdash").search("jxa-bundle-id")'); sleep 1.2; sh=$(look jxa1)
+  has "$sh" 'jxa-bundle' && result KU-JXA1 PASS "JXA with the bundle id works (Application('io.github.oh-my-productivity.ashdash').search(...)) ($o)" || result KU-JXA1 FAIL "JXA bundle id form: '$o' / $sh"
   hide_
   o=$(osa_try jxa2 -l JavaScript -e 'Application("/Applications/Ashdash.app").search("jxa-path")'); sleep 1.2; sh=$(look jxa2)
   has "$sh" 'jxa-path' && result KU-JXA2 PASS "JXA with the path form works too ($o)" || result KU-JXA2 PASS "JXA path form is refused as documented (docs/AUTOMATION.md, -1701): '$o'"
