@@ -1,40 +1,150 @@
 name: release
 
-# Runs when a version tag is pushed (v0.1.0). Signs with a Developer ID certificate and
-# notarizes when the secrets below exist; otherwise produces an ad-hoc signed, clearly
-# labelled pre-release. The GitHub release is always created as a DRAFT, with the notes from
-# docs/release-notes/<tag>.md; a maintainer reads it and presses Publish. See docs/RELEASING.md.
+# One click, started by hand (Actions > release > Run workflow). The version is computed from the Conventional Commits since
+# the previous release (scripts/release/next-version.sh, cliff.toml), the release commit `chore(release): vX.Y.Z` and the
+# annotated tag `vX.Y.Z` are pushed to main, and a DRAFT GitHub release is created with the DMG, its checksum and the notes.
+# A maintainer reads the draft and presses Publish. How it works, the one-time setup and how to recover: docs/RELEASING.md.
 #
-# Third-party actions are pinned by commit SHA (the comment names the release).
+#   plan     (ubuntu, read-only)   computes the version and shows the plan. A dry run (the default) stops after this job.
+#   build    (macos, read-only)    prepares the release commit, builds and verifies the universal app and the DMG at that version.
+#   publish  (ubuntu, writes)      the only job that sees the deploy key: checks the release commit again, pushes commit and tag
+#                                  to the protected main, and creates the draft release.
+#
+# Why a deploy key: main is protected (pull requests and required checks). The key is a bypass actor of that ruleset, so the
+# release commit can be pushed without a pull request, and, unlike a push made with GITHUB_TOKEN, the push starts the normal CI.
+#
+# Third-party actions are pinned by commit SHA (the comment names the release). No tag trigger: pushing a tag does nothing.
 on:
-  push:
-    tags: ["v*"]
-  # Manual runs build and upload artifacts but never create a release (only tags do).
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump: auto computes it from the commits since the last release"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      version:
+        description: "Exact version X.Y.Z or X.Y.Z-rc.N (empty: computed). 1.0.0 is a deliberate decision made here."
+        type: string
+        default: ""
+      prerelease:
+        description: "Release candidate: append -rc.N to the computed version (and mark the release as a pre-release)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run: compute and show the plan and the notes, change nothing"
+        type: boolean
+        default: true
 
-# Least privilege: the build job (which runs third-party actions and the build scripts) cannot
-# write to the repository. Only the small publish job below gets `contents: write`.
+# Least privilege: nothing may write unless a job asks for it below.
 permissions:
   contents: read
 
+# Two releases must never overlap, and a running one is never cancelled.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
+env:
+  # The identity of the release commit and the tag. Override with repository variables RELEASE_GIT_NAME / RELEASE_GIT_EMAIL.
+  RELEASE_GIT_NAME: ${{ vars.RELEASE_GIT_NAME || 'Amin Alizadeh' }}
+  RELEASE_GIT_EMAIL: ${{ vars.RELEASE_GIT_EMAIL || '64799918+achieveramin@users.noreply.github.com' }}
+
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - name: Refuse a real release from any ref but main
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::A real release can only be started from main (this run is on ${GITHUB_REF}). Use a dry run here, or run the workflow from main."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the version depends on the tags and the whole history
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install git-cliff (pinned, SHA-256 checked)
+        run: scripts/release/install-git-cliff.sh
+
+      - name: Compute the version
+        id: plan
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: scripts/release/ci-plan.sh
+
+      # Also a rehearsal of the build job's preparation: the manifests, the lock file and the notes must come out right.
+      - name: Rehearse the release preparation
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/release/prepare.sh "$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          {
+            echo "### Files the release commit would change"
+            echo
+            echo '```'
+            git diff --stat | sed 's/^ //'
+            echo '```'
+            echo
+            echo "### Release notes"
+            echo
+            echo '````markdown'
+            cat "$RUNNER_TEMP/release-notes.md"
+            echo '````'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Say what happens next
+        if: always()
+        env:
+          RELEASE: ${{ steps.plan.outputs.release }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$RELEASE" != "true" ]; then
+            echo "No release will be made." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$DRY_RUN" = "true" ]; then
+            echo "**Dry run: nothing was changed.** Run the workflow again from main with dry_run switched off to release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The build and publish jobs follow." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
+    needs: plan
+    if: ${{ needs.plan.outputs.release == 'true' && !inputs.dry_run && github.ref == 'refs/heads/main' }}
     # macos-14 is retired on 2026-11-02; macos-15 builds the same universal app (MIN_OS stays 12.0).
     runs-on: macos-15
     timeout-minutes: 90
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      signed: ${{ steps.mode.outputs.signed }}
     env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      BASE_SHA: ${{ needs.plan.outputs.sha }}
       # Secrets cannot be tested in `if:` directly; expose only their presence.
       HAVE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' && secrets.CODESIGN_IDENTITY != '' }}
       HAVE_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
+    outputs:
+      signed: ${{ steps.mode.outputs.signed }}
     steps:
+      # Exactly the commit that was planned. If main moved on in the meantime, the publish job refuses and the run is repeated.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
         with:
@@ -43,24 +153,33 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Check the tag matches the crate version
-        id: version
+      - name: Install git-cliff (pinned, SHA-256 checked)
+        run: scripts/release/install-git-cliff.sh
+
+      - name: Prepare the release commit
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' crates/app/Cargo.toml | head -n 1)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match crates/app/Cargo.toml version $version" >&2
+          scripts/release/prepare.sh "$VERSION" --notes-file dist/release-notes.md
+          git config user.name "$RELEASE_GIT_NAME"
+          git config user.email "$RELEASE_GIT_EMAIL"
+          git add Cargo.toml Cargo.lock CHANGELOG.md crates/app/Cargo.toml crates/core/Cargo.toml
+          git commit --quiet -m "chore(release): v${VERSION}"
+          scripts/release/verify-release-commit.sh "$BASE_SHA" HEAD "$VERSION"
+          # The commit travels to the publish job as a git bundle, so that what is tagged is exactly what is built here.
+          git branch release-candidate HEAD
+          git bundle create dist/release.bundle release-candidate "^${BASE_SHA}"
+          git log -1 --format='release commit %H by %an <%ae>'
+
+      - name: Check the tag equals the version in Cargo.toml
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          crate="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' crates/app/Cargo.toml | head -n 1)"
+          if [ "$TAG" != "v$crate" ] || [ "$crate" != "$VERSION" ]; then
+            echo "tag $TAG, planned version $VERSION and crates/app/Cargo.toml version $crate do not agree" >&2
             exit 1
           fi
-
-      - name: Check the release notes and changelog exist (tags only)
-        if: github.ref_type == 'tag'
-        run: |
-          set -euo pipefail
-          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
-          [ -s "$notes" ] || { echo "missing or empty $notes" >&2; exit 1; }
-          grep -q "^## \[${GITHUB_REF_NAME#v}\]" CHANGELOG.md || { echo "CHANGELOG.md has no '## [${GITHUB_REF_NAME#v}]' section" >&2; exit 1; }
 
       - name: Signing mode
         id: mode
@@ -132,13 +251,9 @@ jobs:
         run: packaging/make-dmg.sh dist/Ashdash.app
 
       - name: Notarize the DMG
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: packaging/notarize.sh "dist/Ashdash-${VERSION}.dmg"
 
       - name: Refresh the checksum and render the Homebrew cask
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           dmg="dist/Ashdash-${VERSION}.dmg"
@@ -147,58 +262,130 @@ jobs:
           cat "$dmg.sha256"
           packaging/homebrew/render-cask.sh --dmg "$dmg" --repo "$GITHUB_REPOSITORY" --output dist/ashdash.rb
 
-      - name: Upload build artifacts
+      - name: Verify the app and the DMG at this version
+        run: |
+          set -euo pipefail
+          tests/lab/ci/verify-bundle.sh dist
+          plist_version="$(plutil -extract CFBundleShortVersionString raw -o - dist/Ashdash.app/Contents/Info.plist)"
+          binary_version="$(dist/Ashdash.app/Contents/MacOS/ashdash --version)"
+          echo "Info.plist: $plist_version; binary: $binary_version"
+          [ "$plist_version" = "$VERSION" ] || { echo "Info.plist says $plist_version, not $VERSION" >&2; exit 1; }
+          [ "$binary_version" = "ashdash $VERSION" ] || { echo "the binary says '$binary_version', not 'ashdash $VERSION'" >&2; exit 1; }
+          [ -s "dist/Ashdash-${VERSION}.dmg" ] || { echo "dist/Ashdash-${VERSION}.dmg is missing" >&2; exit 1; }
+
+      - name: Upload the release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ashdash-${{ steps.version.outputs.version }}
+          name: release-${{ needs.plan.outputs.version }}
           path: |
             dist/*.dmg
             dist/*.sha256
             dist/ashdash.rb
+            dist/release-notes.md
+            dist/release.bundle
           if-no-files-found: error
+          retention-days: 14
 
       - name: Remove the temporary keychain
         if: always() && env.HAVE_CERT == 'true' && env.KEYCHAIN_PATH != ''
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
-  # Creates the DRAFT release. Needs no secrets of its own and runs no build scripts.
+  # Pushes the release commit and the tag with the deploy key and creates the DRAFT release. It builds nothing and runs only
+  # reviewed scripts from main (the checkout is the planned commit of main).
   publish:
-    if: github.ref_type == 'tag'
-    needs: build
+    needs: [plan, build]
+    if: ${{ needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # An environment named "release" (Settings > Environments) may restrict the key to main and require an approval; see docs/RELEASING.md.
+    environment: release
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      BASE_SHA: ${{ needs.plan.outputs.sha }}
+      SIGNED: ${{ needs.build.outputs.signed }}
+      HAVE_KEY: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
     steps:
+      - name: Check that the deploy key exists
+        run: |
+          if [ "$HAVE_KEY" != "true" ]; then
+            echo "::error::The secret RELEASE_DEPLOY_KEY is not set. Follow 'One-time setup' in docs/RELEASING.md, then use 'Re-run failed jobs' (the build is kept)."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ashdash-${{ needs.build.outputs.version }}
+          name: release-${{ needs.plan.outputs.version }}
           path: dist
+
+      - name: Check the release commit
+        run: |
+          set -euo pipefail
+          git fetch --quiet dist/release.bundle 'refs/heads/release-candidate:refs/release/candidate'
+          COMMIT="$(git rev-parse refs/release/candidate)"
+          echo "COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          scripts/release/verify-release-commit.sh "$BASE_SHA" "$COMMIT" "$VERSION"
+
+      - name: Push the release commit and the tag
+        run: |
+          set -euo pipefail
+          git config user.name "$RELEASE_GIT_NAME"
+          git config user.email "$RELEASE_GIT_EMAIL"
+          # A re-run after a partial failure: the tag is pushed together with the commit, so a tag at our commit means "done".
+          remote_tag="$(git ls-remote origin "refs/tags/${TAG}^{}" | cut -f1)"
+          if [ "$remote_tag" = "$COMMIT" ]; then
+            echo "$TAG is already at $COMMIT (a re-run): nothing to push."
+            exit 0
+          elif [ -n "$remote_tag" ]; then
+            echo "$TAG already exists at $remote_tag, not at $COMMIT. Nothing was pushed." >&2
+            exit 1
+          fi
+          remote_main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$remote_main" != "$BASE_SHA" ]; then
+            echo "main moved on: it is at $remote_main, the release was built on $BASE_SHA. Nothing was pushed; run the release again." >&2
+            exit 1
+          fi
+          git tag -a "$TAG" -m "Ashdash ${VERSION}" "$COMMIT"
+          # One atomic push: either both the commit and the tag arrive, or neither does.
+          git push --atomic origin "${COMMIT}:refs/heads/main" "refs/tags/${TAG}"
 
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.build.outputs.version }}
-          SIGNED: ${{ needs.build.outputs.signed }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
           set -euo pipefail
-          notes_src="docs/release-notes/${GITHUB_REF_NAME}.md"
-          [ -s "$notes_src" ] || { echo "missing or empty $notes_src" >&2; exit 1; }
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "A release for $TAG exists already (a re-run): uploading the files again."
+            gh release upload "$TAG" --clobber dist/*.dmg dist/*.sha256 dist/ashdash.rb
+            exit 0
+          fi
           notes="$RUNNER_TEMP/notes.md"
           flags=(--draft --verify-tag --title "Ashdash ${VERSION}" --notes-file "$notes")
-          if [ "$SIGNED" != "true" ]; then
+          if [ "$SIGNED" != "true" ] || [ "$PRERELEASE" = "true" ]; then
             flags+=(--prerelease)
-            {
-              echo "> **Ad-hoc signed build, not notarized.** Gatekeeper will block it until you right-click > Open,"
-              echo "> or run \`xattr -dr com.apple.quarantine /Applications/Ashdash.app\`."
-              echo "> Source, documentation and issues: https://github.com/oh-my-productivity/ashdash"
-              echo
-              cat "$notes_src"
-            } > "$notes"
-          else
-            cp "$notes_src" "$notes"
           fi
+          {
+            if [ "$SIGNED" != "true" ]; then
+              echo "> **Ad-hoc signed build, not notarized.** Gatekeeper will block it until you follow the install steps below."
+              echo "> Source, documentation and issues: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+              echo
+            fi
+            cat dist/release-notes.md
+          } > "$notes"
           ls -l dist
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" dist/*.dmg dist/*.sha256 dist/ashdash.rb
+          gh release create "$TAG" "${flags[@]}" dist/*.dmg dist/*.sha256 dist/ashdash.rb
+          {
+            echo "## Released ${VERSION} (draft)"
+            echo
+            echo "Release commit \`${COMMIT}\` and tag \`${TAG}\` are on main. Read the draft, then press Publish:"
+            gh release view "$TAG" --json url --jq .url
+          } >> "$GITHUB_STEP_SUMMARY"

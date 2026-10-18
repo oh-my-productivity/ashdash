@@ -1,0 +1,72 @@
+name: release-preview
+
+# Which version would the next release have, and what would its notes say? Written to the job summary of the run, never to
+# a comment: no pull-request write permission is needed, so it behaves the same for pull requests from forks and cannot spam.
+#
+#   preview         pull requests: the release before and after the squash commit that merging would add (title + description,
+#                   which is how this repository squash-merges); pushes to main: the next release as things stand.
+#   release-tests   the tests of scripts/release (git-cliff rules, version bump, changelog, release commit gate).
+#
+# Security: `pull_request` only (never `pull_request_target`), read-only token, no secrets. The preview job checks out the BASE
+# branch and runs its scripts; the pull request only contributes its title and description as text (through environment
+# variables, never interpolated into a command line). The tests job runs the pull request's own scripts, like `check` in ci.yml.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # For a pull request: the base commit of main, not the pull request's code.
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install git-cliff (pinned, SHA-256 checked)
+        run: scripts/release/install-git-cliff.sh
+
+      - name: Preview of a pull request
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$RUNNER_TEMP/squash-message.txt"
+          # tee: the same text goes to the job summary and to the log
+          scripts/release/preview.sh --message-file "$RUNNER_TEMP/squash-message.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Preview of main
+        if: github.event_name != 'pull_request'
+        run: scripts/release/preview.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+  release-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - name: Install git-cliff (pinned, SHA-256 checked)
+        run: scripts/release/install-git-cliff.sh
+      - name: Tests of the release scripts
+        env:
+          REQUIRE_GIT_CLIFF: "1"
+        run: scripts/release/test/run-tests.sh
