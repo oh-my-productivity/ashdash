@@ -60,7 +60,8 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
   ```
 
   Plain clones and forks work equally well; open a pull request from your branch.
-* Commit small steps with a message that says why. Do not `git push --force` to shared branches and do not rewrite history that
+* Commit small steps with a message that says why, written as a [Conventional Commit](#commit-messages-and-pull-requests)
+  (`type(scope): subject`). Do not `git push --force` to shared branches and do not rewrite history that
   others have fetched.
 * **Gate for every change:** `scripts/check.sh` must print `check.sh: OK`. CI (`.github/workflows/ci.yml`) runs it on macOS
   (job `check`), `cargo deny` runs in the job `deny` ([below](#dependencies-and-licences)), and two more jobs test the lab scripts and
@@ -157,9 +158,73 @@ User-facing behaviour is documented in `docs/`; if you change a command, key bin
 the same commit. Every command and config key shown in the docs must exist: check with `ashdash --help` and `ashdash config keys`.
 Do not add screenshots that show anyone's desktop, and no artwork you did not make.
 
+## Commit messages and pull requests
+
+Ashdash uses [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/). The release version and the changelog are
+computed from the messages on `main`, so the format is checked, locally by git hooks and again in CI.
+
+```
+type(scope)!: subject
+
+optional body, separated by an empty line
+
+optional footers, for example
+BREAKING CHANGE: what breaks and how to migrate
+Refs: #123
+```
+
+* **Types:** `feat` (new feature), `fix` (bug fix), `perf`, `refactor`, `docs`, `test`, `build` (build, packaging, dependencies),
+  `ci`, `chore`, `style` (formatting only), `revert`.
+* **Scope** is optional and free: `gui`, `core`, `prefs`, `lab`, `packaging`, `deps`, `gui/prefs` ...
+* **Subject:** imperative ("add", not "added"), starts in lower case, no trailing period; the whole header is at most **72 characters**.
+  Say what the change does; the body says why.
+* **Breaking change:** a `!` before the colon (`refactor(core)!: rename the snippets store`) or a `BREAKING CHANGE: <text>` footer.
+* Valid: `feat(gui): add a dark appearance to the preferences window`, `fix: keep the window on the screen that holds the cursor`,
+  `docs: explain the import limits`, `ci(deps): bump actions/checkout from 7.0.0 to 7.0.1`.
+  Not valid: `Fixed the crash` (no type), `Fix: crash` (type in capitals), `feat: Add x.` (capital, trailing period),
+  `feat:add x` (no space after the colon), a 90-character header.
+* What the version does with them (while the major version is 0): a breaking change or `feat` makes a minor release, `fix` and `perf` a
+  patch release; the other types alone make no release. `1.0.0` is a deliberate manual decision. ([docs/RELEASING.md](docs/RELEASING.md))
+* Git-made messages are fine in your local branch: `Merge ...`, `Revert "..."`, `fixup! ...`, `squash! ...`. They never reach `main`:
+  pull requests are squash-merged.
+
+**Pull requests are squash-merged, so the pull request title becomes the commit on `main`.** The title must follow the format above;
+the commits inside the pull request should too (CI checks both), but only the title is kept. Put the details in the description, not in
+the title, and use the pull request template's checklist.
+
+### Install the git hooks
+
+```sh
+scripts/setup-hooks.sh              # once per clone: git config --local core.hooksPath .githooks (nothing global is touched)
+scripts/setup-hooks.sh --status     # what is installed, which optional tools were found
+scripts/setup-hooks.sh --uninstall  # remove it again
+git config commit.template .gitmessage   # optional: a commit message template with the cheat sheet (not set for you)
+```
+
+The hooks need only git, bash (the macOS system bash is fine) and the Rust toolchain. They use `shellcheck`, `actionlint` and `gitleaks`
+when they are installed (`brew install shellcheck actionlint gitleaks`) and say which checks they skipped when not.
+
+| Hook | What it checks |
+|---|---|
+| `commit-msg` | the message is a valid Conventional Commit (`scripts/commit-lint.sh`) and contains no retired product name |
+| `pre-commit` (staged changes only, about a second) | `rustfmt` on staged `.rs` files (the staged content); `shellcheck` on staged shell scripts and `actionlint` on staged workflows; no file over 1 MiB (images in `docs/assets` and fonts are allowed, see `.githooks/large-files.allow`); no merge-conflict markers and no trailing whitespace on lines you added; a secret scan (`gitleaks` if installed, otherwise built-in patterns for private keys, GitHub / AWS / Slack / Google / Stripe keys and file names such as `.env`, `*.pem`, `id_rsa`; end a line with `secret-scan:allow` for a false positive); the retired product names ([Names](#ground-rules); `crates/core/tests/names.rs` stays the authority); and a warning, not a block, when `user.email` is not a `users.noreply.github.com` address, because the e-mail of a commit is public |
+| `pre-push` | `commit-lint.sh` on the commits being pushed, then `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` (with a throw-away `HOME`, like `scripts/check.sh`). `SKIP_PREPUSH=1 git push` skips the two cargo steps only; the message check still runs |
+
+Prefer the [pre-commit](https://pre-commit.com) framework? `.pre-commit-config.yaml` calls the same scripts. Use one of the two:
+`scripts/setup-hooks.sh --uninstall` first, then `pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
+
+You can check a message or a range yourself: `scripts/commit-lint.sh --title "feat(gui): add x"`, `scripts/commit-lint.sh --range origin/main..HEAD`.
+To fix a bad message: `git commit --amend` for the last commit, `git rebase -i origin/main` (mark `reword`) for older ones, or squash the branch.
+
+**CI repeats everything, because hooks can be skipped.** The `commit-lint` workflow validates the pull request title and every commit message
+of the pull request; `check` runs `scripts/check.sh` (fmt, clippy, tests, and the tests of these hooks); the `packaging` job lints every
+shell script and workflow; `cargo deny` and the name guard test run there too. **In an emergency** `git commit --no-verify` and
+`git push --no-verify` skip the hooks, but the pull request will still be red until the title and the commits are fixed, so use them
+only to save work-in-progress locally, never to get around a check.
+
 ## Pull requests
 
-* Say what changed and why, how you tested it, and what you could not test (for example anything that needs a real keyboard,
+* Title in the Conventional Commits format (see above); the description is the template: what and why, how you tested it, and what you could not test (for example anything that needs a real keyboard,
   a second display or a permission prompt).
 * Keep a pull request to one topic. `scripts/check.sh` must pass; add or update tests for behaviour changes and the matching
   page in `docs/` for anything a user can see.

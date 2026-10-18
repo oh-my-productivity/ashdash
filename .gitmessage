@@ -1,0 +1,25 @@
+# <type>(<scope>)!: <subject>                                      <- at most 72 characters, imperative, lower case, no period
+#
+# Why this change, what it does differently (wrap at about 72 columns). The body is optional;
+# leave the empty line above it.
+#
+# Footers (optional):
+#   BREAKING CHANGE: <what breaks and how to migrate>
+#   Refs: #123
+#
+# Types: feat fix perf refactor docs test build ci chore style revert
+#   feat      a new feature for users                  (minor release)    fix    a bug fix                (patch)
+#   perf      a performance improvement                (patch)            docs   documentation only
+#   refactor  code change that neither fixes nor adds   test   tests only        build  build, packaging, dependencies
+#   ci        workflows and CI scripts                  chore  maintenance        style  formatting only
+#   revert    undoes an earlier commit
+# A "!" after the type or scope, or a BREAKING CHANGE footer, marks a breaking change (while the version is 0.x: a minor release).
+# Scopes are free: gui, core, prefs, lab, packaging, deps ...
+#
+# Examples:
+#   feat(gui): add a dark appearance to the preferences window
+#   fix: keep the window on the screen that holds the cursor
+#   refactor(core)!: rename the snippets store
+#
+# Lines starting with # are removed by git. Enable this template once, in your clone only:
+#   git config commit.template .gitmessage
