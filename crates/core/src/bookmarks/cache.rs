@@ -436,23 +436,25 @@ mod tests {
 
     #[test]
     fn backoff_grows_exponentially_up_to_the_cap() {
+        // Waits of 200 ms and 400 ms (cap): the upper-bound check (a sleep that must NOT reach the wait) tolerates 250 ms of
+        // oversleeping. 40/80 ms failed on every arm64 GitHub-hosted runner, where a 30 ms sleep takes well over 50 ms under load.
         let s = FakeSource::new("a", Err(SourceError::other("x")));
         let c = BookmarkCache::with_timing(
             vec![boxed(&s)],
             DEFAULT_RECHECK,
-            Duration::from_millis(40),
-            Duration::from_millis(80),
+            Duration::from_millis(200),
+            Duration::from_millis(400),
         );
-        c.refresh_blocking(); // failure 1: wait 40 ms
+        c.refresh_blocking(); // failure 1: wait 200 ms
         c.refresh_blocking();
         assert_eq!(s.loads.load(SeqCst), 1);
-        std::thread::sleep(Duration::from_millis(60));
-        c.refresh_blocking(); // failure 2: wait 80 ms (capped)
+        std::thread::sleep(Duration::from_millis(300));
+        c.refresh_blocking(); // failure 2: wait 400 ms (capped)
         assert_eq!(s.loads.load(SeqCst), 2);
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(150));
         c.refresh_blocking();
         assert_eq!(s.loads.load(SeqCst), 2, "second wait is longer than the first");
-        std::thread::sleep(Duration::from_millis(80));
+        std::thread::sleep(Duration::from_millis(400));
         c.refresh_blocking();
         assert_eq!(s.loads.load(SeqCst), 3);
     }
