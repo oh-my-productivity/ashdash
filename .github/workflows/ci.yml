@@ -1,51 +1,46 @@
 name: ci
 
-# What runs where is explained in docs/CI.md. In short:
-#   every pull request and push to main: check, deny, lab-scripts, packaging, perf (all cheap; `check` and `deny` are required status checks);
-#   pushes to main and manual runs also: gui-smoke (macos-15, macos-26), x86-64 (macos-15-intel), bundle (universal .app + DMG).
-# The nightly checklist and the soak are in nightly.yml, the RustSec advisories in advisories.yml.
+# The cheap checks, on every pull request and every push to main. What runs where is in docs/TESTING.md (the policy) and docs/CI.md.
+#   check        scripts/check.sh: the local gate (fmt, clippy, unit and integration tests, commit-lint tests, policy). Required status check.
+#   deny         licences, banned crates, sources. Required status check.
+#   commit-lint  the pull request title and every commit message (Conventional Commits).
+#   hooks        the tests of the git hooks (real commits in throw-away repositories, about a minute).
+#   policy       the testing policy: scripts/policy-check.sh and the tests of the policy tooling.
+#   packaging    packaging self-test, NOTICE, shellcheck/actionlint, and the tests of the e2e scripts.
+# The end-to-end jobs are in e2e.yml, stress and performance in stress.yml, the soak in soak.yml. Fork pull requests get this file only:
+# the others drive a GUI session on a hosted runner and are limited to branches of this repository (docs/TESTING.md).
 #
 # Security (public repository): only `pull_request` (never `pull_request_target`), read-only token, no secrets in this file, every
 # third-party action pinned by commit SHA (the comment names the release), a timeout on every job, superseded runs are cancelled.
+# The pull request title and the branch name are attacker-controlled text: they reach the shell only through environment variables.
 on:
   push:
     branches: [main]
   pull_request:
+    # `edited` re-runs the title check; every other job is skipped for it (a skipped required check counts as passed)
+    types: [opened, edited, synchronize, reopened]
   workflow_dispatch:
-    inputs:
-      stress:
-        description: "Also run the timing tests many times under CPU load (job `stress`, hours; scripts/stress-timing.sh)"
-        type: boolean
-        default: false
-      target_ref:
-        description: "stress: branch, tag or SHA whose tests are stressed (empty = the dispatched ref)"
-        default: ""
-        required: false
-      runs:
-        description: "stress: runs per test"
-        default: "100"
-        required: false
-      slow_runs:
-        description: "stress: runs of the tests that take about 10 s each"
-        default: "40"
-        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  # a stress dispatch gets a group of its own, so that it neither cancels nor is cancelled by the ordinary runs of the same ref
-  group: ci-${{ github.event.pull_request.number || github.ref }}${{ inputs.stress && format('-stress-{0}', github.run_id) || '' }}
+  # a title edit gets a group of its own, so that it never cancels the run of the code it is about
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && 'title' || 'code' }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Required status check. fmt + clippy + tests (scripts/check.sh).
+  # Required status check. Runs the local gate. A cold cache on a hosted runner is slower than a laptop with a warm one, so the budget
+  # of check.sh is raised here (it may be raised on CI only); the stage times are in the job summary.
   check:
+    if: github.event.action != 'edited'
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      CHECK_BUDGET_SECONDS: "900"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,6 +57,7 @@ jobs:
   # The action is a Docker container, so it runs on Linux; deny.toml restricts the graph to the macOS targets.
   # Pinned by commit SHA (tag v2.1.1, cargo-deny 0.20.2).
   deny:
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -72,19 +68,65 @@ jobs:
         with:
           command: check licenses bans sources
 
-  # The host tests of the lab scripts: slot semaphore, lab-with-vm / lab-up / lab-down against a fake `tart` and `ssh`, the guards of
-  # tcc-grant.sh (including the CI mode), the CI wrappers. No VM, no GUI.
-  lab-scripts:
-    runs-on: macos-15
-    timeout-minutes: 20
+  # Conventional Commits (CONTRIBUTING.md, "Commit messages and pull requests"). Pull requests are squash-merged, so the TITLE becomes the
+  # commit on main and the release version is computed from it; the commits inside the pull request are checked too, because the hooks that
+  # check them locally can be skipped (git commit --no-verify). Not a required check until the maintainers add it to the ruleset.
+  commit-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # Dependabot writes titles such as "build(deps): bump the minor-and-patch group across 1 directory with 5 updates" and cannot
+      # be configured to shorten them, so its pull requests get a longer header limit.
+      COMMIT_LINT_MAX_HEADER: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && '120' || '72' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the base branch and the whole branch history are needed for the commit range
+          persist-credentials: false
+      - name: Pull request title
+        run: scripts/commit-lint.sh --forbid-names --title "$PR_TITLE"
+      - name: Commit messages of the pull request
+        if: ${{ !cancelled() && github.event.action != 'edited' }}
+        run: scripts/commit-lint.sh --forbid-names --range "refs/remotes/origin/$BASE_REF..$HEAD_SHA"
+
+  # The tests of the git hooks and of the commit validator: about 40 s of real commits, too long for the local gate (which runs the
+  # validator tests only), so they run here. On Linux; the macOS `check` job does not need them.
+  hooks:
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: tests/lab/test/run-tests.sh
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: tests/hooks/run-tests.sh
 
-  # Packaging inputs, the generated NOTICE, and the linters for every shell script and workflow in the repository.
+  # The testing policy (docs/TESTING.md): no non-ignored test and no script of the local gate does what only CI may do. Static, seconds.
+  policy:
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Policy check
+        run: scripts/policy-check.sh --list-allowed
+      - name: Tests of the policy check and of ci-run.sh
+        run: tests/policy/run-tests.sh
+
+  # Packaging inputs, the generated NOTICE, the linters for every shell script and workflow in the repository, and the tests of the
+  # e2e scripts that need no GUI (guards, result classification).
   packaging:
+    if: github.event.action != 'edited'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -116,152 +158,6 @@ jobs:
           echo "$tools/shellcheck-v0.11.0" >> "$GITHUB_PATH"
           echo "$tools" >> "$GITHUB_PATH"
       - name: shellcheck and actionlint
-        run: tests/lab/ci/lint.sh
-
-  # Absolute latency ceilings. A wall-clock ceiling only means something for an optimised build, so these `perf_*` tests are
-  # `#[ignore]`d in the debug test run of `check` (which guards the same code paths with machine-independent checks: counted
-  # allocations and scaling ratios) and run here in release mode, one at a time. Not a required status check. See docs/CI.md.
-  perf:
-    runs-on: macos-15
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Release-mode latency guards
-        run: cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1
-
-  # ---- only on pushes to main and manual runs (they use more runner minutes than a pull request needs) -------------------------------
-  # The lab smoke job on the hosted runner: bundle, launch in the GUI session, show/search, ashdash://, global hotkey, login item, quit.
-  gui-smoke:
-    if: github.event_name != 'pull_request' && !inputs.stress
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [macos-15, macos-26]
-    name: gui-smoke (${{ matrix.image }})
-    runs-on: ${{ matrix.image }}
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: ${{ matrix.image }}
-      - run: bash tests/lab/ci/run-smoke.sh
-      - name: Upload logs and screenshots (failures only)
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: gui-smoke-${{ matrix.image }}
-          path: ${{ runner.temp }}/ashdash-ci/smoke
-          retention-days: 7
-          if-no-files-found: ignore
-
-  # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests, a native build and the GUI smoke test on x86-64.
-  x86-64:
-    if: github.event_name != 'pull_request' && !inputs.stress
-    runs-on: macos-15-intel
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: uname -m
-      - run: cargo test --workspace
-      - run: cargo build -p ashdash
-      # Builds the native x86-64 bundle too, and launches it: the only place where the Intel slice is executed. tcc-grant.sh refuses on
-      # this image (the model is not VirtualMac*); the permissions the smoke test needs are already granted there.
-      - name: GUI smoke test on Intel
-        run: bash tests/lab/ci/run-smoke.sh
-      - name: Upload logs and screenshots (failures only)
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: gui-smoke-macos-15-intel
-          path: ${{ runner.temp }}/ashdash-ci/smoke
-          retention-days: 7
-          if-no-files-found: ignore
-
-  # Universal .app and DMG as a release would produce them (ad-hoc signed), verified, kept for 7 days as a workflow artifact.
-  bundle:
-    if: github.event_name != 'pull_request' && !inputs.stress
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build the universal app and the DMG
-        env:
-          BUILD_NUMBER: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          packaging/build-app.sh
-          packaging/make-dmg.sh dist/Ashdash.app
-      - name: Verify the app and the DMG
-        run: tests/lab/ci/verify-bundle.sh dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ashdash-bundle-${{ github.sha }}
-          path: |
-            dist/*.dmg
-            dist/*.sha256
-          retention-days: 7
-          if-no-files-found: error
-
-  # Manual only (`gh workflow run ci.yml --ref <branch> -f stress=true [-f target_ref=<branch or SHA>]`). Runs the formerly clock-dependent
-  # tests many times in a row while four busy loops per CPU keep the runner saturated, the way a slow shared runner behaves. Anything that
-  # saturates CPUs runs here, never on a developer machine. `target_ref` selects the code under test; the script comes from the dispatched
-  # ref, so it can be pointed at older code to show that a test failed before a fix. See docs/CI.md.
-  stress:
-    if: github.event_name == 'workflow_dispatch' && inputs.stress
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [macos-15, macos-15-intel]
-    name: stress (${{ matrix.image }})
-    runs-on: ${{ matrix.image }}
-    timeout-minutes: 300
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          path: tools
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.target_ref || github.sha }}
-          path: src
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src
-          key: stress-${{ matrix.image }}
-      - name: Show what is tested
-        working-directory: src
-        run: git log -1 --format='%H %s'
-      - name: Stress the timing tests
-        env:
-          RUNS: ${{ inputs.runs }}
-          SLOW_RUNS: ${{ inputs.slow_runs }}
-        run: tools/scripts/stress-timing.sh --runs "$RUNS" --slow-runs "$SLOW_RUNS" src
+        run: scripts/ci/lint.sh
+      - name: Tests of the e2e scripts
+        run: tests/e2e/test/run-tests.sh

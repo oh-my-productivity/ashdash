@@ -1,0 +1,218 @@
+name: e2e
+
+# End-to-end tests: they start the app, show windows, press the global hotkey, use the pasteboard, Quick Look, Finder and the URL scheme on
+# a GitHub-hosted macOS runner (an Apple virtual machine with a logged-in GUI session). They never run on a developer's machine
+# (docs/TESTING.md). Run one for your branch with  scripts/ci-run.sh <suite> --watch .
+#
+#   smoke         macOS 15 and 26: bundle, launch, show/search, ashdash://, global hotkey, login item, quit. Every pull request from this
+#                 repository and every push to main, so a branch is validated before it is merged.
+#   checklist     the full scripted QA checklist (tests/e2e/qa/checklist.sh) on macOS 15 and 26. Nightly and on demand.
+#   screenshots   every page of the preferences window, dark and light, as an artifact (7 days). On pushes to main and on demand.
+#   x86-64        the last Intel image: tests, a native build and the GUI smoke test. On pushes to main and on demand.
+#   bundle        the universal .app and the DMG, ad-hoc signed and verified (7 days). On pushes to main and on demand.
+# Dispatch inputs: `suite` (one of the above or `all`), `ref` (branch, tag or SHA to test; empty = the dispatched ref), `sections`
+# (checklist sections, empty = all).
+#
+# Security (public repository): `pull_request` only (never `pull_request_target`), read-only token, no secrets. Pull requests from forks do
+# not run this file: a job that takes over a GUI session and writes TCC rows must not run code from a stranger; they get the cheap jobs of
+# ci.yml, and the maintainers push the branch to this repository to run these. Every action is pinned by commit SHA, every job has a
+# timeout, superseded runs are cancelled, artifacts are kept for failures (or because they are the result) and expire after 7 days.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 2 * * *" # every day 02:41 UTC: the checklist
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which suite"
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - checklist
+          - screenshots
+          - x86-64
+          - bundle
+          - all
+      ref:
+        description: "Branch, tag or SHA to test (empty = the dispatched ref)"
+        type: string
+        default: ""
+        required: false
+      sections:
+        description: "checklist: sections (space separated, empty = all), e.g. s31 s32"
+        type: string
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      || github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","all"]'), inputs.suite))
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    name: smoke (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.image }}
+      - run: bash tests/e2e/ci/run-smoke.sh
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-${{ matrix.image }}
+          path: ${{ runner.temp }}/ashdash-ci/smoke
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The scripted checklist drives the real GUI of the runner for up to three hours; rows that cannot work on a hosted runner are listed
+  # with their reason in tests/e2e/ci/blocked.tsv and show up as BLOCKED, never hidden (docs/CI.md).
+  checklist:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["checklist","all"]'), inputs.suite))
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    name: checklist (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.image }}
+      - name: Checklist
+        env:
+          SECTIONS: ${{ inputs.sections }}
+        run: |
+          # shellcheck disable=SC2086  # SECTIONS is a list of section names
+          bash tests/e2e/ci/run-checklist.sh $SECTIONS
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checklist-${{ matrix.image }}
+          path: ${{ runner.temp }}/ashdash-ci/checklist
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Screenshots are the result of this job: kept on success too.
+  screenshots:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["screenshots","all"]'), inputs.suite))
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: screenshots
+      - run: bash tests/e2e/ci/run-screenshots.sh
+      - name: Upload the screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preferences-screenshots
+          path: ${{ runner.temp }}/ashdash-ci/screenshots
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests, a native build and the GUI smoke test on x86-64.
+  x86-64:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["x86-64","all"]'), inputs.suite))
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: uname -m
+      - run: cargo test --workspace
+      - run: cargo build -p ashdash
+      # Builds the native x86-64 bundle too, and launches it: the only place where the Intel slice is executed. tcc-grant.sh refuses on
+      # this image (the model is not VirtualMac*); the permissions the smoke test needs are already granted there.
+      - name: GUI smoke test on Intel
+        run: bash tests/e2e/ci/run-smoke.sh
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-macos-15-intel
+          path: ${{ runner.temp }}/ashdash-ci/smoke
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Universal .app and DMG as a release would produce them (ad-hoc signed), verified, kept for 7 days as a workflow artifact.
+  bundle:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["bundle","all"]'), inputs.suite))
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build the universal app and the DMG
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          packaging/build-app.sh
+          packaging/make-dmg.sh dist/Ashdash.app
+      - name: Verify the app and the DMG
+        run: tests/e2e/ci/verify-bundle.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ashdash-bundle-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,205 @@
+name: stress
+
+# Everything that stresses resources or measures time runs here, never on a developer's machine (docs/TESTING.md): the heavy and
+# real-OS Rust tests, the timing tests under CPU load, the GUI performance run, the benchmarks. Nightly and on demand:
+#   scripts/ci-run.sh <suite> --watch      (suites: ignored timing perf-gui bench test-times stress)
+#
+#   ignored      every #[ignore = "ci: ..."] Rust test, in release mode, one at a time, plus the fuzz suites at their full case counts
+#                (scripts/ci/run-ignored.sh). Includes the absolute latency ceilings (`perf_*` tests).
+#   timing       the formerly clock-dependent tests, run many times in a row while four busy loops per CPU keep the runner saturated, the
+#                way a slow shared runner behaves, on macOS 15 (arm64) and macOS 15 Intel (scripts/ci/stress-timing.sh). A failure here is
+#                a test that depends on the speed of the machine.
+#   perf-gui     the real release app: cold and warm start-up, hotkey latency, idle CPU and memory (tests/e2e/ci/run-perf-gui.sh). The
+#                table is in the job summary, results.jsonl in the artifact.
+#   bench        the benchmarks of crates/core/benches (the human-readable report and the criterion queries).
+#   test-times   the time of every Rust test, alone: the data behind the classification of docs/TESTING.md.
+# Dispatch inputs: `suite` (one of the above or `all`), `ref` (branch, tag or full SHA whose TESTS are run; empty = the dispatched ref. The
+# scripts always come from the dispatched ref, so this can point the current stress script at older code to show that a test failed
+# before a fix), `runs` and `slow_runs` (timing: runs per test, and for the tests that take about 10 s each).
+#
+# Security (public repository): read-only token, no secrets, every action pinned by commit SHA, a timeout on every job, superseded runs are
+# cancelled. The result files are the point of the perf and bench jobs, so they are uploaded on success too (7 days); the other jobs
+# upload only on failure.
+on:
+  schedule:
+    - cron: "41 3 * * *" # every day 03:41 UTC
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which suite"
+        type: choice
+        default: ignored
+        options:
+          - ignored
+          - timing
+          - perf-gui
+          - bench
+          - test-times
+          - all
+      ref:
+        description: "Branch, tag or full SHA whose tests are run (empty = the dispatched ref)"
+        type: string
+        default: ""
+        required: false
+      runs:
+        description: "timing: runs per test"
+        type: string
+        default: "100"
+        required: false
+      slow_runs:
+        description: "timing: runs of the tests that take about 10 s each"
+        type: string
+        default: "40"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.suite || github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ignored:
+    if: github.event_name == 'schedule' || contains(fromJSON('["ignored","all"]'), inputs.suite)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: stress-ignored
+      - run: scripts/ci/run-ignored.sh
+
+  # Anything that saturates CPUs runs here. The script comes from the dispatched ref (checkout `tools`), the tests from `ref` (checkout `src`).
+  timing:
+    if: github.event_name == 'schedule' || contains(fromJSON('["timing","all"]'), inputs.suite)
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-15-intel]
+    name: timing (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+          path: src
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src
+          key: stress-${{ matrix.image }}
+      - name: Show what is tested
+        working-directory: src
+        run: git log -1 --format='%H %s'
+      - name: Stress the timing tests
+        env:
+          # a nightly run is shorter than a dispatch (whose defaults are 100 and 40)
+          RUNS: ${{ inputs.runs || '20' }}
+          SLOW_RUNS: ${{ inputs.slow_runs || '5' }}
+        run: tools/scripts/ci/stress-timing.sh --runs "$RUNS" --slow-runs "$SLOW_RUNS" src
+
+  perf-gui:
+    if: github.event_name == 'schedule' || contains(fromJSON('["perf-gui","all"]'), inputs.suite)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: perf-gui
+      - run: bash tests/e2e/ci/run-perf-gui.sh
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-gui
+          path: ${{ runner.temp }}/ashdash-ci/perf-gui
+          retention-days: 7
+          if-no-files-found: ignore
+
+  bench:
+    if: github.event_name == 'schedule' || contains(fromJSON('["bench","all"]'), inputs.suite)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: bench
+      - name: Benchmarks
+        run: scripts/ci/run-bench.sh "$RUNNER_TEMP/bench"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench
+          path: ${{ runner.temp }}/bench
+          retention-days: 7
+          if-no-files-found: ignore
+
+  test-times:
+    if: github.event_name == 'schedule' || contains(fromJSON('["test-times","all"]'), inputs.suite)
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [debug, release-ignored]
+    name: test-times (${{ matrix.mode }})
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: test-times-${{ matrix.mode }}
+      - name: The time of every test, alone
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          if [ "$MODE" = debug ]; then flags=""; else flags="--release --ignored"; fi
+          # shellcheck disable=SC2086  # flags is a list of options
+          scripts/ci/test-times.sh $flags --top 60 --out "$RUNNER_TEMP/times"
+      - name: Upload the table
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-times-${{ matrix.mode }}
+          path: ${{ runner.temp }}/times
+          retention-days: 7
+          if-no-files-found: ignore

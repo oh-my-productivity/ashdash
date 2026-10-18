@@ -265,7 +265,7 @@ jobs:
       - name: Verify the app and the DMG at this version
         run: |
           set -euo pipefail
-          tests/lab/ci/verify-bundle.sh dist
+          tests/e2e/ci/verify-bundle.sh dist
           plist_version="$(plutil -extract CFBundleShortVersionString raw -o - dist/Ashdash.app/Contents/Info.plist)"
           binary_version="$(dist/Ashdash.app/Contents/MacOS/ashdash --version)"
           echo "Info.plist: $plist_version; binary: $binary_version"
