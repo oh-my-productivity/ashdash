@@ -75,10 +75,14 @@ if [ "$gui" = 0 ]; then rec SKIP gui "--no-gui"; cat "$REPORT"; exit "$failed"; 
 # ---- headless CLI checks that need no session ---------------------------------------------------
 mkdir -p "$WORK/home"
 export HOME_REAL=$HOME
-if HOME=$WORK/home "$BIN" query saf >"$ART/query-saf.txt" 2>&1 && grep -qi safari "$ART/query-saf.txt"; then
-  rec PASS cli-query "'ashdash query saf' lists Safari"
+# SMOKE_QUERY / SMOKE_EXPECT: what to ask and what the answer must contain (default: Safari). The CI wrapper asks for Calculator, an
+# app that lives in the sealed system volume of every image: on the GitHub-hosted images Safari (a symlink into a cryptex there) was not
+# in the application list of a fresh data folder, see docs/CI.md.
+SMOKE_QUERY=${SMOKE_QUERY:-saf} SMOKE_EXPECT=${SMOKE_EXPECT:-safari}
+if HOME=$WORK/home "$BIN" query "$SMOKE_QUERY" >"$ART/query-saf.txt" 2>&1 && grep -qi "$SMOKE_EXPECT" "$ART/query-saf.txt"; then
+  rec PASS cli-query "'ashdash query $SMOKE_QUERY' lists $SMOKE_EXPECT"
 else
-  rec FAIL cli-query "'ashdash query saf' did not list Safari (see query-saf.txt)"
+  rec FAIL cli-query "'ashdash query $SMOKE_QUERY' did not list $SMOKE_EXPECT (see query-saf.txt)"
 fi
 
 # ---- native bundle (needed for the URL scheme + login item) --------------------------------------
