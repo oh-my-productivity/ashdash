@@ -2,10 +2,8 @@
 
 # Ashdash
 
-A keyboard launcher for software engineers on macOS, written in Rust: press a hotkey, type, press Return. Ashdash is modelled on the
-observable behaviour of the reference launcher and runs many reference-compatible workflows, but it is an **independent project: not affiliated with,
-endorsed by or sponsored by its publisher or the reference launcher application, and it contains no reference launcher code or assets**
-([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). Ashdash was developed under the working name "Ashdash"; older records in `docs/reviews`, `docs/briefs` and `docs/qa-runs` use that name.
+A keyboard launcher for software engineers on macOS, written in Rust: press a hotkey, type, press Return. Apps, files, a calculator,
+web searches, clipboard history, snippets and scriptable workflows live behind one box, run locally, and keep their data on your Mac.
 
 ## Install
 
@@ -27,10 +25,10 @@ Features: app launcher with initials/word-prefix matching and learned ranking, c
 keyword web searches (`g rust`, `wiki x`), file search (`open name`, `find name`, `in text` via Spotlight, `kind:pdf`),
 path browsing (`~/Doc`), system commands (destructive ones ask to confirm), browser bookmarks (`bm`), clipboard history
 with images and file lists (`clip`), snippets with placeholders (`snip`), Universal Actions for text and files (the `actions` keyword, and
-Right Arrow on a result, with a file buffer on Option+Up/Down), run in Terminal (`> cmd`), `.alfredappearance` themes, a
-**preferences window** (`ashdash prefs`) with live reload of settings, and **reference-compatible workflows**
-(`ashdash import x.alfredworkflow`, which always shows what the workflow can do and asks first):
-keyword inputs, Script Filters (JSON and XML), list and file filters, scripts, conditionals and other utilities, Open
+Right Arrow on a result, with a file buffer on Option+Up/Down), run in Terminal (`> cmd`), themes, a
+**preferences window** (`ashdash prefs`) with live reload of settings, and **workflows**
+(`ashdash import <workflow package>`, which always shows what the workflow can do and asks first; formats and compatibility:
+[docs/WORKFLOWS.md](docs/WORKFLOWS.md)): keyword inputs, Script Filters (JSON and XML), list and file filters, scripts, conditionals and other utilities, Open
 URL/File, notifications, clipboard, Large Type, external triggers, workflow hotkeys.
 Also: menu-bar item, `ashdash` command line, `ashdash://` URLs, AppleScript, launch at login.
 
@@ -43,14 +41,15 @@ Not yet: contacts, dictionary, system-wide snippet expansion, a workflow editor.
 | [docs/PRODUCT.md](docs/PRODUCT.md) | product values, measurable bars, where the product stands, what wins in a conflict |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | install, first run, permissions, hotkeys, every keyword |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | every `config.json` key with type, default, example |
-| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | workflow compatibility per object type, trust model |
+| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | workflow and theme file formats, compatibility per object type, trust model |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | symptoms and fixes |
 | [docs/AUTOMATION.md](docs/AUTOMATION.md) | CLI socket, `ashdash://`, AppleScript, workflow hotkeys |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | crates, providers, engine flow, threads, data folders |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, branches, how to add a provider |
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model and findings |
-| [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md) | provenance, trademark and naming notes |
-| [docs/RELEASING.md](docs/RELEASING.md), [docs/QA.md](docs/QA.md), [docs/PLAN.md](docs/PLAN.md), [docs/STATUS.md](docs/STATUS.md) | release, test and project status |
+| [docs/PERF.md](docs/PERF.md) | measured speed and memory, and how they were measured |
+| [docs/RELEASING.md](docs/RELEASING.md), [docs/QA.md](docs/QA.md), [docs/LAB.md](docs/LAB.md) | releasing, testing, the VM test lab |
+| [SECURITY policy](.github/SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | reporting a vulnerability, community rules |
 
 ## Configuration in one minute
 
@@ -82,6 +81,11 @@ delete what was stored: "Forget what I picked..." does.
 
 `crates/core` (engine, providers, workflows, stores; no UI, unit-tested), `crates/app` (egui window, hotkeys, CLI, control
 socket, URL scheme), `packaging/` (app bundle, DMG, notarization, cask), `docs/`, `scripts/`.
+
+## Origin
+
+Ashdash is an original implementation. It contains no third-party code or assets beyond the open-source dependencies listed in
+[NOTICE](NOTICE); the icon, the default theme and the interface are its own work.
 
 ## License
 
