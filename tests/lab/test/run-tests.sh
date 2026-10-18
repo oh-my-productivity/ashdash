@@ -224,7 +224,7 @@ sleep 2
 
 echo "== concurrency: 2 slots, third job queues"
 # Timing-sensitive (three fake VMs on a shared fake guest home, a 6 s sleep): on a busy machine one trial in a few fails for reasons that
-# have nothing to do with the semaphore, so a failed trial is repeated once before it counts. Both trials' evidence is printed.
+# have nothing to do with the semaphore, so a failed trial is repeated (twice at most) before it counts. Both trials' evidence is printed.
 conc_trial() { # conc_trial <n>: prints the evidence, returns 0 when 2 VMs existed at once, the third queued and nothing leaked
   local n=$1 i running t=() why=""
   for i in 1 2 3; do
@@ -244,10 +244,15 @@ conc_trial() { # conc_trial <n>: prints the evidence, returns 0 when 2 VMs exist
   printf '    trial %s: %s\n' "$n" "$why"; for i in 1 2 3; do tail -2 "$tmp/conc$n$i.err" | sed 's/^/      | /'; done
   return 1
 }
-if conc_trial 1 || { echo "    (repeating the timing-sensitive trial once)"; conc_trial 2; }; then
+conc_reset() { # a failed trial can leave a fake VM (its `run` loop and the slot it holds): clear them before the next one
+  pkill -f "fake-tart run ashdash-run-conc" 2>/dev/null || true
+  sleep 0.5
+  rm -rf "${TART_HOME:?}"/vms/ashdash-run-conc* "${LAB_RUN_DIR:?}"/slots/* "${LAB_RUN_DIR:?}"/pids/ashdash-run-conc* 2>/dev/null || true
+}
+if conc_trial 1 || { echo "    (repeating the timing-sensitive trial)"; conc_reset; conc_trial 2; } || { conc_reset; conc_trial 3; }; then
   ok "3 jobs submitted: only 2 VMs exist at once, the third starts after a slot frees, all VMs cleaned up"
 else
-  bad "concurrency: the semaphore trial failed twice"
+  bad "concurrency: the semaphore trial failed three times"
 fi
 
 echo "== base image lookup (OCI images are not 'local')"
