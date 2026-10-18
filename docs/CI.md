@@ -28,9 +28,9 @@ Required status checks on `main`: `check` and `deny`.
   hotkey Option+Shift+Space through System Events (the window must toggle), window state read back as text, a screenshot, login item
   enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it).
 * **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash` and a native x86-64 bundle. **GitHub retires the
-  `macos-15-intel` image in August 2027**, the last Intel hosted runner; after that there is no free Intel CI. Plan: keep the
-  universal build in `bundle` (it cross-compiles the x86-64 slice on arm64, but does not run it) and test on a physical Intel Mac or
-  under Rosetta-less emulation is not possible, so x86-64 test coverage ends then. Remove this job when the label disappears.
+  `macos-15-intel` image in August 2027**; it is the last Intel hosted runner. After that, x86-64 is only built (the `bundle` job
+  cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when the label
+  stops working.
 * **bundle** (macos-15): `packaging/build-app.sh` (universal arm64 + x86_64, ad-hoc signed) and `packaging/make-dmg.sh`, then
   `tests/lab/ci/verify-bundle.sh`: both architectures present, `codesign --verify --deep --strict`, `plutil -lint`, the DMG checksum and
   `hdiutil verify`, the app inside the mounted image, and the bundled binary starts. The DMG and its checksum are uploaded as a workflow

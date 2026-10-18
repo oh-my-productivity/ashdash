@@ -2,6 +2,8 @@
 
 # Ashdash
 
+[![ci](https://github.com/oh-my-productivity/ashdash/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/oh-my-productivity/ashdash/actions/workflows/ci.yml)
+
 A keyboard launcher for software engineers on macOS, written in Rust: press a hotkey, type, press Return. Apps, files, a calculator,
 web searches, clipboard history, snippets and scriptable workflows live behind one box, run locally, and keep their data on your Mac.
 
@@ -48,7 +50,7 @@ Not yet: contacts, dictionary, system-wide snippet expansion, a workflow editor.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, branches, how to add a provider |
 | [docs/SECURITY.md](docs/SECURITY.md) | threat model and findings |
 | [docs/PERF.md](docs/PERF.md) | measured speed and memory, and how they were measured |
-| [docs/RELEASING.md](docs/RELEASING.md), [docs/QA.md](docs/QA.md), [docs/LAB.md](docs/LAB.md) | releasing, testing, the VM test lab |
+| [docs/RELEASING.md](docs/RELEASING.md), [docs/QA.md](docs/QA.md), [docs/LAB.md](docs/LAB.md), [docs/CI.md](docs/CI.md) | releasing, testing, the VM test lab, what CI runs where |
 | [SECURITY policy](.github/SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | reporting a vulnerability, community rules |
 
 ## Configuration in one minute
