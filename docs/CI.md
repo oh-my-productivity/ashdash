@@ -137,7 +137,7 @@ this way: 166 ms against a 150 ms ceiling, and a 25 ms ceiling at 5,000 apps). T
 
 * **Never compare a time with a constant to guard performance.** Count work (`crate::testperf::allocations_in`: allocations are exact and
   identical on every machine) or compare the code with itself on a small and a large input in the same test (`testperf::best_of_pair`:
-  interleaved rounds, the best of each; a linear algorithm costs about 10x for 10x the input, a quadratic one 100x).
+  interleaved rounds, the least CPU time of the thread in each; wall-clock time is not used because a long run is interrupted far more often than a short one on a busy machine, which skews the ratio; a linear algorithm costs about 10x for 10x the input, a quadratic one 100x).
 * **Absolute ceilings live in `perf_*` tests** that are `#[ignore]`d in the normal run and start with `testperf::require_release()`. The
   `perf` job runs them in release mode: `cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1`. Run the same command
   locally before changing a hot path. The ceilings keep a 5x or larger margin over the numbers in [PERF.md](PERF.md).
