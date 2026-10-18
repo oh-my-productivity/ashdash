@@ -299,8 +299,13 @@ Unverified (nobody has been able to confirm these on real data, a physical keybo
 
 [QA.md](QA.md) section 3 is the checklist for all of these; section 4 lists the checks that need a physical Mac.
 
-Known problems: text in Chinese, Japanese or Korean is typed and searched correctly, but the launcher window draws those characters as empty boxes because it loads no CJK font.
-On a fresh install `ashdash login-item status` says "not found by macOS" until the first `enable`.
+Known problems: none that are open. Two earlier ones are fixed and were checked in a macOS 15 VM from the packaged app:
+
+* Chinese, Japanese and Korean text (typed, in result titles and in file names) used to be drawn as empty boxes. The launcher now loads a system font (Hiragino Sans, then PingFang or Hiragino Sans GB, and Apple SD Gothic Neo for Korean)
+  the first time such a character is on screen, and nothing is loaded otherwise. The preferences window does the same for workflow, snippet and web search names and for text typed into its fields.
+  Limits: the shapes of ideographs that Chinese and Japanese share follow the Japanese font; the lines of text are not vertically aligned perfectly when Latin and CJK mix; a Mac without any of these fonts still shows boxes.
+* `ashdash login-item status` said "not found by macOS" on a fresh install. It says "off" until the first `enable`; the warning stays for a login item that was enabled and whose app was then moved or deleted.
+  A login item enabled by an earlier version has no marker, so after moving the app it shows "off" instead of the warning; run `ashdash login-item enable` again.
 
 Not built yet: contacts, dictionary, System Settings panes, browser history, system-wide snippet expansion, music controls of
 its own, a workflow editor, sync.

@@ -121,6 +121,15 @@ it (usually "Script Editor") and Focus modes. **Unverified** on a clean account.
 
 All of these need `Ashdash.app` (they are declared in the bundle's `Info.plist`). Running `cargo run` does not register them.
 `ashdash login-item status` explains what is missing. Test the URL scheme with `open "ashdash://show"`.
+"launch at login: off" is the normal answer before the first `ashdash login-item enable`. "not found by macOS (... moved or deleted?)" means it was enabled once and the app is no longer where it was registered:
+move `Ashdash.app` back (best into `/Applications`), or run `ashdash login-item disable` and `enable` from the new place.
+
+## Chinese, Japanese or Korean text shows as empty boxes
+
+The launcher reads a system font the first time such text is on screen (Hiragino Sans, PingFang or Hiragino Sans GB, Apple SD Gothic Neo; see the user guide, section 10).
+Boxes mean none of those files could be read, for example on a Mac whose font assets were removed. Check with
+`ls /System/Library/Fonts | grep -i -e hiragino -e pingfang -e sdgothic` and `ls /System/Library/AssetsV2/com_apple_MobileAsset_Font*`; installing or downloading a Chinese/Japanese system font (Font Book) and restarting Ashdash is the fix.
+Boxes for a few characters only (say simplified-only ones) mean the Chinese font was not found while the Japanese one was.
 
 ## Settings were not applied
 
