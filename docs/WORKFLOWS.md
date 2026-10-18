@@ -1,18 +1,31 @@
 # Workflows
 
-Ashdash runs workflows in the format used by the reference launcher: a folder with an `info.plist` that describes a graph of **objects**
-connected by **wires**, packaged as a zip with the extension `.alfredworkflow`. This page says which objects work, how to
-install workflows, what they are allowed to do, and what to be careful about.
+Ashdash runs workflows that are stored as a folder with an `info.plist` describing a graph of **objects** connected by
+**wires**, packaged as a zip (a *workflow package*). This page lists the file formats and their fixed identifiers, says which
+objects work, how to install workflows, what they are allowed to do, and what to be careful about. Where a detail of the
+format is **inferred** from sample packages rather than confirmed, the page says so. Compatibility with existing packages is a
+goal, not a promise: always test a workflow you depend on.
 
-Ashdash is independent software; the format was learned from public documentation and from observing files
-(see [CLEAN_ROOM.md](CLEAN_ROOM.md) and [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md), which also says which details
-are *inferred* rather than confirmed). Compatibility is a goal, not a promise: always test a workflow you depend on.
+## File formats and identifiers
+
+Workflow packages and appearance files use fixed identifiers. Ashdash has to match them exactly to open existing files, which is why
+they appear here and nowhere else in the documentation (the code keeps them in `crates/core/src/format_ids.rs`).
+
+| Identifier | Meaning |
+|---|---|
+| `.alfredworkflow` | workflow package: a zip with an `info.plist` at its top level |
+| `.alfred3workflow`, `.alfred4workflow`, `.alfred5workflow` | the same package under older extensions; accepted when opened in Finder or from the launcher |
+| `.alfredappearance` | appearance file (theme): a property list, colours as `#RRGGBBAA` |
+| the object types in the tables below | the `type` of each object in `info.plist` |
+| `alfred_workflow_name`, `alfred_workflow_bundleid`, `alfred_workflow_uid`, `alfred_workflow_version`, `alfred_workflow_data`, `alfred_workflow_cache`, `alfred_version` | variables that scripts receive (see [Variables and environment](#variables-and-environment)) |
+
+Snippet packages (zip files of snippets) are opened the same way as workflow packages; see [USER_GUIDE.md](USER_GUIDE.md#5-what-to-type).
 
 ## Install, list, run
 
 ```sh
-ashdash import ~/Downloads/some.alfredworkflow    # shows what it can do, asks, then installs into <data>/workflows/user.workflow.<bundle id>
-ashdash import --yes some.alfredworkflow          # same, without the question (scripts, CI)
+ashdash import ~/Downloads/some-workflow.alfredworkflow    # shows what it can do, asks, then installs into <data>/workflows/user.workflow.<bundle id>
+ashdash import --yes some-workflow.alfredworkflow  # same, without the question (scripts, CI)
 ashdash workflows                                 # name  [bundle id]  (disabled)
 ashdash query "hello bob"                         # see the results without a window
 ashdash trigger com.example.hello go "text"       # fire an External Trigger object (see below)
@@ -20,20 +33,20 @@ ashdash trigger com.example.hello go "text"       # fire an External Trigger obj
 
 * **Every import path asks first** (the import prompt, described under [Trust model](#trust-model)): `ashdash import`
   asks `Install this workflow? [y/N]` on the terminal (`--yes` skips it; with no terminal and no `--yes` it refuses);
-  double-clicking or opening a `.alfredworkflow` with Ashdash shows a native dialog whose default button is Cancel; in the
+  double-clicking or opening a workflow package with Ashdash shows a native dialog whose default button is Cancel; in the
   launcher you drop the file on the window or press Right Arrow > "Install Workflow..." on it in a file search (Return
   installs, Esc cancels); Preferences > Workflows has "Choose workflow file..." and drag and drop with Install / Cancel buttons.
   The package is opened **once** into a private staging copy; what you were shown is what gets installed, even if the file
-  changes meanwhile. Saying no, or closing the prompt, deletes the copy. The extensions `.alfred3workflow`, `.alfred4workflow` and `.alfred5workflow` are
-  accepted like `.alfredworkflow` when opened in Finder or from the launcher; the preferences window's drop zone only takes `.alfredworkflow`.
+  changes meanwhile. Saying no, or closing the prompt, deletes the copy. The older extensions in the table above are
+  accepted like the current one when opened in Finder or from the launcher; the preferences window's drop zone only takes the current one.
 * **Re-importing a workflow with the same bundle id replaces the installed copy.** The prompt says so
   (`Replace workflow "<name>"?` and `This replaces "<name>" <version> (installed).`). The old folder is kept aside until the new one is
   in place and restored if the swap fails. Anything inside the old folder (files the workflow wrote there, your edits) is gone with
   it; the workflow's data and cache folders and its **saved settings** (`workflow-config/<bundle id>.json`) are not: they are
   keyed by bundle id, so the new package reads the old settings (API tokens, credentials) as its own. The prompt adds a
-  warning line when saved values exist. The reference launcher behaves the same way, so that an update keeps your configuration.
-* `workflow_dirs` in the config ([SETTINGS.md](SETTINGS.md)) can point at other folders of workflow folders, for example an
-  existing reference launcher `workflows` directory. They run **in place**; Ashdash does not copy them. A leading `~/` is your home folder.
+  warning line when saved values exist. This is deliberate: an update keeps your configuration.
+* `workflow_dirs` in the config ([SETTINGS.md](SETTINGS.md)) can point at other folders of workflow folders, for example a
+  shared `workflows` directory. They run **in place**; Ashdash does not copy them. A leading `~/` is your home folder.
   **These folders never go through the import prompt**: whatever workflow is found there is loaded, its keywords work, its workflow hotkeys are
   registered and its External Triggers become reachable. Adding a folder is a settings change (Preferences cannot do it; it is done
   in `config.json` or `ashdash config set workflow_dirs ...`), so see the warning under Trust model.
@@ -116,60 +129,61 @@ With that imported, `ashdash query "hello bob"` lists "Hello bob" and `ashdash r
 
 Legend: **works** = implemented and covered by a test with a synthetic workflow; **partial** = works with the limits
 stated; **no** = not run (the object is skipped, the stream stops there with a warning where it matters).
-"Confirmed" and "inferred" refer to [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md).
+"Confirmed" means checked against sample packages; "inferred" means deduced from sample packages and public format descriptions and not verified further.
+The first column gives the full object type as it appears in `info.plist`.
 
 ### Inputs and triggers
 
-| Object (`alfred.workflow.…`) | State | Notes |
+| Object type | State | Notes |
 |---|---|---|
-| `input.keyword` | works | `withspace`, argument required / optional / none, title and subtext. |
-| `input.scriptfilter` | works | JSON and the legacy XML output. Supported: `items` with `uid title subtitle arg valid autocomplete icon text (copy, largetype) match type:file mods variables`; script-level `variables`; `rerun` (0.1 to 5 s: the launcher repeats the query while the text is unchanged and stops repeating 5 minutes after the first run; typing starts afresh); `cache` with `seconds` (clamped 5 s to 24 h) and `loosereload`; `skipknowledge` (accepted: workflow results keep the script's order anyway); `runningsubtext` (shown as the first rows while a slow script runs); `alfredfiltersresults` (the launcher filters by title / `match`). The XML `quicklookurl` is parsed but Quick Look does not use it. Time limit 10 s. Variable precedence: workflow < script-level < item < modifier. Script languages: 0 bash, 5 zsh (confirmed); 1 php, 2 ruby, 3 python3, 4 perl, 6 AppleScript, 7 JavaScript (JXA) (inferred). The `scriptargtype` modes: 0 `{query}` pasted into the script, 1 argv, 2 stdin (inferred). External script files are supported. |
-| `input.listfilter` | works | Static list with fuzzy filtering. |
-| `input.filefilter` | partial | Runs a Spotlight query from `fields`, `types`, `scopes`; `anchorfields` and `daterange` are read but not applied. How the pieces combine is inferred. The search is stopped by the file-search budget (`file_search.mdfind_timeout_ms`, `file_search.mdfind_max_bytes`); at most 200 hits are read. |
-| `trigger.external` | works | Started by `ashdash trigger`, `ashdash://trigger` (after per-workflow consent) and AppleScript `run trigger`, and by Call External Trigger inside the same workflow. Carries an argument and variables. |
-| `trigger.hotkey` | works | Global hotkey per workflow, argument none / selection / clipboard, "show launcher" or pass through, related-apps filter, focused-app variable. Not supported: non-zero `modsmode`, `leftcursor`. The key encoding is inferred. "Selection in macOS" uses Cmd+C via System Events, briefly replaces your clipboard and needs the Accessibility permission. Details: [AUTOMATION.md](AUTOMATION.md). |
+| `alfred.workflow.input.keyword` | works | `withspace`, argument required / optional / none, title and subtext. |
+| `alfred.workflow.input.scriptfilter` | works | JSON and the legacy XML output. Supported: `items` with `uid title subtitle arg valid autocomplete icon text (copy, largetype) match type:file mods variables`; script-level `variables`; `rerun` (0.1 to 5 s: the launcher repeats the query while the text is unchanged and stops repeating 5 minutes after the first run; typing starts afresh); `cache` with `seconds` (clamped 5 s to 24 h) and `loosereload`; `skipknowledge` (accepted: workflow results keep the script's order anyway); `runningsubtext` (shown as the first rows while a slow script runs); `alfredfiltersresults` (the launcher filters by title / `match`). The XML `quicklookurl` is parsed but Quick Look does not use it. Time limit 10 s. Variable precedence: workflow < script-level < item < modifier. Script languages: 0 bash, 5 zsh (confirmed); 1 php, 2 ruby, 3 python3, 4 perl, 6 AppleScript, 7 JavaScript (JXA) (inferred). The `scriptargtype` modes: 0 `{query}` pasted into the script, 1 argv, 2 stdin (inferred). External script files are supported. |
+| `alfred.workflow.input.listfilter` | works | Static list with fuzzy filtering. |
+| `alfred.workflow.input.filefilter` | partial | Runs a Spotlight query from `fields`, `types`, `scopes`; `anchorfields` and `daterange` are read but not applied. How the pieces combine is inferred. The search is stopped by the file-search budget (`file_search.mdfind_timeout_ms`, `file_search.mdfind_max_bytes`); at most 200 hits are read. |
+| `alfred.workflow.trigger.external` | works | Started by `ashdash trigger`, `ashdash://trigger` (after per-workflow consent) and AppleScript `run trigger`, and by Call External Trigger inside the same workflow. Carries an argument and variables. |
+| `alfred.workflow.trigger.hotkey` | works | Global hotkey per workflow, argument none / selection / clipboard, "show launcher" or pass through, related-apps filter, focused-app variable. Not supported: non-zero `modsmode`, `leftcursor`. The key encoding is inferred. "Selection in macOS" uses Cmd+C via System Events, briefly replaces your clipboard and needs the Accessibility permission. Details: [AUTOMATION.md](AUTOMATION.md). |
 | other triggers (snippet, universal action, fallback, contact, ...) | no | Not run. |
 
 ### Actions
 
 | Object | State | Notes |
 |---|---|---|
-| `action.script`, `output.script` | works | bash / zsh / php / ruby / python3 / perl / osascript / JXA or a script file. 60 s limit, output capped at 8 MiB, the whole process group is killed on timeout. `{query}` escaping mask: bits 2, 4, 32, 64 (backquote, double quote, dollar, backslash) inferred; 1, 8, 16 (brackets, semicolon, space) unverified. |
-| `action.applescript` | works | Runs through `osascript`. Needs Automation for the app it controls. |
-| `action.openurl` | works | `utf8` and `spaces` options, `{query}` and `{var:…}`; optional browser. Any URL scheme is opened: see security. |
-| `action.openfile`, `action.launchfiles`, `action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument; a relative path (file, `openwith`, `browser`) is resolved against the workflow's own folder; a target that starts with `scheme:` before any `/` (`https://...`, `mailto:...`) is a URL and is passed on as written, and an application written as a bare `Name.app` is an app name unless such a bundle exists in the workflow folder. |
-| `action.terminalcommand` | works | Runs in Terminal. |
-| `action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
-| `action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
-| `action.systemwebsearch` | partial | Only the default engine (Google); others warn. |
+| `alfred.workflow.action.script`, `alfred.workflow.output.script` | works | bash / zsh / php / ruby / python3 / perl / osascript / JXA or a script file. 60 s limit, output capped at 8 MiB, the whole process group is killed on timeout. `{query}` escaping mask: bits 2, 4, 32, 64 (backquote, double quote, dollar, backslash) inferred; 1, 8, 16 (brackets, semicolon, space) unverified. |
+| `alfred.workflow.action.applescript` | works | Runs through `osascript`. Needs Automation for the app it controls. |
+| `alfred.workflow.action.openurl` | works | `utf8` and `spaces` options, `{query}` and `{var:…}`; optional browser. Any URL scheme is opened: see security. |
+| `alfred.workflow.action.openfile`, `alfred.workflow.action.launchfiles`, `alfred.workflow.action.revealfile` | works | `~` is expanded; an empty file field means the incoming argument; a relative path (file, `openwith`, `browser`) is resolved against the workflow's own folder; a target that starts with `scheme:` before any `/` (`https://...`, `mailto:...`) is a URL and is passed on as written, and an application written as a bare `Name.app` is an app name unless such a bundle exists in the workflow folder. |
+| `alfred.workflow.action.terminalcommand` | works | Runs in Terminal. |
+| `alfred.workflow.action.itunescommand` | partial | Play/pause, next, previous, volume, mute, rating, back track for Music.app (codes 1-3, 5-15); other codes warn. |
+| `alfred.workflow.action.systemcommand` | partial | Only code 2 (Show Trash) is mapped. Other codes are deliberately not guessed, so a wrong guess can never log you out; they emit a warning. |
+| `alfred.workflow.action.systemwebsearch` | partial | Only the default engine (Google); others warn. |
 | `alfred.workflow.action.browseinalfred`, `alfred.workflow.action.actioninalfred` | partial | Both only show the launcher with the object's path or the incoming argument typed in ("show the launcher with this text"); the reference launcher's file browser and action list are not separate modes here. |
 
 ### Outputs
 
 | Object | State | Notes |
 |---|---|---|
-| `output.notification` | works | Posted through `osascript`. |
-| `output.clipboard` | works | Copies the text. |
-| `output.largetype` | works | Full-screen overlay. |
-| `output.writefile` | works | Overwrite / append / prepend, `adduuid`, intermediate folders; relative paths resolve into the workflow's data / cache folder or the workflow folder. Absolute and `~` paths can name any file you can write, so the import prompt lists every Write File target. Passes the resolved path on. |
-| `output.callexternaltrigger` | partial | Same workflow only. Calling a trigger of another workflow warns and stops. |
+| `alfred.workflow.output.notification` | works | Posted through `osascript`. |
+| `alfred.workflow.output.clipboard` | works | Copies the text. |
+| `alfred.workflow.output.largetype` | works | Full-screen overlay. |
+| `alfred.workflow.output.writefile` | works | Overwrite / append / prepend, `adduuid`, intermediate folders; relative paths resolve into the workflow's data / cache folder or the workflow folder. Absolute and `~` paths can name any file you can write, so the import prompt lists every Write File target. Passes the resolved path on. |
+| `alfred.workflow.output.callexternaltrigger` | partial | Same workflow only. Calling a trigger of another workflow warns and stops. |
 
 ### Utilities
 
 | Object | State | Notes |
 |---|---|---|
-| `utility.argument`, `utility.junction`, `utility.debug` | works | Debug prints to stderr when `ASHDASH_WORKFLOW_DEBUG` is set. |
-| `utility.conditional` | works | Several conditions with separate wires and an else wire; first match wins. Match modes: 0 equals is confirmed; 1 not equal, 2 greater, 3 less (as integers), 4 regex are **inferred** from menu order. Regex uses the Rust `regex` syntax: look-around and back-references fail to compile and the condition does not match (a warning is reported). |
-| `utility.filter` | works | Equal / not equal / regex (legacy Filter). |
-| `utility.replace` | works | String, regex and empty-input modes (inferred). |
-| `utility.transform` | works | trim, upper, lower, capitalize, reverse, strip diacritics, strip non-alphanumeric (numbering inferred). |
-| `utility.split` / `splitargument`, `utility.merge` / `joinargs` / `joinarguments` | works | Split into variables or into a list that a later Merge joins. |
-| `utility.delay` | works | Continues later; the other streams run first. |
+| `alfred.workflow.utility.argument`, `alfred.workflow.utility.junction`, `alfred.workflow.utility.debug` | works | Debug prints to stderr when `ASHDASH_WORKFLOW_DEBUG` is set. |
+| `alfred.workflow.utility.conditional` | works | Several conditions with separate wires and an else wire; first match wins. Each wire leaving the object carries `sourceoutputuid` = the `uid` of its condition; a wire without it is the else branch. Match modes: 0 equals is confirmed; 1 not equal, 2 greater, 3 less (as integers), 4 regex are **inferred** from menu order. Regex uses the Rust `regex` syntax: look-around and back-references fail to compile and the condition does not match (a warning is reported). |
+| `alfred.workflow.utility.filter` | works | Equal / not equal / regex (legacy Filter). |
+| `alfred.workflow.utility.replace` | works | String, regex and empty-input modes (inferred). |
+| `alfred.workflow.utility.transform` | works | trim, upper, lower, capitalize, reverse, strip diacritics, strip non-alphanumeric (numbering inferred). |
+| `alfred.workflow.utility.split` / `alfred.workflow.utility.splitargument`, `alfred.workflow.utility.merge` / `alfred.workflow.utility.joinargs` / `alfred.workflow.utility.joinarguments` | works | Split into variables or into a list that a later Merge joins. |
+| `alfred.workflow.utility.delay` | works | Continues later; the other streams run first. |
 
-Anything not in the tables (for example a type introduced by a later reference launcher version) is not run. `Workflow::unsupported_kinds()`
+Anything not in the tables (for example a type introduced by a later version of the format) is not run. `Workflow::unsupported_kinds()`
 reports them; no window shows that report yet.
 
-Stream order matches the reference launcher's documented behaviour (outgoing wires run top to bottom by position, a Delay yields). A run
+Stream order follows the format's documented behaviour (outgoing wires run top to bottom by the destination's `ypos` in `uidata`, a Delay yields). A run
 stops after 256 object executions, which protects against wire cycles.
 
 ### Variables and environment
@@ -177,7 +191,7 @@ stops after 256 object executions, which protects against wire cycles.
 Scripts get `alfred_workflow_name`, `alfred_workflow_bundleid`, `alfred_workflow_uid`, `alfred_workflow_version`,
 `alfred_workflow_data`, `alfred_workflow_cache` (folders under Ashdash's own data and cache folders) and `alfred_version`
 (always `5.0`, for compatibility), plus every workflow variable. `{query}`, `{var:name}` and `{allvars}` work in templates.
-Not provided: `alfred_theme*`, `alfred_preferences`, `alfred_debug` and the other `alfred_*` variables of the reference launcher itself.
+Not provided: `alfred_theme`, `alfred_preferences`, `alfred_debug` and the other theme, preference and debug variables that the format defines.
 
 ## Trust model
 
@@ -193,8 +207,8 @@ What Ashdash does for you:
 * A script cannot run forever or fill memory: 10 s for Script Filters, 60 s for actions, 8 MiB of output, process group
   killed on timeout (SEC-05, SEC-06, SEC-16).
 * Variables that come from data (Script Filter output, an earlier script) cannot set `PATH`, `HOME`, loader or interpreter
-  hooks (`DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `NODE_OPTIONS`, ...) for later scripts, and cannot define `alfred_*`
-  (SEC-02). Variables the author sets statically in the plist still work. This is a deliberate difference from the reference launcher.
+  hooks (`DYLD_*`, `BASH_ENV`, `PYTHONPATH`, `NODE_OPTIONS`, ...) for later scripts, and cannot redefine the workflow variables listed above
+  (SEC-02). Variables the author sets statically in the plist still work. This is a deliberate difference from other implementations of the format.
 * `{query}` in `osascript` / Terminal command arguments is passed as data, never parsed as options (SEC-01).
 * **The import prompt.** Before anything is installed, the package is opened once and described by `Workflow::trust_summary()`;
   the prompt shows the name, the author as the package states it (never verified), the bundle id, the version and description,
@@ -227,7 +241,7 @@ What it cannot do:
 
 * It cannot tell a good script from a bad one. `{query}` pasted into script source (`scriptargtype` 0) lets whatever you type
   (or paste, or a web page puts on your clipboard) become shell code unless the script quotes it; the default escape mask
-  leaves `; | & ' < >` and newline live (SEC-03, same as the reference launcher). Prefer workflows that use argv.
+  leaves `; | & ' < >` and newline live (SEC-03, the same as in existing packages). Prefer workflows that use argv.
 * Open URL objects open any scheme (`file:`, `ssh:`, custom handlers) with text that can come from a Script Filter (SEC-13).
 * Workflow hotkeys are chosen by the workflow author. A hotkey workflow can run something every time you press that key.
 * Workflows in `workflow_dirs` can be changed by whoever can write to that folder, at any time.
@@ -240,11 +254,11 @@ What it cannot do:
 Rules of thumb: import only from people you trust; read the scripts; keep Ashdash's data folder and your workflow folders writable only by you;
 do not point `workflow_dirs` at a shared or downloaded folder. Current status of every finding: [SECURITY.md](SECURITY.md).
 
-## Differences from the reference launcher worth knowing
+## Limits worth knowing
 
 * No workflow editor. Enable/disable, settings and removal exist in Preferences (for workflows in Ashdash's own folder).
-* Browse in the reference launcher / Action in the reference launcher only show the launcher with a text typed.
-* Environment, theme and preference variables of the reference launcher itself are not provided (see above).
+* The Browse and Action objects only show the launcher with a text typed.
+* Theme, preference and debug variables defined by the format are not provided (see above).
 * Variables from untrusted data cannot override a protected set of environment names (SEC-02).
-* Workflows live in Ashdash's own folder; your reference launcher preferences are never touched. Sync is not supported.
+* Workflows live in Ashdash's own folder; other applications' settings are never touched. Sync is not supported.
 * Regular expressions use Rust's `regex` crate, not ICU.

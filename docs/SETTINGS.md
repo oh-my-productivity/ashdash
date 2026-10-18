@@ -67,7 +67,7 @@ Defaults below are from `ashdash config get` on a fresh account (`<home>` is you
 | `app_dirs` | list of paths | `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications`, `/System/Library/CoreServices/Finder.app`, `<home>/Applications` | Where applications are looked for (3 folder levels deep; bundles inside bundles are not entered). Changes of these folders are noticed automatically. |
 | `workflow_dirs` | list of paths | `[]` | Extra folders that contain workflow folders (each with an `info.plist`). Workflows you import with `ashdash import` go to Ashdash's own `workflows/` folder and are always loaded. **Workflows in these folders run in place and are never shown to you in an import prompt** (see [WORKFLOWS.md](WORKFLOWS.md#trust-model)). |
 | `web_searches` | list of objects | nine searches, see below | Keyword web searches. |
-| `theme` | path or `null` | `null` (built-in dark theme) | An `.alfredappearance` file used at every start; changing it applies at once. |
+| `theme` | path or `null` | `null` (built-in dark theme) | An appearance file (theme, see [WORKFLOWS.md](WORKFLOWS.md#file-formats-and-identifiers)) used at every start; changing it applies at once. |
 | `providers_disabled` | list of strings | `[]` | Provider ids to switch off. |
 | `learn_usage` | boolean | `true` | Rank results by what you picked before (`usage.json`). `false`: nothing new is recorded and earlier picks stop affecting the order, but the **existing `usage.json` stays on disk** until you press "Forget what I picked..." in preferences (or delete the file). Applies at once. |
 | `bookmarks.enabled_sources` | list of strings | all eleven (below) | Which browsers `bm` reads, in order of precedence. |
@@ -97,8 +97,8 @@ when it is loaded (checked: `0` entries becomes `1000`, `5` ms becomes `100`).
 ashdash config set hotkey cmd+shift+space
 ashdash config set max_results 15
 ashdash config set app_dirs '["/Applications","/System/Applications","/Users/me/Applications","/opt/homebrew/Caskroom"]'
-ashdash config set workflow_dirs '["~/Library/Application Support/reference-launcher/reference-launcher.prefs/workflows"]'
-ashdash config set theme '~/Themes/Midnight.alfredappearance'
+ashdash config set workflow_dirs '["~/Developer/my-workflows"]'
+ashdash config set theme '~/Themes/Midnight'
 ashdash config set theme null
 ashdash config set providers_disabled clipboard,snippets
 ashdash config set bookmarks.enabled_sources safari,firefox
@@ -109,7 +109,7 @@ ashdash config set clipboard.max_entries 50
 ashdash config set clipboard.ignored_apps '["com.1password.1password","com.example.secretapp"]'
 ```
 
-Pointing `workflow_dirs` at an existing reference launcher workflows folder runs those workflows in place. Ashdash only reads them there;
+Pointing `workflow_dirs` at a folder of existing workflows runs those workflows in place. Ashdash only reads them there;
 read [WORKFLOWS.md](WORKFLOWS.md) for what that means for trust.
 
 ## Hotkey syntax
@@ -175,7 +175,7 @@ on real profiles.
   form per workflow, with "Use default" per entry) or by hand. They are keyed by bundle id and stay when a workflow is
   removed or replaced by an import with the same bundle id (the new package reads them; the import prompt says so).
 * **Snippets**: `snippets.json` (a flat list of `{"name","keyword","text"}`) and one file per collection in the `snippets/` folder;
-  edit them in Preferences > Snippets, or import `.alfredsnippets` packages by opening them. See
+  edit them in Preferences > Snippets, or import snippet packages by opening them. See
   [USER_GUIDE.md](USER_GUIDE.md#5-what-to-type).
 * **Usage learning** (`usage.json`): switch it off with `learn_usage`; clear it with "Forget what I picked..." in Preferences >
   General (or delete the file). Turning learning off does not delete what was recorded.
