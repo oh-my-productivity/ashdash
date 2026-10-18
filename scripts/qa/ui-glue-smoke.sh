@@ -10,6 +10,8 @@
 #
 #   scripts/qa/ui-glue-smoke.sh [path-to-ashdash-binary]
 set -uo pipefail
+# shellcheck source=require-ci.sh
+. "$(dirname "${BASH_SOURCE[0]}")/require-ci.sh"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="${1:-$ROOT/target/debug/ashdash}"

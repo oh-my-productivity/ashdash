@@ -1,0 +1,69 @@
+#!/bin/bash
+# gui-exec [--timeout SECS] [--detach] [--via terminal|asuser] [--cwd DIR] -- <cmd> [args...]
+#
+# Runs on the CI runner. A plain shell of a job may live outside the logged-in desktop session, so anything that shows a
+# window, registers a global hotkey, sends keystrokes through System Events or takes screenshots must be
+# started *inside* the auto-logged-in GUI session. TCC grants (Accessibility, Automation, Screen
+# Recording) are attributed to the "responsible" app, which for `--via terminal` (default) is Terminal.app:
+# tcc-grant.sh grants it at the start of the job.
+#
+#   --via terminal  `open -g -a Terminal job.command` (finished jobs leave a Terminal window behind; the clone is thrown away anyway); output captured in a log, printed when done.
+#   --via asuser    `launchctl asuser <uid>`; responsible process is the command itself (needs its own grants).
+#   --detach        do not wait; print the pid file / log path and return (for long-running apps).
+# Exit status: the command's (124 on timeout, 125 when the GUI session could not start it).
+set -u
+timeout=120 detach=0 via=terminal cwd=$PWD
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --timeout) timeout=$2; shift 2 ;;
+    --detach) detach=1; shift ;;
+    --via) via=$2; shift 2 ;;
+    --cwd) cwd=$2; shift 2 ;;
+    --) shift; break ;;
+    *) echo "gui-exec: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+[ $# -gt 0 ] || { echo "usage: gui-exec [opts] -- cmd..." >&2; exit 2; }
+
+dir=$(mktemp -d "${TMPDIR:-/tmp}/gui-exec.XXXXXX")
+log=$dir/out.log rcf=$dir/rc pidf=$dir/pid job=$dir/job.command
+quoted=""
+for a in "$@"; do quoted+=" $(printf %q "$a")"; done
+{
+  echo '#!/bin/bash'
+  echo "cd $(printf %q "$cwd") || exit 125"
+  echo "echo \$\$ > $(printf %q "$pidf")"
+  # Inherit the caller's environment explicitly (the GUI session has its own).
+  while IFS='=' read -r k v; do
+    case "$k" in
+      HOME|PATH|GITHUB_ACTIONS|RUNNER_ENVIRONMENT|E2E_*|ASHDASH_*|RUST*|CARGO*|QA_*|PERF_*) printf 'export %s=%q\n' "$k" "$v" ;;
+    esac
+  done < <(env)
+  echo "$quoted > $(printf %q "$log") 2>&1"
+  echo "echo \$? > $(printf %q "$rcf")"
+  echo "exit 0"
+} >"$job"
+chmod 700 "$job"
+
+case "$via" in
+  terminal) open -g -a Terminal "$job" ;;   # -g: do not bring Terminal to the front (a launcher panel hides when it loses focus)
+  asuser) launchctl asuser "$(id -u)" /bin/bash "$job" & ;;
+  *) echo "gui-exec: unknown --via $via" >&2; exit 2 ;;
+esac
+
+if [ "$detach" = 1 ]; then
+  echo "log=$log pidfile=$pidf rcfile=$rcf"
+  exit 0
+fi
+for _ in $(seq 1 "$timeout"); do
+  [ -f "$rcf" ] && break
+  sleep 1
+done
+if [ ! -f "$rcf" ]; then
+  echo "gui-exec: timed out after ${timeout}s (or the GUI session never started the job)" >&2
+  [ -f "$pidf" ] && kill "$(cat "$pidf")" 2>/dev/null
+  cat "$log" 2>/dev/null
+  exit 124
+fi
+cat "$log" 2>/dev/null
+exit "$(cat "$rcf")"

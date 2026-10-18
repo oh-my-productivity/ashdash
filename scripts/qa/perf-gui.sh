@@ -16,6 +16,8 @@
 #        each about 40 s per repetition; gap: latency vs. time hidden)
 #      PERF_OUT=<dir for results.jsonl and the summary>  (default: a new dir under /tmp)
 set -uo pipefail
+# shellcheck source=require-ci.sh
+. "$(dirname "${BASH_SOURCE[0]}")/require-ci.sh"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="${1:-$ROOT/target/release/ashdash}"

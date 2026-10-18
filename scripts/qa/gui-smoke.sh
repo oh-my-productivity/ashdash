@@ -2,7 +2,7 @@
 # GUI smoke test: launch the debug binary with a throwaway HOME, press the global hotkey
 # (Option+Shift+Space), type a query, take a screenshot, print its path, then clean up.
 #
-# WARNING: this drives the real keyboard and screen of the machine it runs on.
+# WARNING: this drives the real keyboard and screen of the machine it runs on, so it runs on CI only (it refuses elsewhere; scripts/ci-run.sh).
 #   * It takes over the global hotkey: stop any other Ashdash instance first (two instances fight).
 #   * The screenshot captures the WHOLE desktop, including other windows. Look at it, then delete it.
 #     Never commit it.
@@ -17,6 +17,8 @@
 #          QA_BIN=path        binary to run (default target/debug/ashdash)
 # Output:  last line printed to stdout is the screenshot path. Exit status is non-zero on any failure.
 set -euo pipefail
+# shellcheck source=require-ci.sh
+. "$(dirname "${BASH_SOURCE[0]}")/require-ci.sh"
 
 QUERY="${1:-saf}"
 STARTUP_WAIT="${QA_STARTUP_WAIT:-5}"
