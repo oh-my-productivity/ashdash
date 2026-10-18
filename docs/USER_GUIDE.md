@@ -1,13 +1,12 @@
 # Ashdash user guide
 
 Ashdash is a keyboard launcher for macOS: press a hotkey, type, press Return. It is pre-release software (version 0.1.0,
-no stable release yet). It is independent of the reference launcher
-application and not affiliated with its publisher.
+no stable release yet).
 
 How to read this guide: statements about the window are taken from the code and from [QA.md](QA.md); parts nobody has been
 able to check on a real desktop are marked **unverified** and collected in [section 10](#10-known-unverified-and-missing).
 
-Related documents: [SETTINGS.md](SETTINGS.md) (every config key), [WORKFLOWS.md](WORKFLOWS.md) (reference-compatible workflows),
+Related documents: [SETTINGS.md](SETTINGS.md) (every config key), [WORKFLOWS.md](WORKFLOWS.md) (workflows, file formats),
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md), [AUTOMATION.md](AUTOMATION.md) (CLI, URLs, AppleScript), [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 1. Install
@@ -23,7 +22,7 @@ cargo run -p ashdash --release          # starts the launcher; the first build t
 ```
 
 **Build the app bundle** (needed for "launch at login", the `ashdash://` URL scheme, AppleScript and double-clickable
-`.alfredworkflow` files, because those need a bundle with an `Info.plist`):
+workflow packages, because those need a bundle with an `Info.plist`):
 
 ```sh
 packaging/build-app.sh                  # writes dist/Ashdash.app, ad-hoc signed, universal (arm64 + x86_64)
@@ -114,7 +113,7 @@ There is no Cmd+C "copy result" binding yet.
 Right Arrow on a result that is a file, folder, URL or text opens a list of what you can do with it, in the same window:
 
 * **File or folder:** Open, Open With... (one level deeper: Right Arrow on it lists applications), Reveal in Finder, Copy File, Copy
-  Path, Copy Name, Quick Look, Move to Trash, Compress, Email as Attachment (files only), Get Info. A `.alfredworkflow` file
+  Path, Copy Name, Quick Look, Move to Trash, Compress, Email as Attachment (files only), Get Info. A workflow package
   gets **Install Workflow...** first (it opens the import prompt, see [section 6](#6-themes-and-workflows)).
 * **URL:** Open URL and the text actions. **Text** (a calculator result, a snippet, a clipboard entry): Search Google, Copy,
   Large Type.
@@ -168,7 +167,7 @@ Details worth knowing:
 * **Files** search only inside `file_search.roots` and skip `file_search.excluded_*`. A search that runs into its time or
   size limit says "No files found yet" with the reason, instead of looking empty.
 * **Snippets** live in `snippets.json` and in per-collection files in the `snippets/` folder next to it, or come from importing a
-  `.alfredsnippets` package (double-click it, or open it with Ashdash). Placeholders: `{clipboard}`, `{clipboard:2}`, `{date}`,
+  snippet package (double-click it, or open it with Ashdash). Placeholders: `{clipboard}`, `{clipboard:2}`, `{date}`,
   `{time}`, `{datetime}`, `{date +7D:yyyy-MM-dd}`, `{isodate}`, `{random:uuid}`, `{random:1..6}`, `{snippet:keyword}`, `{cursor}`.
   Typing a snippet keyword anywhere in macOS (system-wide expansion) is **not implemented**.
 * **Bookmarks** are read from Safari, Chrome (stable, Beta, Canary), Chromium, Brave, Edge, Vivaldi, Opera, Arc and Firefox.
@@ -176,12 +175,12 @@ Details worth knowing:
 
 ## 6. Themes and workflows
 
-* A theme is an `.alfredappearance` file. Opening one with Ashdash copies it to `themes/` and selects it in `config.json`;
+* A theme is an appearance file ([WORKFLOWS.md](WORKFLOWS.md#file-formats-and-identifiers)). Opening one with Ashdash copies it to `themes/` and selects it in `config.json`;
   `ashdash theme <file>` applies one to the running launcher (it only parses the file when Ashdash is not running); or set
   `theme` in the config to its path to use it at every start.
-* Double-clicking works when Ashdash is the handler for the file. If the reference launcher is installed it stays the default opener: use
-  right-click > Open With > Ashdash, or `open -a /Applications/Ashdash.app file.alfredworkflow`.
-* Workflows (`.alfredworkflow` files made for the reference launcher) are code that runs as you, so **every way of installing one asks
+* Double-clicking works when Ashdash is the handler for the file. If another application already opens those files it stays the default: use
+  right-click > Open With > Ashdash, or `open -a /Applications/Ashdash.app <file>`.
+* Workflows (workflow packages) are code that runs as you, so **every way of installing one asks
   first**. Ashdash opens the package once, shows what it says it is (name, author as written in the package, which is not
   verified; bundle id; version) and what it can do, and installs exactly that copy only after you confirm:
   * `ashdash import <file>`: prints the text and asks `Install this workflow? [y/N]`. Only `y`/`yes` installs. `--yes`
@@ -236,15 +235,15 @@ and Full Disk Access is not granted. It follows the system light/dark appearance
 
 | Page | What you can do |
 |---|---|
-| **General** (Cmd+1) | The launcher shortcut is one box: click it (or focus it and press Return or Space), then press the new combination; Esc cancels, Backspace goes back to the default, and a combination without Cmd, Option or Ctrl is refused with the reason (system shortcuts such as Cmd+Space are flagged). Theme: a dropdown and "Import theme..." (you can also drop an `.alfredappearance` file on the window or run `ashdash theme <file>`). Results per search, Launch at login (needs the app bundle), **Learning**: "Rank results by what I pick" and "Forget usage...". A RELOAD card, the launcher's warnings and, if Safari bookmarks are on without Full Disk Access, a card "Full Disk Access not granted" with "Fix..." (Return) that opens the Permissions page |
+| **General** (Cmd+1) | The launcher shortcut is one box: click it (or focus it and press Return or Space), then press the new combination; Esc cancels, Backspace goes back to the default, and a combination without Cmd, Option or Ctrl is refused with the reason (system shortcuts such as Cmd+Space are flagged). Theme: a dropdown and "Import theme..." (you can also drop an appearance file on the window or run `ashdash theme <file>`). Results per search, Launch at login (needs the app bundle), **Learning**: "Rank results by what I pick" and "Forget usage...". A RELOAD card, the launcher's warnings and, if Safari bookmarks are on without Full Disk Access, a card "Full Disk Access not granted" with "Fix..." (Return) that opens the Permissions page |
 | **Search** (Cmd+2) | Switch features (providers) on and off; file search folders and exclusions and hidden files; bookmark sources; web searches (add, edit, remove; the URL is validated) |
 | **Clipboard** (Cmd+3) | Clipboard retention, largest image, and apps never to record |
-| **Snippets** (Cmd+4) | Add, edit, delete and import `.alfredsnippets` |
+| **Snippets** (Cmd+4) | Add, edit, delete and import snippet packages |
 | **Workflows** (Cmd+5) | List with enable/disable and Remove for workflows in Ashdash's own folder (workflows from `workflow_dirs` are listed read-only), import with the prompt above, "Configure..." for a workflow's settings sheet, "What can it do?" for its trust summary |
 | **Permissions** (Cmd+6) | What macOS has granted Ashdash, each with a status light and word (Granted / Not granted / Asked on first use / Unknown), what it is for, and "Open System Settings" for the right pane: **Accessibility** (auto-paste and keystrokes), **Automation** (System Events, Finder, Terminal) and **Full Disk Access** (Safari bookmarks). "Re-check" (Cmd+R) probes again; the page also re-checks when you come back to the window. Looking at it never makes macOS show a prompt. The answers are for the program that shows the window: started from `Ashdash.app` that is Ashdash, started from a terminal macOS counts the terminal. After granting Full Disk Access, quit and reopen Ashdash |
 | **About** (Cmd+7) | Version, licence, data and settings locations with Reveal in Finder buttons |
 
-You can drop `.alfredworkflow`, `.alfredappearance` and `.alfredsnippets` files on the window. "Forget what I picked..." clears
+You can drop workflow packages, appearance files and snippet packages on the window. "Forget what I picked..." clears
 `usage.json` (through the running launcher if there is one). Turning learning **off** only stops recording and ranking;
 the old `usage.json` stays on disk until you press Forget (or delete it).
 
@@ -275,7 +274,7 @@ ashdash query "vsc"            # print ranked results without opening a window
 ashdash show                   # open the launcher (starts Ashdash if needed)
 ashdash search "g rust"        # open it with text typed
 ashdash reload                 # re-scan apps, workflows, snippets, workflow hotkeys
-ashdash import my.alfredworkflow   # shows what it can do and asks; --yes skips the question
+ashdash import <package>       # shows what it can do and asks; --yes skips the question
 ashdash prefs                  # preferences window
 ashdash workflows              # list installed workflows
 ashdash config keys            # every setting name
@@ -287,15 +286,21 @@ URL scheme, AppleScript and the socket protocol: [AUTOMATION.md](AUTOMATION.md).
 
 ## 10. Known unverified and missing
 
-Unverified (nobody has been able to confirm these on real data or a clean machine):
-real Cmd+V auto-paste and concealed-clipboard behaviour; Safari bookmarks under a real Full Disk Access denial; Arc and Firefox
-bookmark parsers on real profiles; Finder trash scripts (only a read-only contract test ran); the subtitle swap while a
-modifier is held; behaviour on several monitors and over full-screen apps; the x86_64 slice; notarization and Gatekeeper
-(`brew install --cask` too); AppleScript through JXA with a path instead of the bundle id; whether the launcher draws above Quick
-Look. Wave 3 added code whose logic is covered by tests but whose on-screen behaviour was only partly watched (the actions
-panel, the in-window import prompt, the preferences window, live reload, key-repeat handling, Large Type scrolling); see
-[QA.md](QA.md) section 3 for the checklist and [STATUS.md](STATUS.md) for what was and was not run on a real desktop. The
-canonical list is "Known unverified items" in [STATUS.md](STATUS.md).
+Unverified (nobody has been able to confirm these on real data, a physical keyboard or a clean machine):
+
+* Pasting and clipboard: real Cmd+V auto-paste, and the concealed-clipboard filter with a real password manager (the pasteboard side with the marker type was verified in a VM).
+* Bookmarks: Safari under a real Full Disk Access denial; the Arc and Firefox parsers on real profiles.
+* Scripting: Finder trash scripts (only a read-only contract test ran); AppleScript through JXA with a path instead of the bundle id.
+* Window behaviour: the subtitle swap while a modifier is held; several monitors, Spaces and full-screen apps; whether the launcher draws above Quick Look; Large Type scrolling on screen.
+* Interface paths: the actions panel and file buffer (including Move to Trash from the panel), the in-window import prompt with a real held Return, the Finder import dialog with a real file, every
+  preferences page, the hotkey recorder, live hotkey rebind and theme apply, the file watcher with real editors, the status-item "Preferences..." entry and `ashdash://prefs` from the bundle, `rerun` and `runningsubtext` on screen.
+* The trust summary against real-world workflows (only synthetic ones and sample templates were used).
+* Distribution: the x86_64 slice on Intel hardware; notarization and Gatekeeper with a real browser download; `brew install --cask`.
+
+[QA.md](QA.md) section 3 is the checklist for all of these; section 4 lists the checks that need a physical Mac.
+
+Known problems: text in Chinese, Japanese or Korean is typed and searched correctly, but the launcher window draws those characters as empty boxes because it loads no CJK font.
+On a fresh install `ashdash login-item status` says "not found by macOS" until the first `enable`.
 
 Not built yet: contacts, dictionary, System Settings panes, browser history, system-wide snippet expansion, music controls of
-its own, a workflow editor, reference-style sync.
+its own, a workflow editor, sync.

@@ -1,4 +1,4 @@
-# Automation surface (WP9)
+# Automation surface
 
 Everything that lets something other than the keyboard drive a running Ashdash. All entry points end in one
 `AppEvent` channel (`crates/app/src/events.rs`) that the window drains every frame, or in `Engine::run_trigger`.
@@ -8,7 +8,7 @@ Everything that lets something other than the keyboard drive a running Ashdash. 
 | CLI → unix socket | `ipc.rs`, `main.rs` | same uid (`getpeereid`), like the shell user |
 | `ashdash://` URLs | `urlscheme.rs` | **untrusted**: allow-list, rate limit, per-workflow consent |
 | AppleScript / JXA | `scripting.rs`, `resources/Ashdash.sdef` | macOS Automation (TCC) consent |
-| Workflow hotkeys | `hotkeys.rs` | set by the workflow author; the reference launcher strips them on export |
+| Workflow hotkeys | `hotkeys.rs` | set by the workflow author; some launchers strip them on export |
 | Preferences window | `gui/prefs/` | a separate process that talks to the launcher only through files in the data folder (and `clear-usage` on the socket) |
 
 ## CLI and socket
@@ -22,7 +22,7 @@ Protocol: one JSON line per request, one per answer.
 {"cmd":"ping"|"show"|"reload"|"quit"|"prefs"|"clear-usage"}
 {"cmd":"search","text":"saf"}
 {"cmd":"trigger","bundle":"com.x","id":"go","arg":"..."}     -> large:true when the answer is Large Type text
-{"cmd":"theme","file":"/abs/path.alfredappearance"}
+{"cmd":"theme","file":"/abs/path/to/theme-file"}
 ```
 
 CLI: `ashdash show | search <text> | trigger <bundle> <id> [arg] | reload | quit | theme <file> | prefs`. `show` and `search` start
@@ -33,7 +33,7 @@ preferences window's "Forget what I picked..." so the running launcher wipes its
 `ashdash import [--yes] <file>` shows the trust summary and asks (details in [WORKFLOWS.md](WORKFLOWS.md)), installs, and then tells
 a running launcher to reload (new workflows, new hotkeys). The socket itself has **no import verb**.
 
-## URL scheme `ashdash://` (never `reference://`)
+## URL scheme `ashdash://`
 
 ```
 ashdash://show
@@ -41,7 +41,7 @@ ashdash://search?query=<text>                       (<= 1024 bytes; fills the fi
 ashdash://trigger?bundle=<id>&name=<trigger id>&arg=<text>   (arg <= 4096 bytes)
 ashdash://reload
 ashdash://prefs                                     (no parameters; opens the preferences window)
-ashdash://theme?name=<file name>      -> <data>/themes/<name>.alfredappearance, plain names only
+ashdash://theme?name=<file name>      -> a theme file already in <data>/themes/, plain names only
 ```
 
 Strict parser: fixed verbs and parameter names, no userinfo/port/path, no repeated or unknown keys, `%XX` decoded exactly once
@@ -52,7 +52,7 @@ no restart needed). One dialog per bundle id at a time; a dialog that times out 
 `search` only puts the text in the launcher's field: nothing is searched (and no workflow keyword or Script Filter runs) until you edit it. Invocations are logged as verb + workflow, never arguments. There is no verb for importing, scripts, files, clipboard or system commands.
 
 Delivery: `kAEGetURL` Apple Events through `NSAppleEventManager`, registered early (URL that launches the app) and again
-after launch (AppKit installs its own handler during launch). Requires a bundle declaring `CFBundleURLTypes` (WP10).
+after launch (AppKit installs its own handler during launch). Requires a bundle declaring `CFBundleURLTypes`.
 
 ## AppleScript / JXA
 
@@ -69,8 +69,8 @@ longer than 1.5 s (it keeps running). `search` text is capped at 4096 bytes (as 
 
 ## Workflow hotkeys
 
-`alfred.workflow.trigger.hotkey` encoding, inferred from the templates in the reference launcher's framework resources (see the module header
-of `hotkeys.rs` for the table and which parts are inference): `hotkey` = `kVK_*` code, `hotmod` = `NSEvent.ModifierFlags`
+The `trigger.hotkey` object (identifier in [WORKFLOWS.md](WORKFLOWS.md#inputs-and-triggers)) is encoded as follows (see the module header
+of `hotkeys.rs` for the table and which parts are inferred from sample packages): `hotkey` = `kVK_*` code, `hotmod` = `NSEvent.ModifierFlags`
 (F5 + option template = 96 / 0x880000), `hotkey=0 && hotmod=0` = unset, `action` 0 pass through / 1 show launcher with the argument,
 `argument` 0 none / 1 selection / 2 clipboard, `relatedAppsMode` 0 all / 1 only / 2 except `relatedApps`,
 `focusedappvariable` exports the frontmost bundle id (`focusedapp` when the name is empty).

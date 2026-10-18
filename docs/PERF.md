@@ -1,6 +1,6 @@
-# Performance (Wave 4 re-measure)
+# Performance
 
-Measured for the v0.1.0 release candidate on 2026-10-16, branch `wp/w4-rel` (base `main`, Waves 0-3), release profile (`cargo bench` = optimized).
+Measured for the v0.1.0 release candidate on 2026-10-16, release profile (`cargo bench` = optimized).
 Nothing in the product was tuned for these numbers.
 
 > **Update 2026-10-17:** the rows below that say the GUI process was "not measured" are superseded by the section **GUI process** at the end of this file (start-up, idle RSS/CPU, memory after use, hotkey latency of the real release binary).
@@ -8,7 +8,7 @@ Nothing in the product was tuned for these numbers.
 ## Machine and conditions
 
 * Apple M3 Pro, 12 cores, 36 GB RAM, macOS 26.5.2, rustc 1.95.0.
-* **The machine was not idle.** It is the user's working desktop: a Tart VM was running, another worker (W4-FIX) was building/testing in a different worktree, WindowServer and iTerm were busy.
+* **The machine was not idle.** It is the user's working desktop: a Tart VM was running, another build and test run was going on in a different checkout, WindowServer and iTerm were busy.
   `uptime` load averages (1/5/15 min) around the runs: 4.7/5.8/5.8 (run 1), 7.0/6.2/5.9 (run 2), 6.3/6.1/5.9 (run 3), 4.8/5.7/5.8 before the criterion run and 6.0/6.3/6.0 after it.
   Summed `%CPU` of all other processes at the start of the three runs: 126 %, 229 %, 190 % (of 1,200 %). 12 cores means the benches (single-threaded query loops) still had a free core,
   but treat every number as "measured on a busy laptop"; the spread across the three runs is given so you can judge it.
@@ -25,7 +25,7 @@ ASHDASH_BENCH_APPS=5000 cargo bench -p ashdash-core --bench report   # app count
 cargo bench -p ashdash-core --bench queries
 ```
 
-`report.rs` was extended in this wave (it is under `crates/core/benches/`): it now runs the app section for 500 and 5,000 apps, and has new clipboard-search and file-budget sections.
+`report.rs` (under `crates/core/benches/`) runs the app section for 500 and 5,000 apps, and has new clipboard-search and file-budget sections.
 Per-query numbers come from 300 timed calls after 20 warm-up calls per query string; queries are `saf`, `vsc`, `visual studio`, `x`.
 
 ## Results (three runs of `report`; the table shows min-max over the runs)
@@ -84,7 +84,7 @@ are unit-tested with a fake `Os` only. A real-`mdfind` timing is a manual item.
 
 `apps::scan` of `/Applications`, `/System/Applications`, `~/Applications`: 81 apps in 12.5-22.8 ms (run 1: 22.8, run 2: 18.2, run 3: 12.5 ms; warm file cache).
 
-## Targets from `docs/PLAN.md` (WP5) and verdict
+## Targets and verdict
 
 | Target | Result | Verdict |
 |---|---|---|
@@ -97,7 +97,7 @@ are unit-tested with a fake `Os` only. A real-`mdfind` timing is a manual item.
 
 * No target that could be measured without the GUI was missed.
 * `ashdash` has no headless daemon mode: running the binary with no arguments starts the launcher window, which needs the desktop. So the idle RSS/CPU of the real process, the time to
-  hotkey-ready and the time to show the window are all open. Suggested manual check (on a VM from WP14 or with the desktop mutex): `ashdash &` , wait 10 s, then
+  hotkey-ready and the time to show the window are all open. Suggested manual check (in a lab VM, see LAB.md): `ashdash &` , wait 10 s, then
   `ps -o rss=,cputime= -p $(pgrep -x ashdash)` twice 60 s apart.
 * 47 MB at 5,000 apps is the bench process (it also holds the synthetic name list and the benchmark's allocations), so it is an upper bound for the engine alone, but egui/eframe plus a
   hidden window typically add tens of MB on top. The 80 MB target is plausible at ~80 apps (a real Mac; engine about 15 MB) and uncertain at 5,000 apps. Measure before claiming it.
@@ -111,18 +111,18 @@ are unit-tested with a fake `Os` only. A real-`mdfind` timing is a manual item.
 
 # GUI process (the real `ashdash` launcher, release build)
 
-Measured 2026-10-17 on branch `wp/w4-perf` (base `main` at 87090c4). This closes the "GUI process **not measured**" rows above.
+Measured 2026-10-17. This closes the "GUI process **not measured**" rows above.
 Nothing in the product was changed or tuned; the harness only starts the normal launcher process (`ashdash` with no arguments, hidden egui window, status item, clipboard watcher, IPC socket, hotkey) and watches it from outside.
 
 ## What was measured, on what
 
 * Binary: `cargo build --release` in the worktree (`target/release/ashdash`, 19.0 MB, the bare binary, **not** the signed `.app` bundle).
-* Machine: Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2. It is the user's working desktop, so not quiet: `uptime` 1-minute load at the start of the 18 measured starts ran **1.7-5.3** (15-minute 3.2-5.2); the summed `%CPU` of all other processes at those moments was **70-211 %** of 1,200 %. The runs are in time order and the load fell over the 25 minutes, so rep 1 of each variant ran under the heaviest load (see `docs/perf-data/gui-2026-10-17.jsonl`, `load_before`).
+* Machine: Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2. It is the user's working desktop, so not quiet: `uptime` 1-minute load at the start of the 18 measured starts ran **1.7-5.3** (15-minute 3.2-5.2); the summed `%CPU` of all other processes at those moments was **70-211 %** of 1,200 %. The runs are in time order and the load fell over the 25 minutes, so rep 1 of each variant ran under the heaviest load.
 * Three app lists, each with a fresh temporary `HOME` per repetition (the user's real data folder is never read or written; the app list comes from `app_dirs` in the temporary config):
   * **0 apps** (`app_dirs: []`),
   * **real**: the machine's own `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications` (82-83 apps, read-only scan, `~/Applications` of the temporary HOME is empty),
   * **5,002 apps**: synthetic fake `.app` bundles with a minimal `Info.plist` and no icon files (so icon extraction cost is not exercised).
-* Hotkey: `ctrl+alt+shift+j` (not the default, so a running reference launcher/Ashdash of the user cannot collide). The clipboard watcher ran against the real pasteboard; its history went into the temporary HOME.
+* Hotkey: `ctrl+alt+shift+j` (not the default, so a running Ashdash of the user cannot collide). The clipboard watcher ran against the real pasteboard; its history went into the temporary HOME.
 * Each variant was measured **3 times**, each repetition = one fresh HOME, a cold start (no cache), the full scenario below, then a second start with the cache on disk. The desktop lock was held per repetition (about 2.7 min), never longer than 5 min, and released after each.
 
 ```sh
@@ -134,7 +134,7 @@ swiftc -O scripts/qa/perf-floor.swift -o /tmp/perf-floor && /tmp/perf-floor 6 [m
 ```
 
 `perf-gui.sh` takes the desktop lock, refuses to run while any `ashdash` exists, uses a temporary HOME, kills every process it started and releases the lock in a trap. `perf-gui.py` does the measuring;
-`perf-probe.swift` polls `CGWindowListCopyWindowInfo` every ~1 ms for an on-screen `ashdash` window at least 300 pt wide (the status-item window is ~22 pt) and posts the hotkey / typed characters as synthetic `CGEvent`s. Raw results: `docs/perf-data/`.
+`perf-probe.swift` polls `CGWindowListCopyWindowInfo` every ~1 ms for an on-screen `ashdash` window at least 300 pt wide (the status-item window is ~22 pt) and posts the hotkey / typed characters as synthetic `CGEvent`s. The raw result files are not kept in the repository; the tables below are the record.
 
 ### Definitions, and what is a proxy
 
@@ -177,7 +177,7 @@ Cells are `min-max (median)` over the 3 repetitions, in milliseconds unless note
 * **Idle CPU is ~0**: 0.01 s of CPU in 60 s is 0.017 % of one core, the resolution of `ps` (in each of the 9 runs). The clipboard watcher polls the pasteboard every 300 ms (`clipboard_watch.rs::POLL`) and that is the only periodic work that was found; `top`'s idle-wakeup column showed 2-9 for the last 5 s interval.
 * One RSS drop (real apps, rep 1: 102 -> 86 MB over the 60 s) is the OS compressing/paging out clean pages (vmmap of that run: 20 MB swapped), not an app action; RSS of an idle process moves like this, footprint did not (35 MB in all 9).
 * The app index costs little: 5,002 apps add about **+5 MB footprint / +5 MB RSS** (~1 KB per app, mostly small-malloc heap: 17.5 MB vs 12 MB `MALLOC_SMALL`). The engine-only bench process showed 47 MB at 5,000 apps because it also held the benchmark data.
-* Where the 35 MB footprint is (`vmmap -summary`, 0 apps, hidden; `docs/perf-data/vmmap-0apps-idle-hidden.txt`): 12 MB malloc heap (8.6 MB allocated), **8.2 MB one "CG image" region** (present while hidden; its origin is not identified), 2.5 MB graphics "owned unmapped", 1.9 MB `VM_ALLOCATE`, ~3.3 MB `__DATA`/`__DATA_DIRTY`, 1.4 MB IOSurface, 1.2 MB IOAccelerator; 23 MB clean file-backed pages are counted on top by `footprint`'s "Clean" column.
+* Where the 35 MB footprint is (`vmmap -summary`, 0 apps, hidden): 12 MB malloc heap (8.6 MB allocated), **8.2 MB one "CG image" region** (present while hidden; its origin is not identified), 2.5 MB graphics "owned unmapped", 1.9 MB `VM_ALLOCATE`, ~3.3 MB `__DATA`/`__DATA_DIRTY`, 1.4 MB IOSurface, 1.2 MB IOAccelerator; 23 MB clean file-backed pages are counted on top by `footprint`'s "Clean" column.
 * **Why RSS is ~3x the footprint**, with a reference process: a do-nothing accessory AppKit process with a Metal layer and a hidden window (`scripts/qa/perf-floor.swift`, no Ashdash code) has resident 34-36 MB and footprint 8 MB on this machine. `ps rss` counts every resident page mapped into the process, including shared, file-backed system-framework pages (`vmmap`: 530 MB of read-only library regions resident across the dyld shared cache) and the 19 MB binary's own text. Ashdash's own dirty memory is the 34 MB footprint.
 
 ### (c) After showing the window, typing a query and hiding it again
@@ -194,7 +194,7 @@ Per repetition: show with the hotkey, wait 0.5 s, type `saf` (synthetic key even
 | 5,002 apps: RSS MB | 106-110 | 106-111 | 106-117 | 106-117 | 106-117 | 117-122 |
 
 * **Does memory return? Footprint yes, RSS no.** Showing the window raises the footprint by about **185 MB** (35 -> 220 MB, in every variant, independent of the app list), and it falls back to the idle level within roughly 11 s of hiding (147-163 MB one second after hiding, 34-51 MB after eleven). After 20 further cycles the footprint is 35-47 MB, i.e. at most +1 to +9 MB above the baseline (small residue: query/icon caches or heap fragmentation; 20 cycles cannot rule out a slow leak). RSS rises 6-12 MB with first use (heap and pages touched) and is **not** given back (it stays at 97-122 MB).
-* The 185 MB is **graphics memory** ("owned unmapped (graphics)" 2.5 MB -> 182 MB in `vmmap`; `docs/perf-data/vmmap-0apps-window-shown.txt`), not malloc heap (heap +0.7 MB). Control experiments with the reference process: a 700x63 transparent borderless Metal window shown at status level with one presented frame costs **+3 MB** footprint, and adding the same `NSVisualEffectView` (HUD material, corner radius) as `gui/mac.rs` costs **+3 MB** as well (3 runs each). So the cost is not the window, the layer or the vibrancy view; it comes from the wgpu/egui rendering path. Which exact allocation (shader/pipeline compilation, buffers, texture atlas, drawable pool) was **not** determined; see suggestions.
+* The 185 MB is **graphics memory** ("owned unmapped (graphics)" 2.5 MB -> 182 MB in `vmmap`), not malloc heap (heap +0.7 MB). Control experiments with the reference process: a 700x63 transparent borderless Metal window shown at status level with one presented frame costs **+3 MB** footprint, and adding the same `NSVisualEffectView` (HUD material, corner radius) as `gui/mac.rs` costs **+3 MB** as well (3 runs each). So the cost is not the window, the layer or the vibrancy view; it comes from the wgpu/egui rendering path. Which exact allocation (shader/pipeline compilation, buffers, texture atlas, drawable pool) was **not** determined; see suggestions.
 * `footprint`'s graphics accounting is volatile at the moment of a transition: in one 5,002-app repetition the "typed" sample read 44 MB between a 226 MB and a 145 MB reading. Treat the 1-second columns as coarse; the 11-second and 20-cycle columns are the reliable ones.
 * The window's on-screen size is 700 x 63 pt (header only, before results), drawable `1400x126` (Retina), so the surface itself is ~0.7 MB.
 
@@ -208,7 +208,7 @@ Per repetition: show with the hotkey, wait 0.5 s, type `saf` (synthetic key even
 | `ashdash show` over the socket (proxy) -> window on screen | **116-131 ms (123-127)** | (CLI start to `show()`: 107-110 ms, from the gap run) | 130-144 ms (gap run) |
 | first hotkey immediately after start (table in (a)) | 75-88 ms | | |
 
-(One 78.7 ms outlier in 90 presses, 5,002 apps rep 2.) Hotkey latency does **not** depend on how long the window has been hidden: gap run (0.5, 3, 10, 30 s hidden; 3 presses each; `docs/perf-data/gui-hotkey-gap-2026-10-17.jsonl`): hotkey 190-215 ms at every gap, `ashdash show` 122-131 ms at every gap.
+(One 78.7 ms outlier in 90 presses, 5,002 apps rep 2.) Hotkey latency does **not** depend on how long the window has been hidden: gap run (0.5, 3, 10, 30 s hidden; 3 presses each): hotkey 190-215 ms at every gap, `ashdash show` 122-131 ms at every gap.
 
 * The time is spent **before the app's `show()` runs** (184-196 ms of the 200-216 ms), then ~22 ms for key focus. The first hotkey right after start (window never shown, event loop warm) needs only ~81 ms in total, so the path *can* be fast.
 * One identified contributor: eframe 0.36.2 throttles repaints of an invisible window to one per `INVISIBLE_WINDOW_REPAINT_INTERVAL = 100 ms` (`eframe-0.36.2/src/native/run.rs:23`, plus a 10 ms `sleep_if_invisible_or_minimized`); our hotkey and IPC handlers wake the UI with `ctx.request_repaint()` and the toggle is only seen inside `update`. That matches the 107-110 ms the IPC path needs to reach `show()` (a very tight number, 107.0-110.1 ms in 12 runs). The hotkey path needs another ~80 ms on top that I could **not** explain (candidates: synthetic-event delivery to a hidden Accessory app, the Carbon hotkey dispatch; not tested: a physical key press, which may behave differently).
@@ -216,31 +216,31 @@ Per repetition: show with the hotkey, wait 0.5 s, type `saf` (synthetic key even
 
 ## Verdict against the targets
 
-| Target (`docs/PLAN.md`) | Result | Verdict |
+| Target | Result | Verdict |
 |---|---|---|
 | p95 query < 10 ms for 5,000 candidates | 0.42 ms engine side (first part of this file); the GUI adds a frame, not measured | **PASS** (engine) |
 | Cold start to hotkey-ready < 300 ms | 114-180 ms (0 apps), 136-148 (82 real apps) cold; 122-151 ms warm cache at any app count. **5,002 apps with no cache: 293-323 ms, median 299, 1 of 3 above 300** | **PASS** at realistic sizes; **MARGINAL / at the limit** for a first-ever launch on a machine with ~5,000 apps. First window shown: 196-266 ms (cold, <=83 apps), 376-405 ms (cold, 5,002 apps) |
 | Idle CPU ~0 | 0.01 s per 60 s (0.017 % of a core), 9 of 9 runs, all app counts | **PASS** |
 | Idle RSS < 80 MB (hidden egui window) | `ps rss`: **86-110 MB** (median 102-110) at every app count, 0 apps included; one dip to 86 MB. Footprint (Activity Monitor "Memory"): **34-41 MB** | **FAIL as `ps rss` literally; PASS as footprint.** While the window is shown the footprint is 220-240 MB for ~10 s after use (transient) |
-| (no target) hotkey -> window | ~200 ms (synthetic hotkey), ~125 ms (`ashdash show`) **before W4-PERF2; after it 72 ms / 41 ms p50** (see "Wave 4 round 3") | now below the 100 ms revisit line of the focus spike |
+| (no target) hotkey -> window | ~200 ms (synthetic hotkey), ~125 ms (`ashdash show`) **before the show-path change; after it 72 ms / 41 ms p50** (see "Hotkey latency and shown-window memory") | now below the 100 ms revisit line of the focus spike |
 
 ## Why the misses, and suggestions (not implemented; estimates are guesses unless a measurement is cited)
 
-1. **RSS 86-110 MB vs 80 MB.** Evidence: the reference AppKit+Metal process alone is 34-36 MB resident, so ~35 % of Ashdash's RSS is "any Metal app"; the rest is shared system-framework pages (wgpu/Metal/CoreText/ImageIO/egui) plus the binary and 34 MB dirty. Small levers, with measured sizes: the unexplained 8.2 MB "CG image" region (find who allocates it: likely an image/icon or status item; payoff up to **-8 MB**), malloc heap 12 MB at 0 apps (payoff a few MB), app index ~1 KB per app. Even all of that would leave RSS around **90 MB**, so tuning cannot reliably meet an 80 MB *RSS* target. **Recommendation: change the target's wording to "footprint (Activity Monitor Memory) < 80 MB hidden"**, which is met with 2x margin (34-41 MB), or accept ~110 MB RSS. That is a decision for the owner of `docs/PLAN.md`.
-2. **185 MB footprint while the window is shown (transient, ~10 s). (Investigated in W4-PERF2: ~115 MB of it is the Metal driver's first-frame cost even in a bare Metal window; no eframe setting changed it; see "Wave 4 round 3".)** Not the window or the vibrancy view (control: +3 MB each). It is created by the first show and released after hiding, so it does not break the idle target, but Activity Monitor will show 220-240 MB for a moment after every use. Suggested next step: reproduce in a minimal standalone wgpu+egui program and look at Instruments (Metal System Trace / Allocations "VM: IOAccelerator"), check `wgpu` surface/`RenderState` settings in eframe `NativeOptions` (msaa, depth buffer, present mode), shader/pipeline caches. Payoff: if it is pipeline/shader compilation or an oversized buffer, up to **-150 MB** peak; if it is the driver's, none. Unverified.
-3. **Hotkey -> window ~200 ms (DONE in W4-PERF2: now 72 ms p50, see "Wave 4 round 3"; original suggestion kept below).** Wake the UI without going through the throttled invisible-window repaint: show the window natively from the hotkey/IPC handler (`orderFront` / the existing `style_launcher_window` plus `makeKeyAndOrderFront` on the main thread, which the global-hotkey handler already runs on) and let egui catch up on the next frame; or keep the viewport "visible" but fully transparent and click-through while idle (costs idle CPU: must be re-measured). Expected payoff: the ~100-110 ms eframe interval for both paths, i.e. about **-100 ms** to roughly 100 ms (hotkey) and ~20 ms (IPC); the extra ~80 ms of the hotkey path is unexplained, but 81 ms was seen right after start. Needs a physical-key check.
+1. **RSS 86-110 MB vs 80 MB.** Evidence: the reference AppKit+Metal process alone is 34-36 MB resident, so ~35 % of Ashdash's RSS is "any Metal app"; the rest is shared system-framework pages (wgpu/Metal/CoreText/ImageIO/egui) plus the binary and 34 MB dirty. Small levers, with measured sizes: the unexplained 8.2 MB "CG image" region (find who allocates it: likely an image/icon or status item; payoff up to **-8 MB**), malloc heap 12 MB at 0 apps (payoff a few MB), app index ~1 KB per app. Even all of that would leave RSS around **90 MB**, so tuning cannot reliably meet an 80 MB *RSS* target. **Recommendation: change the target's wording to "footprint (Activity Monitor Memory) < 80 MB hidden"**, which is met with 2x margin (34-41 MB), or accept ~110 MB RSS. The memory target in [PRODUCT.md](PRODUCT.md) is therefore the footprint, not the RSS.
+2. **185 MB footprint while the window is shown (transient, ~10 s). (Investigated afterwards: ~115 MB of it is the Metal driver's first-frame cost even in a bare Metal window; no eframe setting changed it; see "Hotkey latency and shown-window memory".)** Not the window or the vibrancy view (control: +3 MB each). It is created by the first show and released after hiding, so it does not break the idle target, but Activity Monitor will show 220-240 MB for a moment after every use. Suggested next step: reproduce in a minimal standalone wgpu+egui program and look at Instruments (Metal System Trace / Allocations "VM: IOAccelerator"), check `wgpu` surface/`RenderState` settings in eframe `NativeOptions` (msaa, depth buffer, present mode), shader/pipeline caches. Payoff: if it is pipeline/shader compilation or an oversized buffer, up to **-150 MB** peak; if it is the driver's, none. Unverified.
+3. **Hotkey -> window ~200 ms (DONE: now 72 ms p50, see "Hotkey latency and shown-window memory"; original suggestion kept below).** Wake the UI without going through the throttled invisible-window repaint: show the window natively from the hotkey/IPC handler (`orderFront` / the existing `style_launcher_window` plus `makeKeyAndOrderFront` on the main thread, which the global-hotkey handler already runs on) and let egui catch up on the next frame; or keep the viewport "visible" but fully transparent and click-through while idle (costs idle CPU: must be re-measured). Expected payoff: the ~100-110 ms eframe interval for both paths, i.e. about **-100 ms** to roughly 100 ms (hotkey) and ~20 ms (IPC); the extra ~80 ms of the hotkey path is unexplained, but 81 ms was seen right after start. Needs a physical-key check.
 4. **5,002 apps, first launch: 299 ms.** The cold scan (~160-220 ms) runs before the window loop (`Engine::new` in `run_launcher`). Starting the event loop and registering the hotkey first and scanning in the background (results arrive when done; the cached index already works this way afterwards) would put hotkey-ready at about **140 ms** at any app count, a saving of ~160 ms, at the price of an empty/partial first query on the first-ever launch. Only matters once per cache loss.
 5. **Hotkey-ready ~120-140 ms floor** is GUI initialisation (the engine is 5-11 ms warm). Not a miss; if ever needed, profile `eframe::run_native` start-up (wgpu adapter/device, font atlas, status item) with `sample` during launch. Not done.
 
-## Wave 4 round 3 (W4-PERF2): hotkey latency and shown-window memory
+## Hotkey latency and shown-window memory
 
-Measured 2026-10-17 04:00-04:25, branch `wp/w4-perf2`, release binary, temporary HOME, load average 1.8-7 (other workers active), `scripts/qa/perf-gui.sh` (`PERF_MODE=latency|mem`, added here) plus a few one-off scripts (trace-based latency, focus checks).
+Measured 2026-10-17 04:00-04:25, release binary, temporary HOME, load average 1.8-7 (other builds active), `scripts/qa/perf-gui.sh` (`PERF_MODE=latency|mem`) plus a few one-off scripts (trace-based latency, focus checks).
 
 ### 1. Hotkey / `ashdash show` -> window visible
 
 **Change** (`crates/app/src/gui/{mac,window,mod}.rs`, `events.rs`): the hotkey handler, and every IPC / URL / AppleScript event that shows the launcher (`Show`, `Search`, `Prefill`), now first calls `mac::wake_hidden_launcher`: on the main thread (the hotkey handler already runs there; IPC events are sent to the main queue with `dispatch_async_f`, declared by hand, so there is **no new dependency**; an earlier `dispatch2` direct dependency was dropped) a hidden launcher window is ordered front **fully transparent** (alpha 0, `orderFrontRegardless`), then `request_repaint()` runs. AppKit now reports the window as visible, so eframe no longer applies its 100 ms invisible-window repaint throttle. The unchanged `show()` runs on the next frame (it resets the query, positions and focuses the window); `reveal_if_drawn` makes the window opaque after the first frame with the fresh content was drawn (or after 300 ms at the latest), so the previous query is never flashed. If the request turns out to be a hide, `hide()` orders the window out as before (the next `show()` reveals it). Nothing runs when the window is already visible.
 
-| Path (10 presses x 5 repetitions: empty and real-apps variants, 3 + 2 reps; `docs/perf-data/gui-latency-after-w4perf2-2026-10-17.jsonl`) | Before (W4-PERF, 90 presses) | After (50 presses) |
+| Path (10 presses x 5 repetitions: empty and real-apps variants, 3 + 2 reps; raw results not kept) | Before (90 presses) | After (50 presses) |
 |---|---|---|
 | synthetic hotkey chord -> window on screen | 179-234 ms, median 200-216 | **p50 72.2 ms**, p95 82.9, min 61.9, max 92.4 (per-rep medians 70.4-78.3) |
 | `ashdash show` -> window on screen | 116-131 ms, median 123-127 | **p50 40.7 ms**, p95 51.0, min 33.7, max 69.1 (per-rep medians 38.9-45.3) |
@@ -248,7 +248,7 @@ Measured 2026-10-17 04:00-04:25, branch `wp/w4-perf2`, release binary, temporary
 
 Target (hotkey -> window visible <= 100 ms, p50): **met, 72 ms**, and every one of the 50 presses was below 100 ms (max 92). About 12-15 ms of the figure is the probe itself posting the two CGEvents (`posted_ms` in the raw data; the probe now builds the events before it starts the clock, which is why the numbers are not directly comparable to the old probe by a few ms; the old probe's event-building cost is inside the "before" column). The window counts as visible only when its alpha is >= 0.99 in the window list.
 
-**Same-session baseline.** The baseline binary (commit before the change, same probe) could **not** be measured on the window list in this session: its launcher never appeared in `CGWindowListCopyWindowInfo` at all (5 of 5 hotkey presses; the app's trace says `show` and `focus=Some(true)`), i.e. today the old code path does not get a window on screen on this desktop (probably macOS refusing the activation of a background Accessory process from the iTerm session, which `orderFrontRegardless` does not need). What could be compared is the app-internal trace (22 presses, 11 shows each): post -> `show()` **p50 144 ms (61-166)** before vs **p50 43 ms (36.5-57)** after; post -> key focus p50 171 ms (62-190) vs 55 ms (44-71). The old window-list numbers in the table above are the ones recorded earlier in the day by W4-PERF. Treat the "before" window-list column and the trace comparison as two separate pieces of evidence.
+**Same-session baseline.** The baseline binary (commit before the change, same probe) could **not** be measured on the window list in this session: its launcher never appeared in `CGWindowListCopyWindowInfo` at all (5 of 5 hotkey presses; the app's trace says `show` and `focus=Some(true)`), i.e. today the old code path does not get a window on screen on this desktop (probably macOS refusing the activation of a background Accessory process from the iTerm session, which `orderFrontRegardless` does not need). What could be compared is the app-internal trace (22 presses, 11 shows each): post -> `show()` **p50 144 ms (61-166)** before vs **p50 43 ms (36.5-57)** after; post -> key focus p50 171 ms (62-190) vs 55 ms (44-71). The old window-list numbers in the table above are the ones recorded earlier in the day. Treat the "before" window-list column and the trace comparison as two separate pieces of evidence.
 
 **Idle CPU unchanged**: 2 x 60 s with the window hidden after one show/hide cycle: 0.01 s CPU each (as before), footprint 35 MB, 9-10 threads. The change adds no timer; the extra `request_repaint` only runs while a woken window waits for its first frame.
 
@@ -260,7 +260,7 @@ Reproduced: footprint 35 MB hidden -> **220-221 MB** with the window shown (3 of
 
 Evidence for the cause:
 
-* `footprint`/`vmmap` with the window shown: **182 MB "owned physical footprint (unmapped) (graphics)"** in 59 regions; `vmmap -v` shows **45 regions of exactly 4,096 KB** (= 180 MB) plus small ones. It is GPU-side memory owned by the process (private textures/buffers), not malloc, not the window backing store (IOSurface 1.4 MB), not IOAccelerator mappings (4.4 MB). Data: `docs/perf-data/vmmap-0apps-window-shown.txt`.
+* `footprint`/`vmmap` with the window shown: **182 MB "owned physical footprint (unmapped) (graphics)"** in 59 regions; `vmmap -v` shows **45 regions of exactly 4,096 KB** (= 180 MB) plus small ones. It is GPU-side memory owned by the process (private textures/buffers), not malloc, not the window backing store (IOSurface 1.4 MB), not IOAccelerator mappings (4.4 MB).
 * **Control, no wgpu/egui at all** (`scripts/qa/perf-metal-control.swift`: borderless window, CAMetalLayer, one clear-colour render pass): footprint 8.9 MB with the window -> **124 MB after the first presented frame** (+115 MB), 128 MB after the second. So roughly **60 % of the jump is the Metal driver's cost of the first command submission on this GPU** (a bare Metal window already pays it); the other ~70 MB is what wgpu/egui add on top (pipelines, buffers, glyph atlas texture), not separated further.
 * Settings tried on the real app (2 runs each, shown-window footprint; base 227 MB): frame latency 1 (`SurfaceConfig::LOW_LATENCY`) 220 MB; `max_texture_dimension_2d` 2,048 (makes the font atlas 2,048 instead of 8,192 wide) 225 MB; 4,096: 225-226 MB; `PowerPreference::LowPower` 227 MB; `MemoryHints::MemoryUsage` 227 MB; `AutoNoVsync` 229-230 MB. MSAA and the depth buffer are already off in eframe's defaults (`multisampling: 0`, `depth_buffer: 0`). None changes the peak by more than 3 %, so **no configuration change was applied** (the experiment code was not committed).
 
@@ -274,7 +274,7 @@ Not done (optional; 1 and 2 first).
 
 * Physical keyboard / real hotkey: all key events are synthetic (see above). No full-screen app, Space switch, external display or Stage Manager runs.
 * The release binary only, not the packaged `.app`.
-* Baseline window-list latency was not measurable today (see section 1); the before/after comparison there rests on the trace and on the earlier W4-PERF numbers.
+* Baseline window-list latency was not measurable today (see section 1); the before/after comparison there rests on the trace and on the earlier numbers.
 * The wake-up orders the window front on whichever Space is current; a window woken while a full-screen app is active was not tried.
 
 ## Not verified / limits

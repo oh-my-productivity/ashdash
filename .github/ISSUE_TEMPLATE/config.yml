@@ -3,3 +3,6 @@ contact_links:
   - name: Troubleshooting guide
     url: https://github.com/oh-my-productivity/ashdash/blob/main/docs/TROUBLESHOOTING.md
     about: Symptoms and fixes; please check it before opening a bug report.
+  - name: Report a security vulnerability
+    url: https://github.com/oh-my-productivity/ashdash/security/advisories/new
+    about: Private reporting through GitHub. Please do not open a public issue for a vulnerability.

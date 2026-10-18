@@ -1,5 +1,5 @@
 name: Workflow does not work
-description: A reference-compatible workflow imports but misbehaves
+description: A workflow package imports but misbehaves
 labels: ["workflows", "compatibility"]
 body:
   - type: markdown
@@ -18,7 +18,7 @@ body:
     id: types
     attributes:
       label: Object types involved
-      description: "For example `alfred.workflow.input.scriptfilter`, `alfred.workflow.utility.conditional` (look in `info.plist`)."
+      description: "The object types as listed in docs/WORKFLOWS.md, for example Script Filter or Conditional (look in the workflow's `info.plist`)."
     validations:
       required: true
   - type: textarea

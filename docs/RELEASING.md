@@ -27,15 +27,15 @@ Useful switches: `ARCHS=native` (one architecture, about half the time), `OUT_DI
 `BUILD_NUMBER=7`, `MIN_OS=13.0`, `SKIP_ICON=1`.
 
 The version comes from `crates/app/Cargo.toml`; the bundle id, product name and URL scheme come from
-`crates/core/src/brand.rs`. Nothing is duplicated there. A rename also touches the Cargo package names, the scripting dictionary file name, `Info.plist.template`
-and the docs (list: [CLEAN_ROOM.md](CLEAN_ROOM.md#where-the-name-lives)).
+`crates/core/src/brand.rs`. Nothing is duplicated there. Changing the slug or bundle id moves the user's data folder and makes macOS ask for permissions again; a product rename also
+touches the Cargo package names, the scripting dictionary file name (`crates/app/resources/Ashdash.sdef`, which must match `OSAScriptingDefinition`), `Info.plist.template`, the packaging scripts and the docs.
 
 What `build-app.sh` checks for you: `codesign --verify --deep --strict`, and it prints what `spctl` thinks.
 `spctl` **rejects** ad-hoc and un-notarized bundles; the script reports that as a warning, not an error.
 
 ### Running an ad-hoc build on another Mac
 
-Gatekeeper blocks it. On macOS 15 and later the dialog only offers *Done* / *Move to Trash* (verified in the lab, `docs/qa-runs/2026-10-rc1.md` PKG-06..PKG-14): use System Settings > Privacy & Security > *Open Anyway* and confirm in the second dialog, or
+Gatekeeper blocks it. On macOS 15 and later the dialog only offers *Done* / *Move to Trash* (verified in the lab on macOS 15.7): use System Settings > Privacy & Security > *Open Anyway* and confirm in the second dialog, or
 `xattr -dr com.apple.quarantine /Applications/Ashdash.app`. Right-click > Open is the route up to macOS 14. This is expected for unsigned/ad-hoc software.
 
 ## Signing and notarization (real releases)
@@ -132,15 +132,15 @@ brew audit --cask --new ./ashdash.rb      # needs a real, reachable release URL
   (`/Applications/Ashdash.app` is the safe place; macOS 13+). From a bare binary it explains why and does nothing.
   The first time, macOS may show "Ashdash added items that can run in the background"; the user can revoke it in
   System Settings > General > Login Items.
-* Double-clicking a `.alfredworkflow`/`.alfredappearance`/`.alfredsnippets` file *with Ashdash as the handler*
+* Double-clicking a workflow package, appearance file or snippet package ([file types](WORKFLOWS.md#file-formats-and-identifiers)) *with Ashdash as the handler*
   imports it (workflows ask for confirmation first). The bundle registers itself with `LSHandlerRank = Alternate`,
-  so a real reference launcher installation stays the default opener; choose Ashdash via Open With, or
-  `open -a Ashdash.app file.alfredworkflow`.
-* The URL scheme is `ashdash://` only. `reference://` belongs to the reference launcher and is deliberately not registered.
+  so an application that already handles those files stays the default opener; choose Ashdash via Open With, or
+  `open -a Ashdash.app <file>`.
+* The URL scheme is `ashdash://` only; Ashdash registers no other scheme.
 
-## Dry run, 2026-10-16 (W4-REL)
+## Dry run, 2026-10-16
 
-Machine: Apple M3 Pro, macOS 26.5.2, rustc 1.95.0, load average 5-16 (a busy desktop with another build running), `main` + Wave 4 branch, version 0.1.0, ad-hoc signing, no network use by the scripts.
+Machine: Apple M3 Pro, macOS 26.5.2, rustc 1.95.0, load average 5-16 (a busy desktop with another build running), version 0.1.0, ad-hoc signing, no network use by the scripts.
 
 | Step | Result | Time |
 |---|---|---|
@@ -168,11 +168,9 @@ Not done (on purpose or not possible): launching the bundle with `open` (opens a
 
 Findings:
 
-* **Fixed:** `selftest.sh` reported `FAIL shellcheck` whenever `shellcheck` is installed (as on most CI images and developer machines), because the `# shellcheck source=lib.sh` hints were resolved relative to the working directory
-  (SC1091); it now passes `-P SCRIPTDIR`. Before the fix the self-test passed only on machines without `shellcheck`, so this would have failed the release workflow's first step on a runner that has it.
-* **Fixed:** `dist/` (the build output) was not in `.gitignore`.
-* **Fixed in Wave 4 review (W4-R2):** `ashdash --version` / `-V` / `version` now prints `ashdash <crate version>` and exits 0 (it used to print "unknown command"). The release smoke test can use it.
-* `CFBundleVersion` defaults to the commit count (141 in this worktree); CI passes `github.run_number` instead, so build numbers differ between local and CI builds. Harmless, worth knowing.
+* `selftest.sh` passes `-P SCRIPTDIR` to `shellcheck`, so it works the same on machines with and without `shellcheck`; `dist/` (the build output) is ignored by git.
+* `ashdash --version` / `-V` / `version` prints `ashdash <crate version>` and exits 0; the release smoke test can use it.
+* `CFBundleVersion` defaults to the commit count (141 at the time of the dry run); CI passes `github.run_number` instead, so build numbers differ between local and CI builds. Harmless, worth knowing.
 
 ## Not covered by automation
 

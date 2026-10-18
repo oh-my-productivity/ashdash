@@ -1,11 +1,13 @@
-# Isolated test lab (WP14)
+# Isolated test lab
 
 Anything that shows a window, registers a global hotkey / URL handler / login item, sends keystrokes, takes a
 screenshot or triggers a macOS permission prompt runs **in a throw-away macOS VM**, never on the user's desktop.
 The lab is a thin layer of shell scripts around [Tart](https://tart.run) (Apple Virtualization.framework) in
-`tests/lab/`. Design background: `docs/PLAN.md` section 8.
+`tests/lab/`. Why a VM: guest macOS gives every clone its own desktop, hotkeys, login items, URL handlers and permission database, so tests that
+press keys or show dialogs cannot disturb the host or each other. Guest clones are cheap (APFS copy-on-write), but a guest cannot be given Accessibility or
+Automation grants interactively in a scripted run, which is why the golden image is prepared once (below).
 
-## Agent quick start
+## Quick start
 
 ```sh
 # One-shot: boot a fresh VM, sync this worktree, run a command inside it, delete the VM.
@@ -26,7 +28,7 @@ tests/lab/lab-down "$vm"               # ALWAYS, also after failures (or use lab
 Rules:
 
 - GUI / hotkey / URL-scheme / login-item / dialog tests go through the lab. The `/tmp/ashdash-desktop.lock`
-  desktop mutex from the wave briefs is only for the rare check that really needs the host desktop.
+  desktop mutex (`mkdir /tmp/ashdash-desktop.lock`, always `rmdir` it, temporary `HOME`) is only for the rare check that really needs the host desktop.
 - Inside the VM the command runs over ssh from the synced copy of your worktree (`~/ashdash-work/<worktree name>`),
   with `~/.cargo/bin` on `PATH`, and with `$LAB_ARTIFACTS` pointing at a fresh directory whose contents `--artifacts DIR`
   copies back to the host (also when the command fails). Screenshots are artifacts only; look at them, delete them, never commit them.
@@ -48,18 +50,18 @@ Rules:
 | `slot.py` | the two-slot semaphore (see below). `slot.py status` shows who holds what. |
 | `golden-setup.sh create|gui|verify|manual-steps|tcc-probe` | build and maintain the golden image. |
 | `smoke.sh` | the job that runs inside the VM. Grants TCC in the clone first (`LAB_AUTO_TCC=0` to skip, see "TCC grants"). |
-| `qa/` | the release-candidate QA scripts (Wave 6): `pkg-install.sh` (DMG, quarantine, Gatekeeper, first launch), `checklist.sh` (docs/QA.md section 3 and the Wave 4/5 behaviours), `soak.sh`, helpers `lib.sh`, `qa-tool.swift`, `ocr.swift`, `fixtures.py`. See docs/QA.md section 2.1 and `docs/qa-runs/`. |
+| `qa/` | the release-candidate QA scripts: `pkg-install.sh` (DMG, quarantine, Gatekeeper, first launch), `checklist.sh` (docs/QA.md section 3 and the later behaviours), `soak.sh`, helpers `lib.sh`, `qa-tool.swift`, `ocr.swift`, `fixtures.py`. See docs/QA.md section 2.1. |
 | `guest/` | helpers copied into the golden image (`~/lab-guest`) and used from the synced tree: `gui-exec`, `provision.sh`, `check-golden.sh`, `tcc-probe.sh`, `tcc-grant.sh`. |
 | `test/run-tests.sh` | host-side tests of all of the above against a fake `tart` and fake `ssh` (no VM; ~100 s). |
 | `lib.sh` | shared settings. Every knob is an environment variable (`LAB_*`, `TART_HOME`), see the top of the file. |
 
-Name resolution does not depend on `$HOME`: agents run with throw-away HOMEs, so the scripts resolve the real home
+Name resolution does not depend on `$HOME`: automated jobs run with throw-away HOMEs, so the scripts resolve the real home
 (`~/.tart`, `~/.local/state/ashdash-lab`, `~/.local/bin/tart`) from the account database.
 
 ## The 2-VM limit and the slot queue
 
 Apple's licence and the kernel allow **at most two macOS guests at the same time on an Apple Silicon host**. A third `tart run`
-fails, so the lab serialises with two slots (`/tmp/ashdash-lab/slots/slot{0,1}.lock`; `/tmp`, not `$TMPDIR`, because agents run
+fails, so the lab serialises with two slots (`/tmp/ashdash-lab/slots/slot{0,1}.lock`; `/tmp`, not `$TMPDIR`, because jobs run
 with different `TMPDIR`s and must all see the same files).
 
 - `lab-up` calls `slot.py acquire`: it polls (about once a second, printing who holds the slots every 30 s) until `flock` on one of the files
@@ -68,7 +70,7 @@ with different `TMPDIR`s and must all see the same files).
 - The kernel releases a `flock` when its holder dies, so there are no stale lock files to clean. The holder also exits when the VM has gone
   away, when `lab-down` signals it, when the VM never appeared within 10 min (`lab-up` died), and after the maximum age (30 min), at which point it
   **stops and deletes its VM** itself. `lab-gc` is a second line of defence (VM age = clone time).
-- Your own jobs count too: two `lab-with-vm` jobs of one agent fill both slots. A job that holds a VM for long blocks everybody; keep jobs short,
+- Your own jobs count too: two `lab-with-vm` jobs of one user fill both slots. A job that holds a VM for long blocks everybody; keep jobs short,
   build once with `lab-up` + `lab-run` when you need many steps.
 - `golden-setup.sh create|gui` also take a slot. Do not start tart VMs by hand while the lab is in use.
 - Not enforced by the lab: someone running `tart run` directly, or any other VM software, still counts against Apple's limit.
@@ -165,7 +167,7 @@ disabled (`StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null`) because ev
 | rsync / ssh hangs in `lab-run` | VM crashed or IP changed: `lab-down <vm>` and start over. |
 | Disk is filling up | `tart list` for stray VMs; `tart prune --older-than 7` removes cached OCI images (never the golden image, but it would delete the pulled base). |
 
-### Things the Wave 6 QA runs learned about the guest
+### Things the QA runs learned about the guest
 
 * **Gatekeeper is off in the base image** (`spctl --status`: assessments disabled). `qa/pkg-install.sh` runs `sudo spctl --master-enable` in the clone before it tests quarantine.
 * **Spotlight indexing is off** (`mdutil -s /`), so `mdfind`-backed features (`open`, `find`, Open With...) return nothing. `sudo mdutil -i on /` starts indexing but it had not produced results 40 minutes later.
@@ -185,7 +187,7 @@ shellcheck -x -P SCRIPTDIR tests/lab/lab-* tests/lab/*.sh tests/lab/guest/* test
 ## Measurements
 
 Measured 2026-10-17 on the host above (Apple M3 Pro, 12 cores, 36 GB, macOS 26.5.2; Tart 2.41.0), guest macOS 15.7.7, 4 CPUs / 8 GB per VM, rustc 1.95.0.
-The host was **not idle**: other agents were building and testing the whole time (load average 3-6 without any VM), so the variance below is real.
+The host was **not idle**: other builds and tests were running the whole time (load average 3-6 without any VM), so the variance below is real.
 
 | What | Result |
 |---|---|
@@ -196,7 +198,7 @@ The host was **not idle**: other agents were building and testing the whole time
 | `lab-with-vm -- uname -a` end to end (clone + boot + ssh + run + delete) | **13.5 s** |
 | `golden-setup.sh verify` / `tcc-probe` end to end | 49 s / 13.5 s (verify includes one 30 s gui-exec timeout before the TCC fix) |
 | Sync of the worktree (3.1 MB; first and second sync) | **0.6-0.7 s** including the ssh round trip |
-| Cold `cargo build -p ashdash` (debug, fresh clone, deps from crates.io) | **33 s** on a quiet moment, 46 s, 78 s and 114 s while other agents compiled on the host |
+| Cold `cargo build -p ashdash` (debug, fresh clone, deps from crates.io) | **33 s** on a quiet moment, 46 s, 78 s and 114 s while other builds ran on the host |
 | Warm no-op `cargo build` / after touching `crates/core/src/lib.rs` | 0.4 s / 1.3 s |
 | `scripts/check.sh` in the guest (fmt, clippy, all tests, after the cold build) | **92 s** (with `/tmp/x` present, see "Known failure" below) |
 | `build-app.sh` native bundle (cold / warm) | 76-78 s / 1 s |
@@ -205,7 +207,7 @@ The host was **not idle**: other agents were building and testing the whole time
 | `tests/lab/accept.sh` (one `uname`, three concurrent jobs on two slots, cleanup) | 91 s: the third job started 29 s after the second, never more than 2 VMs, no `ashdash-run-*` left, slots free |
 | Disk per run VM | clone is copy-on-write: `tart list` size 34 GB vs 31 GB golden after a full debug build + bundle (+3 GB; guest `target/` is 4.0 GB); `du` on a clone shows the logical 31 GB, ignore it. Gone after `lab-down` |
 | Guest root disk | 46 GiB total, 15 GiB free after the above |
-| Host load with two VMs compiling | load average 5 (baseline, other agents) rising to 9-10 on 12 cores while both guests built; `tart run` processes themselves show ~0 % CPU in `ps` (the work is accounted to the VM) |
+| Host load with two VMs compiling | load average 5 (baseline, other builds) rising to 9-10 on 12 cores while both guests built; `tart run` processes themselves show ~0 % CPU in `ps` (the work is accounted to the VM) |
 | RAM | 2 x 8 GB for two VMs; host stayed responsive |
 
 ### Real-VM results of `smoke.sh` (this branch)

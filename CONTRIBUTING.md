@@ -1,8 +1,9 @@
 # Contributing to Ashdash
 
-Thank you for helping. The repository is <https://github.com/oh-my-productivity/ashdash>. Ashdash is a macOS keyboard launcher written in Rust; the
-project is independent of the reference launcher application ([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). Read
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first: it explains the two crates, the provider model and the threads.
+Thank you for helping. The repository is <https://github.com/oh-my-productivity/ashdash>. Ashdash is a macOS keyboard launcher written in Rust.
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first: it explains the two crates, the provider model and the threads.
+Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md); security problems go through the
+[security policy](.github/SECURITY.md), not a public issue.
 
 ## Ground rules
 
@@ -10,14 +11,19 @@ project is independent of the reference launcher application ([docs/CLEAN_ROOM.m
   Unless you state otherwise, any contribution you submit for inclusion is licensed under both, without additional terms or
   conditions (the usual inbound = outbound rule of the Rust ecosystem; Apache-2.0 section 5 says the same). Do not submit code
   you are not allowed to license this way.
-* **No reference launcher code or assets.** Never copy source, icons, themes, sample workflows, text or screenshots from the reference launcher or its
-  documentation into this repository. Learn behaviour from public documentation and from observing file formats, and write
-  your own code. Tests that read an installed reference launcher must skip cleanly when it is absent and must never commit what they read.
+* **Original work only.** Ashdash is an original implementation: it has no third-party code or assets beyond the open-source
+  dependencies listed in [NOTICE](NOTICE). Do not copy source, icons, themes, sample workflows, text or screenshots from
+  other products into the repository; write your own code and artwork. A test that reads files from outside the repository
+  must skip cleanly when they are absent and must never commit what it reads. The compatibility test reads workflow templates
+  from the folder named by `ASHDASH_COMPAT_TEMPLATES` and is skipped when the variable is unset.
 * **Never use real user data in tests or examples.** No real clipboard contents, bookmarks, history, snippets or the contents
-  of `~/Library/Application Support/reference-launcher`. Use synthetic data in a temporary directory.
+  of another application's data folder. Use synthetic data in a temporary directory.
 * **No destructive actions for real.** Tests and scripts must never shut down, log out, empty the trash or delete user files.
 * **Be honest in docs.** If you could not verify something on a real Mac, say "unverified" where you describe it; the running list
-  is "Known unverified items" in [docs/STATUS.md](docs/STATUS.md).
+  is section 10 of [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+* **Names.** Workflow and appearance file formats use fixed identifiers (file extensions, object types, script variables). They
+  are defined once in `crates/core/src/format_ids.rs` and listed in [docs/WORKFLOWS.md](docs/WORKFLOWS.md); a test
+  (`crates/core/tests/names.rs`) fails when they appear anywhere else.
 
 ## Setup
 
@@ -44,12 +50,12 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
 
 ## Workflow: branches, worktrees, review
 
-* One topic per branch: `wp/<name>` for a work package, `fix/<name>` for a bug fix. Branch from `main`.
-* The maintainers use one git worktree per branch under `.worktrees/` (ignored by git), so several branches can be built at once
-  without stepping on each other:
+* One topic per branch: `feature/<name>` for a feature, `fix/<name>` for a bug fix. Branch from `main`.
+* A git worktree per branch under `.worktrees/` (ignored by git) lets you build several branches at once without
+  stepping on each other:
 
   ```sh
-  git worktree add .worktrees/<name> -b wp/<name> main
+  git worktree add .worktrees/<name> -b feature/<name> main
   cd .worktrees/<name>
   ```
 
@@ -70,14 +76,14 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
 ## Tests
 
 * Unit tests sit next to the code (`#[cfg(test)] mod tests`); integration suites are in `crates/core/tests/`
-  (`engine_e2e`, `import_security`, `scripts_security`, `fuzz` with proptest, `compat_packages`). Commands and run times:
+  (`engine_e2e`, `import_security`, `scripts_security`, `fuzz` with proptest, the workflow compatibility suite). Commands and run times:
   [docs/QA.md](docs/QA.md).
 * Use a temporary directory and `Paths::under(&root)`; use `Engine::with_env` with a fake `Os` (inside the core crate: `actions::testing::FakeOs`) so
   nothing touches the real machine. Tests of the core crate that use `providers::ambient_home()` get a folder that does not exist.
 * The launcher's pure logic (key names, monitor placement, scheduling) is kept in functions that take plain values so they are
   unit-testable without a window. Window behaviour is verified by hand or with the QA script and described in the pull request.
 * Anything that shows a window, registers a hotkey, URL handler or login item, or sends keystrokes must not run on a shared
-  desktop. A VM-based test lab (`docs/PLAN.md` section 8) is planned for that.
+  desktop. Use the VM-based test lab for that ([docs/LAB.md](docs/LAB.md)).
 
 ## How to add a provider
 
@@ -145,9 +151,16 @@ Features that are not a query provider have other entry points: a new window fea
 
 User-facing behaviour is documented in `docs/`; if you change a command, key binding, setting or keyword, change the page in
 the same commit. Every command and config key shown in the docs must exist: check with `ashdash --help` and `ashdash config keys`.
-Do not add screenshots that show anyone's desktop, and no reference launcher artwork.
+Do not add screenshots that show anyone's desktop, and no artwork you did not make.
+
+## Pull requests
+
+* Say what changed and why, how you tested it, and what you could not test (for example anything that needs a real keyboard,
+  a second display or a permission prompt).
+* Keep a pull request to one topic. `scripts/check.sh` must pass; add or update tests for behaviour changes and the matching
+  page in `docs/` for anything a user can see.
+* Mention a security impact in the description, but report an actual vulnerability privately first ([.github/SECURITY.md](.github/SECURITY.md)).
 
 ## Reporting problems
 
-Use the issue templates in `.github/ISSUE_TEMPLATE/`. For security problems read the note in
-[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#reporting-a-bug): a private reporting channel has not been set up yet.
+Use the issue templates in `.github/ISSUE_TEMPLATE/`. For security problems follow [.github/SECURITY.md](.github/SECURITY.md).

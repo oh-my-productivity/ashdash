@@ -1,7 +1,7 @@
 # Architecture
 
 A map of the code for people who want to change it. For how to use the product see [USER_GUIDE.md](USER_GUIDE.md); for the
-plan and history see [PLAN.md](PLAN.md); for the threat model [SECURITY.md](SECURITY.md).
+product values see [PRODUCT.md](PRODUCT.md); for the threat model [SECURITY.md](SECURITY.md).
 
 ## 1. Two crates
 
@@ -11,7 +11,7 @@ crates/core   (ashdash-core)  the engine: no UI, no windowing; fully testable wi
 crates/app    (ashdash)       the binary: egui launcher window, preferences window (its own process), global hotkeys, CLI, control socket, URL scheme, AppleScript
 packaging/                    app bundle, DMG, notarization, Homebrew cask templates, icon generator
 scripts/                      check.sh (the gate), gen-notice.py, qa/
-docs/                         this documentation, plan, reviews, briefs
+docs/                         this documentation
 ```
 
 ### `crates/core/src`
@@ -34,8 +34,8 @@ docs/                         this documentation, plan, reviews, briefs
 | `actions.rs` | Universal Actions and the `Os` trait (every OS side effect goes through it so tests can fake it) |
 | `system.rs` | system commands (lock, sleep, log out, ...) with confirmation rules |
 | `websearch.rs` | keyword web searches, percent-encoding, and `validate_url_template` (the one rule for search URLs; invalid searches are skipped when the providers are built) |
-| `theme.rs` | `.alfredappearance` parsing and the built-in theme |
-| `workflow/` | the reference-compatible workflow engine: `model` (load), `package` (safe import; `stage_package` opens a package once into a private staging folder, `StagedPackage` is previewed and installed from that same copy), `filter` (keyword / Script Filter / list / file filters), `exec` (graph walk and effects), `script` (running interpreters safely), `utility`, `xml`, `trust` (`TrustSummary` for the import prompt), `userconfig`, `compat` |
+| `theme.rs` | appearance-file (theme) parsing and the built-in theme; see [WORKFLOWS.md](WORKFLOWS.md#file-formats-and-identifiers) |
+| `workflow/` | the workflow engine ([WORKFLOWS.md](WORKFLOWS.md)): `model` (load), `package` (safe import; `stage_package` opens a package once into a private staging folder, `StagedPackage` is previewed and installed from that same copy), `filter` (keyword / Script Filter / list / file filters), `exec` (graph walk and effects), `script` (running interpreters safely), `utility`, `xml`, `trust` (`TrustSummary` for the import prompt), `userconfig`, `compat` |
 | `brand.rs` | product name, slug, URL scheme, bundle id, default hotkey |
 
 ### `crates/app/src`
@@ -52,7 +52,7 @@ docs/                         this documentation, plan, reviews, briefs
 | `hotkeys.rs` | workflow global hotkeys on the shared hotkey manager |
 | `events.rs`, `automation.rs` | the one channel through which all outside callers reach the window; production wiring |
 | `clipboard_watch.rs` | `NSPasteboard.changeCount` poller feeding the core history |
-| `mac/` | login item (`SMAppService`), double-clicked documents (`.alfredworkflow`, `.alfredappearance`, `.alfredsnippets`) with the native import dialog |
+| `mac/` | login item (`SMAppService`), double-clicked documents (workflow packages, appearance files, snippet packages) with the native import dialog |
 
 Rule of thumb: anything that needs a display or AppKit lives in `app`; anything that decides what to show or do lives in `core`
 behind traits so it can be tested in a temp directory.
@@ -209,7 +209,7 @@ the file is watched, `config.json` is also an input channel: `workflow_dirs` act
   workflows/             installed workflows: user.workflow.<bundle id>/
   import-staging/        private (0700) copy of a package while its import prompt is open; swept when older than a day
   workflow-config/       <bundle id>.json  user values of a workflow's configuration sheet
-  workflow-data/         per-workflow data folder (alfred_workflow_data)
+  workflow-data/         per-workflow data folder (the workflow data variable, see WORKFLOWS.md)
   themes/                themes installed by double-click or ashdash:// 
   url-trust.json         which workflows may be fired by ashdash://trigger
   run/ipc.sock, ipc.lock control socket and single-instance lock (or /tmp/ashdash-<uid>/ when the path is too long)
@@ -217,17 +217,19 @@ the file is watched, `config.json` is also an input channel: `workflow_dirs` act
   run/config.lock        serialises read-modify-write of config.json
   run/reload-status.json what the launcher tells the preferences window (problems, restart needed, active hotkey)
 ~/Library/Caches/ashdash/
-  apps-index.json (versioned application index), icons/ (PNG cache, pruned to ~500 files), workflow-cache/ (alfred_workflow_cache), scripts/ (temporary script files, 0600)
+  apps-index.json (versioned application index), icons/ (PNG cache, pruned to ~500 files), workflow-cache/ (the workflow cache variable), scripts/ (temporary script files, 0600)
   (the bookmark cache is in memory only)
 ```
 
 ## 7. Design decisions worth knowing
 
-* **Coexist with the reference launcher**: own URL scheme, own data folder, own bundle id, different default hotkey.
+* **Coexist with other launchers**: own URL scheme, own data folder, own bundle id, different default hotkey.
 * **egui kept for the window**, with native `NSWindow` styling applied afterwards (vibrancy, level, collection behaviour). An
   `NSPanel` rewrite was considered and rejected for now: [spikes/ui-focus.md](spikes/ui-focus.md). Preferences are a separate process for the same reason (section 5b).
 * **Confirm what you install**: the thing previewed is the thing installed (staging), and the prompt is built from the object graph, not from what the package says about itself.
 * **No network in the core.** Web searches and bookmarks open in the user's browser.
-* **Compat first, safety where the reference launcher has none**: workflows keep the reference launcher's semantics, but with import limits, process-group
+* **Compatibility first, safety where the format has none**: workflows keep the semantics existing packages rely on, but with import limits, process-group
   timeouts, output caps and protected environment names ([WORKFLOWS.md](WORKFLOWS.md), [SECURITY.md](SECURITY.md)).
-* **One brand file** for names, but a rename is more than one file: [CLEAN_ROOM.md](CLEAN_ROOM.md#where-the-name-lives).
+* **One brand file** (`crates/core/src/brand.rs`) holds the product name, slug, URL scheme and bundle id. Changing the slug or bundle id moves the data folder
+  and makes macOS ask for permissions again, so treat it as a migration. The packaging scripts read the same constants.
+* **Format identifiers in one place**: the identifiers defined by the workflow package and appearance file formats live in `crates/core/src/format_ids.rs`; everything else uses the constants.

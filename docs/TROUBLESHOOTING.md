@@ -26,6 +26,8 @@ start the window: `ashdash query "<text>"`, `ashdash config get`, `ashdash workf
 3. You changed `hotkey` while Ashdash was running: it is re-registered within about a second. If the new key could not be registered (taken, or does not parse) the **old key stays active**, you get a notification and the preferences window (General page) says why. Choose another combination there; `ashdash prefs` opens it. A hotkey that was bad at start-up stays unusable until you fix the setting; no restart is needed after fixing it.
 4. Two Ashdash processes: the second one only forwards "show" to the first (`ashdash: already running`). Check Activity
    Monitor for stray copies, for example a build from another folder.
+5. macOS lets two apps register the same hotkey and reports success to both, so a second app that grabs Option+Shift+Space does not make Ashdash show the "unavailable" row;
+   which app receives the key is up to the window server. If the key does nothing, look for another app using the same combination, or pick another one.
 
 ## The window opens but typing goes elsewhere, or focus is not returned
 
@@ -95,11 +97,11 @@ it (usually "Script Editor") and Focus modes. **Unverified** on a clean account.
 | The keyword does nothing | `ashdash workflows`: is it listed, and not `(disabled)`? (Preferences > Workflows has the checkbox.) `ashdash query "<keyword> test"` shows what the workflow returns without the window. Edits to workflow files are picked up by themselves within about a second; `ashdash reload` forces a re-scan. |
 | A row "<workflow name>: script error" | The script failed or printed something that is not Script Filter JSON/XML. The row's subtitle is the first line of the error. Run the script yourself in a terminal with the same arguments. Set `ASHDASH_WORKFLOW_DEBUG=1` to see Debug objects. |
 | Slow filter, then an error | A Script Filter has 10 s, an action 60 s, and output is capped at 8 MiB. |
-| Works in the reference launcher, not here | Compare the object types with [WORKFLOWS.md](WORKFLOWS.md). Unsupported objects are skipped. Typical causes: a script needs an `alfred_*` variable Ashdash does not set; the workflow relies on a variable set from data that Ashdash protects (`PATH`, `BASH_ENV`, ...); look at `info.plist` for `alfred.workflow.trigger.*` types other than hotkey/external; the script uses `/usr/bin/python3` and the Xcode command line tools are not installed (the first run then offers to install them). |
+| Works elsewhere, not here | Compare the object types with [WORKFLOWS.md](WORKFLOWS.md). Unsupported objects are skipped. Typical causes: a script needs an environment variable that Ashdash does not set (the list that it does set is in [WORKFLOWS.md](WORKFLOWS.md#variables-and-environment)); the workflow relies on a variable set from data that Ashdash protects (`PATH`, `BASH_ENV`, ...); look at the `info.plist` for trigger objects other than hotkey and external; the script uses `/usr/bin/python3` and the Xcode command line tools are not installed (the first run then offers to install them). |
 | `ashdash import` says `refusing to install without confirmation: no terminal to ask on` | It always asks. Run it in a terminal, or pass `--yes` when you have already looked at the package. `not installed` means you answered anything but `y`/`yes`. |
 | The import prompt does not install | Launcher window: Return counts only as a fresh press after 600 ms (a held Return is ignored), Esc cancels. Finder dialog: the default button is Cancel and the dialog gives up after 5 minutes. Preferences: use the Install button. |
 | `ashdash import` fails | `not a valid workflow archive` (not a zip), `archive has no readable info.plist` (the file must be at the top of the zip), `workflow has neither a bundle id nor a name`, or a limit (2,000 entries, 100 MiB expanded, compression ratio) / an unsafe path inside the archive. |
-| Double-clicking a `.alfredworkflow` does not start Ashdash | Needs the app bundle (`Ashdash.app`) in `/Applications`; the bare binary does not register the file types. If the reference launcher is installed macOS may prefer it as the default app: right-click > Open With > Ashdash. |
+| Double-clicking a workflow package does not start Ashdash | Needs the app bundle (`Ashdash.app`) in `/Applications`; the bare binary does not register the file types. If another application handles those files, macOS may prefer it as the default: right-click > Open With > Ashdash. |
 | A workflow hotkey does nothing | Same rules as the main hotkey; a clash with another workflow or the launcher prints a warning on stderr and the first one wins; a disabled workflow has no hotkeys. Hotkeys are re-registered after an import and when workflows, `workflow_dirs` or the launcher hotkey change; `ashdash reload` forces it. Hotkeys run the workflow by its folder name, so a workflow with no bundle id works too; two workflow folders with the same name in different roots do not (the second is refused with a warning). |
 | `ashdash://trigger` is refused | The workflow must be enabled, the trigger must be an External Trigger object, and you must have answered the first-use dialog with Allow. Your answer is stored in `<data>/url-trust.json`; delete the entry to be asked again (a running launcher notices the change). A dialog you ignore for a minute is not stored as "deny"; the next link asks again. More than 6 URLs in 10 s are dropped. |
 
@@ -119,7 +121,6 @@ it (usually "Script Editor") and Focus modes. **Unverified** on a clean account.
 
 All of these need `Ashdash.app` (they are declared in the bundle's `Info.plist`). Running `cargo run` does not register them.
 `ashdash login-item status` explains what is missing. Test the URL scheme with `open "ashdash://show"`.
-Remember `reference://` belongs to the reference launcher; Ashdash never registers it.
 
 ## Settings were not applied
 
@@ -171,5 +172,4 @@ Move things back one at a time to find the one that matters. `usage.json` (what 
 
 Open an issue (templates under `.github/ISSUE_TEMPLATE/`) with: Ashdash version and commit (`git rev-parse --short HEAD`),
 macOS version and architecture, whether you run the bundle or `cargo run`, exact steps, expected and actual result, and the
-stderr output, and the newest `crashes/` report if Ashdash quit. Do not attach screenshots of your whole desktop, clipboard history or `usage.json`. Security problems: see `docs/SECURITY.md`. No private
-reporting channel has been set up yet (open item for the maintainers); until then do not publish exploit details in an issue.
+stderr output, and the newest `crashes/` report if Ashdash quit. Do not attach screenshots of your whole desktop, clipboard history or `usage.json`. Security problems: do not open a public issue; follow [.github/SECURITY.md](../.github/SECURITY.md) and report privately.
