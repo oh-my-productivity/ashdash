@@ -192,7 +192,7 @@ impl BookmarkCache {
             }
         }
         let _reset = Reset(&self.inner.loading);
-        self.inner.refresh();
+        self.inner.refresh(&Instant::now);
         true
     }
 }
@@ -205,12 +205,14 @@ impl Inner {
         }
     }
 
-    fn refresh(&self) {
+    /// One pass over all sources. `clock` is the time source for the retry backoff; production passes `Instant::now`,
+    /// the backoff test passes a fake that it advances by hand (no sleeping, so no dependence on machine speed).
+    fn refresh(&self, clock: &dyn Fn() -> Instant) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let mut changed = false;
         for (i, src) in self.sources.iter().enumerate() {
             let fp = src.fingerprint();
-            let now = Instant::now();
+            let now = clock();
             let fresh = match &entries[i] {
                 Some(e) if e.fingerprint == fp => match &e.result {
                     Ok(_) => true,
@@ -239,7 +241,7 @@ impl Inner {
                     .backoff_base
                     .saturating_mul(1u32 << (failures - 1).min(16))
                     .min(self.backoff_max);
-                (failures, Some(Instant::now() + wait))
+                (failures, Some(clock() + wait))
             } else {
                 (0, None)
             };
@@ -436,8 +438,8 @@ mod tests {
 
     #[test]
     fn backoff_grows_exponentially_up_to_the_cap() {
-        // Waits of 200 ms and 400 ms (cap): the upper-bound check (a sleep that must NOT reach the wait) tolerates 250 ms of
-        // oversleeping. 40/80 ms failed on every arm64 GitHub-hosted runner, where a 30 ms sleep takes well over 50 ms under load.
+        // A fake clock that the test advances by hand: no sleeping, so the result cannot depend on how fast or how loaded
+        // the machine is (a sleep-based version failed on shared CI runners). Waits: 200 ms, then 400 ms, capped at 400 ms.
         let s = FakeSource::new("a", Err(SourceError::other("x")));
         let c = BookmarkCache::with_timing(
             vec![boxed(&s)],
@@ -445,18 +447,31 @@ mod tests {
             Duration::from_millis(200),
             Duration::from_millis(400),
         );
-        c.refresh_blocking(); // failure 1: wait 200 ms
-        c.refresh_blocking();
-        assert_eq!(s.loads.load(SeqCst), 1);
-        std::thread::sleep(Duration::from_millis(300));
-        c.refresh_blocking(); // failure 2: wait 400 ms (capped)
-        assert_eq!(s.loads.load(SeqCst), 2);
-        std::thread::sleep(Duration::from_millis(150));
-        c.refresh_blocking();
-        assert_eq!(s.loads.load(SeqCst), 2, "second wait is longer than the first");
-        std::thread::sleep(Duration::from_millis(400));
-        c.refresh_blocking();
-        assert_eq!(s.loads.load(SeqCst), 3);
+        let t0 = Instant::now();
+        let now = std::cell::Cell::new(t0);
+        let at = |ms: u64| {
+            now.set(t0 + Duration::from_millis(ms));
+            c.inner.refresh(&|| now.get());
+            s.loads.load(SeqCst)
+        };
+        assert_eq!(at(0), 1, "failure 1: the next try is due after 200 ms");
+        assert_eq!(at(0), 1);
+        assert_eq!(at(199), 1, "still inside the first wait");
+        assert_eq!(
+            at(200),
+            2,
+            "first wait over; failure 2: the next try is due 400 ms later (t = 600)"
+        );
+        assert_eq!(at(599), 2, "the second wait is longer than the first");
+        assert_eq!(
+            at(600),
+            3,
+            "second wait over; failure 3: 800 ms capped to 400 (t = 1000)"
+        );
+        assert_eq!(at(999), 3);
+        assert_eq!(at(1000), 4);
+        assert_eq!(at(1399), 4, "the cap holds: the wait does not keep doubling");
+        assert_eq!(at(1400), 5);
     }
 
     #[test]
