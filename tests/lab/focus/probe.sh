@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # loop counters of the retry loops
 # W6-FOCUS probe: does the launcher hide when another app is activated? Runs INSIDE a lab VM (ssh session of the guest user),
 # never on a host desktop. Copy of the 3.4.1 / 3.4.2 trials of tests/lab/qa/checklist.sh with a trace of the app's own log per trial.
 #

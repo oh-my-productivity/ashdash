@@ -1,0 +1,5 @@
+# Checklist rows that cannot work (or not yet) on a GitHub-hosted runner. A FAIL on one of these is reported as BLOCKED with the reason
+# (tests/lab/ci/finalize.py); a PASS stays PASS, and every other FAIL fails the job.
+# columns (tab separated): row id or glob, reason, optional runner image glob (CI_IMAGE, e.g. macos26)
+# (no rows yet: every row that failed on a hosted runner during bring-up was either a product/script bug, now fixed, or flaky and passed
+# on the second pass; see docs/CI.md)

@@ -71,6 +71,32 @@ fn fake_app(dir: &Path, name: &str) -> PathBuf {
     app
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlinked_bundle_does_not_hide_the_apps_after_it() {
+    // Safari is a symlink into a cryptex on macOS 13+. walkdir's `skip_current_dir` on a symlink entry used to skip the rest of the
+    // parent directory, so the result depended on directory order (seen on GitHub-hosted runners: one Xcode and no Safari).
+    let env = Env::new("symlink-order");
+    let elsewhere = env.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut expected = Vec::new();
+    for i in 0..20 {
+        fake_app(&env.apps, &format!("Real{i:02}"));
+        expected.push(format!("Real{i:02}"));
+        let target = fake_app(&elsewhere, &format!("Target{i:02}"));
+        std::os::unix::fs::symlink(&target, env.apps.join(format!("Link{i:02}.app"))).unwrap();
+        expected.push(format!("Link{i:02}"));
+    }
+    let (_idx, live) = env.open(QUIET);
+    let mut got = names(&live);
+    got.sort();
+    expected.sort();
+    assert_eq!(
+        got, expected,
+        "every real and every linked bundle is listed, whatever order the directory returns them in"
+    );
+}
+
 fn names(live: &RwLock<Vec<AppEntry>>) -> Vec<String> {
     live.read().unwrap().iter().map(|a| a.name.clone()).collect()
 }

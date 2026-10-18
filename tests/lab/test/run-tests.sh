@@ -115,7 +115,7 @@ tg_fake killall 'echo "killall $*" >>"$FAKE_LOG"'
 tg_fake sleep 'exit 0'
 tg_run() { # tg_run <VAR=value>...: runs the script with the fakes first in PATH; the log shows what it wrote
   : >"$tg/log"
-  env "$@" FAKE_LOG="$tg/log" HOME="$tg/home" PATH="$tg/bin:/usr/bin:/bin" bash "$lab/guest/tcc-grant.sh" >"$tg/out" 2>&1
+  env -u GITHUB_ACTIONS -u RUNNER_ENVIRONMENT "$@" FAKE_LOG="$tg/log" HOME="$tg/home" PATH="$tg/bin:/usr/bin:/bin" bash "$lab/guest/tcc-grant.sh" >"$tg/out" 2>&1
 }
 tg_refused() { # tg_refused <description> <VAR=value>...
   local d=$1; shift
@@ -132,12 +132,66 @@ tg_refused "without a working python3" FAKE_NO_PYTHON=1
 tg_run FAKE_X=1; rc=$?
 rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
 [ $rc = 0 ] && [ "$rows" -ge 20 ] && grep -q '^killall tccd' "$tg/log" && ok "in a VM as admin with sudo and python3 it grants ($rows sqlite3 calls)" || bad "VM run: rc=$rc rows=$rows out=$(tail -3 "$tg/out")"
+# CI mode: a GitHub-hosted runner is a VirtualMac too, with the account "runner". Both variables, the VM model and the account must agree;
+# the variables alone (exported on a developer's Mac, or set by a self-hosted runner) never open the door.
+CI_ENV="GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted"
+# shellcheck disable=SC2086  # CI_ENV is a list of VAR=value words
+tg_refused "on a real Mac even with the CI variables set" $CI_ENV FAKE_HW_MODEL=Mac15,6 FAKE_USER=runner
+# shellcheck disable=SC2086
+tg_refused "in CI as the lab account admin" $CI_ENV FAKE_USER=admin
+tg_refused "on a self-hosted runner" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted FAKE_USER=runner
+tg_refused "as runner without GITHUB_ACTIONS" RUNNER_ENVIRONMENT=github-hosted FAKE_USER=runner
+tg_refused "as runner outside CI" FAKE_USER=runner
+# shellcheck disable=SC2086
+tg_refused "in CI with SIP on" $CI_ENV FAKE_USER=runner "FAKE_SIP=System Integrity Protection status: enabled."
+# shellcheck disable=SC2086
+tg_refused "in CI without passwordless sudo" $CI_ENV FAKE_USER=runner FAKE_NO_SUDO=1
+# shellcheck disable=SC2086
+tg_run $CI_ENV FAKE_USER=runner; rc=$?
+rows=$(grep -c '^sudo sqlite3\|^sqlite3' "$tg/log" || true)
+[ $rc = 0 ] && [ "$rows" -ge 20 ] && grep -q '^killall tccd' "$tg/log" && grep -q 'hosted runner' "$tg/out" && ok "on a hosted runner (VirtualMac, user runner, SIP off, sudo) it grants ($rows sqlite3 calls)" || bad "CI run: rc=$rc rows=$rows out=$(tail -3 "$tg/out")"
 # check-golden must treat a timed-out System Events call as NOT granted (it used to report "look granted")
 fake_guest="$tmp/fakeguest"; mkdir -p "$fake_guest/bin"
 cp "$lab/guest/check-golden.sh" "$fake_guest/check-golden.sh"
 printf '#!/bin/sh\necho "gui-exec: timed out after 30s" >&2; exit 124\n' >"$fake_guest/gui-exec"; chmod +x "$fake_guest/gui-exec"
 out=$(PATH="$fake_guest/bin:$PATH" bash "$fake_guest/check-golden.sh" 2>&1 | grep -F "=> TCC")
 echo "$out" | grep -q "NOT GRANTED" && ok "a timed-out System Events call is reported as NOT GRANTED" || bad "check-golden verdict: $out"
+
+echo "== CI wrappers (tests/lab/ci)"
+ci="$lab/ci"
+for f in common.sh run-smoke.sh run-checklist.sh run-soak.sh verify-bundle.sh lint.sh; do check "ci/$f parses" bash -n "$ci/$f"; done
+# They drive the real keyboard and screen: outside a hosted runner they must refuse before doing anything.
+# (On a real runner these variables are set, so the tests clear them; the "spoofed" case fakes the account instead.)
+for w in run-smoke.sh run-checklist.sh run-soak.sh; do
+  env -u GITHUB_ACTIONS -u RUNNER_ENVIRONMENT bash "$ci/$w" >"$tmp/ciw.out" 2>&1; rc=$?
+  [ $rc != 0 ] && grep -q "refusing" "$tmp/ciw.out" && ok "$w refuses outside GitHub Actions" || bad "$w outside CI: rc=$rc $(head -c 200 "$tmp/ciw.out")"
+  env -u RUNNER_ENVIRONMENT GITHUB_ACTIONS=true bash "$ci/$w" >"$tmp/ciw.out" 2>&1; rc=$?
+  [ $rc != 0 ] && grep -q "refusing" "$tmp/ciw.out" && ok "$w refuses on a self-hosted runner" || bad "$w self-hosted: rc=$rc"
+  tg_fake id 'echo someone'
+  env FAKE_LOG="$tg/log" PATH="$tg/bin:$PATH" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted bash "$ci/$w" >"$tmp/ciw.out" 2>&1; rc=$?
+  [ $rc != 0 ] && grep -q "refusing" "$tmp/ciw.out" && ok "$w refuses for another account than runner even with the CI variables" || bad "$w spoofed: rc=$rc"
+done
+rm -f "$tg/bin/id"
+# finalize.py: FAIL becomes BLOCKED only for listed rows (and images), anything else FAILs the job; missing required rows fail too.
+fin="$tmp/fin"; mkdir -p "$fin"
+printf 'SETUP\tPASS\tok\n1.1\tFAIL\tbroken\n2.2\tFAIL\tsilly\n3.3\tPASS\tgood\n2.2\tFAIL\tsilly again\n' >"$fin/r.tsv"
+printf '# comment\n2.2\tbecause\n4.4\tother image only\tmacos26\n' >"$fin/b.tsv"
+CI_IMAGE=macos15 python3 "$ci/finalize.py" "$fin/r.tsv" "$fin/b.tsv" "$fin/o.tsv" "$fin/o.md" --require SETUP >/dev/null 2>&1; rc=$?
+[ $rc = 1 ] && grep -q '^2.2.BLOCKED.\[hosted runner: because\]' "$fin/o.tsv" && grep -q '^1.1.FAIL' "$fin/o.tsv" && ok "finalize: listed FAIL becomes BLOCKED, an unlisted FAIL fails the job" || bad "finalize: rc=$rc $(cat "$fin/o.tsv")"
+printf 'SETUP\tPASS\tok\n2.2\tFAIL\tsilly\n4.4\tFAIL\tx\n' >"$fin/r2.tsv"
+CI_IMAGE=macos15 python3 "$ci/finalize.py" "$fin/r2.tsv" "$fin/b.tsv" "$fin/o2.tsv" "$fin/o2.md" >/dev/null 2>&1; rc=$?
+[ $rc = 1 ] && grep -q '^4.4.FAIL' "$fin/o2.tsv" && ok "finalize: an image-limited rule does not apply to another image" || bad "finalize image rule: rc=$rc"
+CI_IMAGE=macos26 python3 "$ci/finalize.py" "$fin/r2.tsv" "$fin/b.tsv" "$fin/o3.tsv" "$fin/o3.md" >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && ok "finalize: all FAILs listed for this image: job passes, BLOCKED rows are kept visible" || bad "finalize all listed: rc=$rc"
+printf 'SETUP\tFAIL\tno\n' >"$fin/r4.tsv"
+python3 "$ci/finalize.py" "$fin/r4.tsv" "$fin/b.tsv" "$fin/o4.tsv" "$fin/o4.md" --require SETUP >/dev/null 2>&1; rc=$?
+[ $rc = 1 ] && ok "finalize: a required row that is not PASS fails" || bad "finalize required: rc=$rc"
+python3 "$ci/finalize.py" "$fin/none.tsv" "$fin/b.tsv" "$fin/o5.tsv" "$fin/o5.md" >/dev/null 2>&1; rc=$?
+[ $rc = 1 ] && ok "finalize: no result file at all fails" || bad "finalize empty: rc=$rc"
+
+printf 's_setup() {\n  result SETUP PASS x\n}\ns31() {\n  result 3.1.1a PASS x; result 3.1.1b FAIL y\n}\ns32() {\n  result 3.2.1a FAIL z\n}\nw45() {\n  result W4.1 FAIL q\n}\n' >"$fin/cl.sh"
+printf '3.1.1b\tFAIL\ty\n3.2.1a\tPASS\tz\nW4.1\tFAIL\tq\n' >"$fin/rf.tsv"
+[ "$(python3 "$ci/retry-sections.py" "$fin/cl.sh" "$fin/rf.tsv" | tr '\n' ' ')" = "s31 w45 " ] && ok "retry-sections: maps FAILed rows to the sections that produce them" || bad "retry-sections: $(python3 "$ci/retry-sections.py" "$fin/cl.sh" "$fin/rf.tsv" | tr '\n' ' ')"
 
 echo "== idempotence and naming"
 "$lab/lab-down" ashdash-run-doesnotexist >/dev/null 2>&1 && ok "lab-down of a missing VM succeeds" || bad "lab-down not idempotent"
@@ -169,18 +223,37 @@ sleep 2
 [ -n "$vm" ] || bad "lab-up printed no VM name"
 
 echo "== concurrency: 2 slots, third job queues"
-for n in 1 2 3; do
-  ( "$lab/lab-with-vm" --id "conc$n" -- sh -c 'date +%s; sleep 6' >"$tmp/conc$n.out" 2>/dev/null ) &
-  sleep 0.7
-done
-sleep 3
-running=$(run_vms)
-[ "$running" = 2 ] && ok "while 3 jobs are submitted only 2 VMs exist" || bad "VMs running: $running"
-wait
-t=()
-for n in 1 2 3; do t+=("$(head -1 "$tmp/conc$n.out" 2>/dev/null)"); done
-if [ -n "${t[2]}" ] && [ "${t[2]}" -ge "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then ok "third job started only after a slot freed (${t[*]})"; else bad "third job did not queue: ${t[*]}"; fi
-[ "$(run_vms)" = 0 ] && ok "all VMs cleaned up" || bad "VMs left over"
+# Timing-sensitive (three fake VMs on a shared fake guest home, a 6 s sleep): on a busy machine one trial in a few fails for reasons that
+# have nothing to do with the semaphore, so a failed trial is repeated (twice at most) before it counts. Both trials' evidence is printed.
+conc_trial() { # conc_trial <n>: prints the evidence, returns 0 when 2 VMs existed at once, the third queued and nothing leaked
+  local n=$1 i running t=() why=""
+  for i in 1 2 3; do
+    ( "$lab/lab-with-vm" --id "conc$n$i" -- sh -c 'date +%s; sleep 6' >"$tmp/conc$n$i.out" 2>"$tmp/conc$n$i.err" ) &
+    sleep 0.7
+  done
+  sleep 3
+  running=$(run_vms)
+  wait
+  for i in 1 2 3; do t+=("$(head -1 "$tmp/conc$n$i.out" 2>/dev/null)"); done
+  [ "$running" = 2 ] || why="VMs running while 3 jobs were submitted: $running (expected 2)"
+  if [ -z "$why" ]; then
+    if [ -z "${t[2]}" ] || [ -z "${t[0]}" ] || [ -z "${t[1]}" ] || [ "${t[2]}" -lt "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then why="third job did not queue: ${t[*]}"; fi
+  fi
+  [ -z "$why" ] && [ "$(run_vms)" != 0 ] && why="VMs left over"
+  [ -z "$why" ] && return 0
+  printf '    trial %s: %s\n' "$n" "$why"; for i in 1 2 3; do tail -2 "$tmp/conc$n$i.err" | sed 's/^/      | /'; done
+  return 1
+}
+conc_reset() { # a failed trial can leave a fake VM (its `run` loop and the slot it holds): clear them before the next one
+  pkill -f "fake-tart run ashdash-run-conc" 2>/dev/null || true
+  sleep 0.5
+  rm -rf "${TART_HOME:?}"/vms/ashdash-run-conc* "${LAB_RUN_DIR:?}"/slots/* "${LAB_RUN_DIR:?}"/pids/ashdash-run-conc* 2>/dev/null || true
+}
+if conc_trial 1 || { echo "    (repeating the timing-sensitive trial)"; conc_reset; conc_trial 2; } || { conc_reset; conc_trial 3; }; then
+  ok "3 jobs submitted: only 2 VMs exist at once, the third starts after a slot frees, all VMs cleaned up"
+else
+  bad "concurrency: the semaphore trial failed three times"
+fi
 
 echo "== base image lookup (OCI images are not 'local')"
 base_dir="$TART_HOME/oci/ghcr.io%cirruslabs%macos-sequoia-base:latest"

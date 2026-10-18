@@ -1,30 +1,193 @@
 name: ci
+
+# What runs where is explained in docs/CI.md. In short:
+#   every pull request and push to main: check, deny, lab-scripts, packaging (all cheap; `check` and `deny` are required status checks);
+#   pushes to main and manual runs also: gui-smoke (macos-15, macos-26), x86-64 (macos-15-intel), bundle (universal .app + DMG).
+# The nightly checklist and the soak are in nightly.yml, the RustSec advisories in advisories.yml.
+#
+# Security (public repository): only `pull_request` (never `pull_request_target`), read-only token, no secrets in this file, every
+# third-party action pinned by commit SHA (the comment names the release), a timeout on every job, superseded runs are cancelled.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
-# Third-party actions are pinned by commit SHA (the comment names the release).
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # Required status check. fmt + clippy + tests (scripts/check.sh).
   check:
-    runs-on: macos-latest
+    runs-on: macos-15
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
         with:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: scripts/check.sh
-  # Licences, banned crates and sources (deny.toml). Advisories are NOT checked here: a new RustSec entry for a
+
+  # Required status check. Licences, banned crates and sources (deny.toml). Advisories are NOT checked here: a new RustSec entry for a
   # crate this change does not touch would turn every pull request red. They run weekly in advisories.yml.
   # The action is a Docker container, so it runs on Linux; deny.toml restricts the graph to the macOS targets.
-  # Pinned by commit SHA (tag v2.1.1, cargo-deny 0.20.2). Verified locally with `cargo deny check` 0.20.2.
+  # Pinned by commit SHA (tag v2.1.1, cargo-deny 0.20.2).
   deny:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check licenses bans sources
+
+  # The host tests of the lab scripts: slot semaphore, lab-with-vm / lab-up / lab-down against a fake `tart` and `ssh`, the guards of
+  # tcc-grant.sh (including the CI mode), the CI wrappers. No VM, no GUI.
+  lab-scripts:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tests/lab/test/run-tests.sh
+
+  # Packaging inputs, the generated NOTICE, and the linters for every shell script and workflow in the repository.
+  packaging:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - name: Packaging self-test
+        run: packaging/selftest.sh
+      - name: NOTICE is up to date
+        run: scripts/gen-notice.py --check
+      # Pinned releases, verified against the SHA-256 of the tarball (arm64 macOS; the runner is arm64).
+      - name: Install shellcheck 0.11.0 and actionlint 1.7.12
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/lint-tools"; mkdir -p "$tools"; cd "$tools"
+          fetch() { # fetch <url> <sha256> <file>
+            curl --fail --silent --show-error --location --retry 3 --output "$3" "$1"
+            echo "$2  $3" | shasum -a 256 -c -
+          }
+          fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.xz \
+            56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79 shellcheck.tar.xz
+          fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz \
+            aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f actionlint.tar.gz
+          tar -xf shellcheck.tar.xz
+          tar -xzf actionlint.tar.gz
+          echo "$tools/shellcheck-v0.11.0" >> "$GITHUB_PATH"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: shellcheck and actionlint
+        run: tests/lab/ci/lint.sh
+
+  # ---- only on pushes to main and manual runs (they use more runner minutes than a pull request needs) -------------------------------
+  # The lab smoke job on the hosted runner: bundle, launch in the GUI session, show/search, ashdash://, global hotkey, login item, quit.
+  gui-smoke:
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    name: gui-smoke (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.image }}
+      - run: bash tests/lab/ci/run-smoke.sh
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-smoke-${{ matrix.image }}
+          path: ${{ runner.temp }}/ashdash-ci/smoke
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests, a native build and the GUI smoke test on x86-64.
+  x86-64:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: uname -m
+      - run: cargo test --workspace
+      - run: cargo build -p ashdash
+      # Builds the native x86-64 bundle too, and launches it: the only place where the Intel slice is executed. tcc-grant.sh refuses on
+      # this image (the model is not VirtualMac*); the permissions the smoke test needs are already granted there.
+      - name: GUI smoke test on Intel
+        run: bash tests/lab/ci/run-smoke.sh
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-smoke-macos-15-intel
+          path: ${{ runner.temp }}/ashdash-ci/smoke
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Universal .app and DMG as a release would produce them (ad-hoc signed), verified, kept for 7 days as a workflow artifact.
+  bundle:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build the universal app and the DMG
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          packaging/build-app.sh
+          packaging/make-dmg.sh dist/Ashdash.app
+      - name: Verify the app and the DMG
+        run: tests/lab/ci/verify-bundle.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ashdash-bundle-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          retention-days: 7
+          if-no-files-found: error

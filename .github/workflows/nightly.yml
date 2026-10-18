@@ -1,0 +1,88 @@
+name: nightly
+
+# The scripted QA checklist (tests/lab/qa/checklist.sh) and the soak (tests/lab/qa/soak.sh) on GitHub-hosted macOS runners, nightly and
+# on demand. Both drive the real GUI of the runner (a throw-away virtual machine), see docs/CI.md for what differs from the lab VM.
+# Rows that cannot work on a hosted runner are listed with their reason in tests/lab/ci/blocked.tsv and show up as BLOCKED, never as hidden.
+on:
+  schedule:
+    - cron: "41 2 * * *" # every day 02:41 UTC
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: "Soak duration in seconds (7200 = the 2-hour version of the lab)"
+        default: "7200"
+        required: false
+      sections:
+        description: "Checklist sections (space separated, empty = all), e.g. s31 s32"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checklist:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    name: checklist (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.image }}
+      - name: Checklist
+        env:
+          SECTIONS: ${{ inputs.sections }}
+        run: |
+          # shellcheck disable=SC2086  # SECTIONS is a list of section names
+          bash tests/lab/ci/run-checklist.sh $SECTIONS
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checklist-${{ matrix.image }}
+          path: ${{ runner.temp }}/ashdash-ci/checklist
+          retention-days: 7
+          if-no-files-found: ignore
+
+  soak:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: soak
+      - name: Soak
+        env:
+          SOAK_SECONDS: ${{ inputs.soak_seconds || '7200' }}
+        run: bash tests/lab/ci/run-soak.sh "$SOAK_SECONDS" 30
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak
+          path: ${{ runner.temp }}/ashdash-ci/soak
+          retention-days: 7
+          if-no-files-found: ignore

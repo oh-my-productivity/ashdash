@@ -193,7 +193,13 @@ s32() {
   o=$(ask '> echo hi'); has "$o" 'Run in Terminal' && result 3.2.8b PASS "'> echo hi' offers 'Run in Terminal' (OCR: $o)" || result 3.2.8b FAIL "$o"
   # Spotlight-backed file search
   if [ -n "$(mdfind -onlyin /Applications 'kMDItemContentType == "com.apple.application-bundle"' 2>/dev/null | head -1)" ]; then
-    o=$(ask 'open report'); has "$o" 'report.txt|report' && result 3.2.8c PASS "'open report' finds a file through Spotlight (OCR: $o)" || result 3.2.8c FAIL "$o"
+    # The launcher searches the home folder it runs with ($QAH), not $WORK. A fresh file is indexed with a delay (long on a busy CI runner):
+    # create one there, push it to the indexer and ask Spotlight for it for up to 60 s before judging the launcher.
+    local sp=0 spi; mkdir -p "$QAH/Documents"; echo "hello report" >"$QAH/Documents/report.txt"; mdimport "$QAH/Documents" >/dev/null 2>&1
+    for spi in $(seq 1 30); do mdfind -onlyin "$QAH" -name report 2>/dev/null | grep -q report && { sp=1; break; }; sleep 2; done
+    if [ $sp = 1 ]; then
+      o=$(ask 'open report'); has "$o" 'report.txt|report' && result 3.2.8c PASS "'open report' finds a file through Spotlight (OCR: $o)" || result 3.2.8c FAIL "$o"
+    else result 3.2.8c BLOCKED "Spotlight is on but did not index the fixture report.txt within 60 s ('mdfind -onlyin \$QAH -name report' is empty), so 'open report' has nothing to find"; fi
   else result 3.2.8c BLOCKED "Spotlight indexing is disabled in the lab image (mdutil -s /: $(mdutil -s / 2>&1 | tail -1 | tr -d '\t')); 'open', 'find' and Open With need mdfind"; fi
   # system commands: confirmation, declined
   o=$(ask 'shutdown'); has "$o" 'Shut Down' && result 3.2.9a PASS "'shutdown' lists Shut Down (OCR: $o)" || result 3.2.9a FAIL "$o"
@@ -242,7 +248,9 @@ s33() {
   ask 'pk ' 1.2 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
   local big; big=$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700 {print $6"x"$7}' | head -1)
   [ -n "$big" ] && result 3.3.6a PASS "Cmd+L opens Large Type (window $big)" || result 3.3.6a FAIL "no Large Type window: $(win_tool Ashdash ashdash | tr '\n' ';')"
-  key_code $KC_ESC; sleep 0.8; [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && result 3.3.6b PASS "Esc dismisses Large Type" || result 3.3.6b FAIL "Large Type still up after Esc"
+  # the window may fade out for a moment, longer on a loaded machine: look for up to 5 s
+  key_code $KC_ESC; local lti; for lti in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && break; done
+  [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && result 3.3.6b PASS "Esc dismisses Large Type" || result 3.3.6b FAIL "Large Type still up 5 s after Esc: $(win_tool Ashdash ashdash | tr '\n' ';')"
   hide_
   # Large Type with text longer than the screen scrolls (numbered words: the first word on screen must change)
   ask 'lt ' 1.5 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
