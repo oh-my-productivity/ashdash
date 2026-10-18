@@ -193,7 +193,12 @@ s32() {
   o=$(ask '> echo hi'); has "$o" 'Run in Terminal' && result 3.2.8b PASS "'> echo hi' offers 'Run in Terminal' (OCR: $o)" || result 3.2.8b FAIL "$o"
   # Spotlight-backed file search
   if [ -n "$(mdfind -onlyin /Applications 'kMDItemContentType == "com.apple.application-bundle"' 2>/dev/null | head -1)" ]; then
-    o=$(ask 'open report'); has "$o" 'report.txt|report' && result 3.2.8c PASS "'open report' finds a file through Spotlight (OCR: $o)" || result 3.2.8c FAIL "$o"
+    # Spotlight indexes a new file with a delay (long on a busy CI runner): ask it for the fixture first, for up to 60 s
+    local sp=0 spi; mdimport "$WORK/files" >/dev/null 2>&1
+    for spi in $(seq 1 30); do mdfind -onlyin "$WORK" -name report 2>/dev/null | grep -q report && { sp=1; break; }; sleep 2; done
+    if [ $sp = 1 ]; then
+      o=$(ask 'open report'); has "$o" 'report.txt|report' && result 3.2.8c PASS "'open report' finds a file through Spotlight (OCR: $o)" || result 3.2.8c FAIL "$o"
+    else result 3.2.8c BLOCKED "Spotlight is on but did not index the fixture report.txt within 60 s ('mdfind -onlyin \$WORK -name report' is empty), so 'open report' has nothing to find"; fi
   else result 3.2.8c BLOCKED "Spotlight indexing is disabled in the lab image (mdutil -s /: $(mdutil -s / 2>&1 | tail -1 | tr -d '\t')); 'open', 'find' and Open With need mdfind"; fi
   # system commands: confirmation, declined
   o=$(ask 'shutdown'); has "$o" 'Shut Down' && result 3.2.9a PASS "'shutdown' lists Shut Down (OCR: $o)" || result 3.2.9a FAIL "$o"

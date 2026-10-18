@@ -4,10 +4,12 @@
 usage: finalize.py RESULTS.tsv BLOCKED.tsv OUT.tsv SUMMARY.md [--require ID ...]
 
 RESULTS.tsv   id <TAB> PASS|FAIL|BLOCKED|NEEDS-OWNER <TAB> evidence   (later lines override earlier ones with the same id)
-BLOCKED.tsv   id-or-glob <TAB> reason   rows that cannot work on a GitHub-hosted runner; a FAIL on such a row becomes BLOCKED with the
-              reason (the original evidence is kept). A PASS stays a PASS. Lines starting with # are comments.
+BLOCKED.tsv   id-or-glob <TAB> reason [<TAB> image-glob]   rows that cannot work on a GitHub-hosted runner; a FAIL on such a row
+              becomes BLOCKED with the reason (the original evidence is kept). A PASS stays a PASS. The optional third column limits
+              the rule to runner images whose name (environment variable CI_IMAGE, e.g. macos26) matches. Lines starting with # are comments.
 Exit status: 1 when a row is still FAIL, when a --require'd id is missing or not PASS, or when the file has no rows at all."""
 import fnmatch
+import os
 import sys
 
 
@@ -31,8 +33,11 @@ def main(argv):
             line = line.rstrip("\n")
             if not line.strip() or line.startswith("#"):
                 continue
-            pat, _, why = line.partition("\t")
-            rules.append((pat.strip(), why.strip()))
+            cols = line.split("\t")
+            pat = cols[0].strip()
+            why = cols[1].strip() if len(cols) > 1 else ""
+            image = cols[2].strip() if len(cols) > 2 else "*"
+            rules.append((pat, why, image))
 
     rows = {}
     order = []
@@ -54,8 +59,8 @@ def main(argv):
     for rid in order:
         status, ev = rows[rid]
         if status == "FAIL":
-            for pat, why in rules:
-                if fnmatch.fnmatchcase(rid, pat):
+            for pat, why, image in rules:
+                if fnmatch.fnmatchcase(rid, pat) and fnmatch.fnmatchcase(os.environ.get("CI_IMAGE", ""), image):
                     status = "BLOCKED"
                     ev = f"[hosted runner: {why}] (observed failure: {ev})"
                     break

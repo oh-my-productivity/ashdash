@@ -12,6 +12,7 @@ cd "$CI_ROOT" || exit 1
 
 art=$(ci_artifacts checklist)
 export QA_ART=$art QA_RESULTS=$art/results.tsv LAB_ARTIFACTS=$art
+export CI_IMAGE="macos$(sw_vers -productVersion | cut -d. -f1)"   # blocked.tsv can limit a rule to one image
 : >"$QA_RESULTS"
 
 if ! bash tests/lab/qa/prep.sh 2>&1 | tee "$art/prep.log"; then ci_die "prep.sh failed"; fi
