@@ -151,7 +151,7 @@ this way: 166 ms against a 150 ms ceiling, and a 25 ms ceiling at 5,000 apps). T
 * **A wait for something that must not happen** (`recv_timeout(..).is_err()`) can only make a test pass too easily, never fail; keep it
   short, and make sure the positive case before it proves the machinery is running.
 
-To see how these tests behave on a slow runner, dispatch `ci.yml` with the **`stress`** input (`gh workflow run ci.yml --ref <branch> -f stress=true -f target_ref=<branch or SHA>`). It
+To see how these tests behave on a slow runner, dispatch `ci.yml` with the **`stress`** input (`gh workflow run ci.yml --ref <branch> -f stress=true -f target_ref=<branch, tag or full 40-character SHA>`). It
 runs `scripts/stress-timing.sh`: each formerly clock-dependent test 100 times in a row while four busy loops per CPU keep the runner
 saturated, on macOS 15 (arm64) and macOS 15 Intel, and fails if a single run fails; the table goes to the job summary. Do not do this on a
 developer machine: anything that saturates the CPUs runs in the pipeline. `target_ref` points the same script at older code, to prove that
