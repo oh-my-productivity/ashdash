@@ -1,0 +1,65 @@
+name: stress
+
+# Runs the formerly clock-dependent tests many times while every CPU is busy (scripts/stress-timing.sh). Stress that eats a
+# machine's CPUs belongs here and not on a developer's Mac. Manual only. `target_ref` selects the code under test (a branch, tag or
+# SHA); the script itself always comes from the ref the workflow was dispatched on, so the same script can be pointed at older code.
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Branch, tag or SHA to test (empty = the dispatched ref)"
+        default: ""
+        required: false
+      runs:
+        description: "Runs per test"
+        default: "100"
+        required: false
+      slow_runs:
+        description: "Runs of the tests that take about 10 s each"
+        default: "40"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}-${{ inputs.target_ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-15-intel]
+    name: stress (${{ matrix.image }})
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.target_ref || github.sha }}
+          path: src
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src
+          key: stress-${{ matrix.image }}
+      - name: Show what is tested
+        working-directory: src
+        run: git log -1 --format='%H %s'
+      - name: Stress the timing tests
+        env:
+          RUNS: ${{ inputs.runs }}
+          SLOW_RUNS: ${{ inputs.slow_runs }}
+        run: tools/scripts/stress-timing.sh --runs "$RUNS" --slow-runs "$SLOW_RUNS" src
