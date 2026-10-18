@@ -6,7 +6,7 @@
 # Build the ad-hoc bundle and the DMG, mark the DMG and the installed app as quarantined the way a browser download does, turn Gatekeeper on
 # (the base image has assessments disabled), and record what macOS refuses and what works to get past it. Results: $QA_ART/results.tsv.
 # Needs the lab's ssh-session grants for System Events (the base image has them) but never runs tcc-grant.sh: the point is the untouched state.
-# shellcheck disable=SC2015,SC2012
+# shellcheck disable=SC2015,SC2012,SC2034
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
 # shellcheck source=lib.sh

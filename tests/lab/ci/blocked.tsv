@@ -1,0 +1,3 @@
+# Checklist rows that cannot work on a GitHub-hosted runner. A FAIL on one of these is reported as BLOCKED with the reason
+# (tests/lab/ci/finalize.py); a PASS stays PASS, and every other FAIL fails the job. id-or-glob <TAB> reason
+# (filled in from observed nightly runs; see docs/CI.md)
