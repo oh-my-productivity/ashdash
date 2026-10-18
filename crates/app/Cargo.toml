@@ -13,7 +13,7 @@ anyhow = "1.0.104"
 arboard = "3.6.1"
 dirs = "7.0.0"
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu"] }
-egui_extras = { version = "0.36.2", features = ["file", "image"] }
+egui_extras = { version = "0.37.0", features = ["file", "image"] }
 global-hotkey = "0.8.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 objc2 = "0.6"
