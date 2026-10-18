@@ -1106,22 +1106,24 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let (out_tx, out_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            debounce_loop(rx, plan, Duration::from_millis(60), move |set| {
+            // The five sends below take microseconds, but a loaded machine can pause the test thread in the middle of them: the
+            // quiet period must be long enough that such a pause cannot split the burst into two reports.
+            debounce_loop(rx, plan, Duration::from_millis(400), move |set| {
                 let _ = out_tx.send(set);
             })
         });
         for p in [&cfg, &cfg, &noise, &wf, &cfg] {
             tx.send(WatchMsg::Path(p.clone())).unwrap();
         }
-        let got = out_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let got = out_rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(got, BTreeSet::from([Change::Config, Change::Content]));
         // noise alone reports nothing
         tx.send(WatchMsg::Path(noise)).unwrap();
-        assert!(out_rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(out_rx.recv_timeout(Duration::from_millis(1000)).is_err());
         // a lost-track event means everything
         tx.send(WatchMsg::Everything).unwrap();
         assert_eq!(
-            out_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            out_rx.recv_timeout(Duration::from_secs(30)).unwrap(),
             BTreeSet::from([Change::Config, Change::Content])
         );
         tx.send(WatchMsg::Stop).unwrap();

@@ -156,16 +156,24 @@ fn clipboard_settings_reach_the_live_history() {
 
 // ---------------------------------------------------------------- watcher
 
-fn wait_for(rx: &mpsc::Receiver<BTreeSet<Change>>, want: Change) -> bool {
-    let end = std::time::Instant::now() + Duration::from_secs(8);
-    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
-        match rx.recv_timeout(left) {
+/// Wait for a report containing `want`. There is no signal that the OS file watcher is armed, and an edit made before it is
+/// is lost for good, so `again` repeats the edit every half second until the report arrives (a fixed sleep "to let FSEvents
+/// arm" is a guess that fails on a slow machine). The overall limit only bounds a genuine failure.
+fn wait_for(rx: &mpsc::Receiver<BTreeSet<Change>>, want: Change, mut again: impl FnMut()) -> bool {
+    let end = std::time::Instant::now() + Duration::from_secs(60);
+    while std::time::Instant::now() < end {
+        match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(set) if set.contains(&want) => return true,
             Ok(_) => {}
-            Err(_) => return false,
+            Err(_) => again(),
         }
     }
     false
+}
+
+/// Wait until the watcher has been quiet for a while: the reports caused by repeated edits have all arrived.
+fn drain(rx: &mpsc::Receiver<BTreeSet<Change>>) {
+    while rx.recv_timeout(Duration::from_millis(1200)).is_ok() {}
 }
 
 #[test]
@@ -176,24 +184,30 @@ fn watcher_reports_config_and_workflow_edits_but_not_noise() {
         let _ = tx.send(set);
     })
     .unwrap();
-    std::thread::sleep(Duration::from_millis(300)); // let FSEvents arm
 
-    // noise first: history and usage writes must not report anything
+    // `ashdash config set` style: atomic replace. The first report also proves that the watcher is armed.
+    let save = || Config::default().save(&env.paths).unwrap();
+    save();
+    assert!(wait_for(&rx, Change::Config, save), "config.json write not seen");
+    drain(&rx);
+
+    // noise: history and usage writes must not report anything
     std::fs::write(env.paths.clipboard_file(), "[]").unwrap();
     std::fs::write(env.paths.usage_file(), "{}").unwrap();
     assert!(rx.recv_timeout(Duration::from_millis(800)).is_err(), "noise reported");
 
-    // `ashdash config set` style: atomic replace
-    Config::default().save(&env.paths).unwrap();
-    assert!(wait_for(&rx, Change::Config), "config.json write not seen");
-
     // a workflow dropped into the folder
-    env.install_workflow("user.workflow.w", &keyword_workflow("W", "w.b", "w"));
-    assert!(wait_for(&rx, Change::Content), "new workflow not seen");
+    let install = || {
+        env.install_workflow("user.workflow.w", &keyword_workflow("W", "w.b", "w"));
+    };
+    install();
+    assert!(wait_for(&rx, Change::Content, install), "new workflow not seen");
+    drain(&rx);
 
     // hand-edited snippets
-    std::fs::write(env.paths.snippets_file(), "[]").unwrap();
-    assert!(wait_for(&rx, Change::Content), "snippets.json write not seen");
+    let edit = || std::fs::write(env.paths.snippets_file(), "[]").unwrap();
+    edit();
+    assert!(wait_for(&rx, Change::Content, edit), "snippets.json write not seen");
 }
 
 #[test]
@@ -207,11 +221,13 @@ fn watcher_follows_extra_workflow_folders() {
     })
     .unwrap();
     w.set_extra_roots(&env.paths, std::slice::from_ref(&extra));
-    std::thread::sleep(Duration::from_millis(300));
     let dir = extra.join("theirs");
-    std::fs::create_dir_all(&dir).unwrap();
-    common::write_info_plist(&dir, &keyword_workflow("T", "t.b", "t"));
-    assert!(wait_for(&rx, Change::Content));
+    let install = || {
+        std::fs::create_dir_all(&dir).unwrap();
+        common::write_info_plist(&dir, &keyword_workflow("T", "t.b", "t"));
+    };
+    install();
+    assert!(wait_for(&rx, Change::Content, install));
 }
 
 // ---------------------------------------------------------------- workflows

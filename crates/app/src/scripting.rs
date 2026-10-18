@@ -203,32 +203,59 @@ mod tests {
         assert!(request_for("run trigger", Some("go"), Some(""), None).is_err());
     }
 
-    struct Slow(Mutex<Vec<Request>>, Duration);
-    impl Handler for Slow {
+    /// Blocks every call until the test opens the gate, then records the request. Nothing here depends on how long anything
+    /// takes: whether a caller waited for the handler is read from what the handler has done, not from a clock.
+    struct Gated {
+        seen: Mutex<Vec<Request>>,
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+    impl Gated {
+        fn new() -> Arc<Gated> {
+            Arc::new(Gated {
+                seen: Mutex::new(vec![]),
+                open: Mutex::new(false),
+                opened: std::sync::Condvar::new(),
+            })
+        }
+        fn open_gate(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+    }
+    impl Handler for Gated {
         fn handle(&self, req: Request) -> Response {
-            std::thread::sleep(self.1);
-            self.0.lock().unwrap().push(req);
+            // The long limit only keeps a broken test from leaking a thread forever.
+            let (open, _) = self
+                .opened
+                .wait_timeout_while(self.open.lock().unwrap(), Duration::from_secs(60), |open| !*open)
+                .unwrap();
+            assert!(*open, "the gate was never opened");
+            drop(open);
+            self.seen.lock().unwrap().push(req);
             Response::ok("done")
         }
     }
 
     #[test]
     fn slow_triggers_do_not_block_the_caller() {
-        let slow: Arc<dyn Handler> = Arc::new(Slow(Mutex::new(vec![]), Duration::from_millis(400)));
+        let gated = Gated::new();
+        let slow: Arc<dyn Handler> = gated.clone();
         let trig = Request::Trigger {
             bundle: "b".into(),
             id: "t".into(),
             arg: "".into(),
         };
-        let t = std::time::Instant::now();
+        // The handler cannot finish while the gate is shut, so a caller that returns has not waited for it.
         let r = run_request(&slow, trig.clone(), Duration::from_millis(50));
-        assert!(t.elapsed() < Duration::from_millis(300));
+        assert!(gated.seen.lock().unwrap().is_empty(), "the handler ran to the end");
         assert!(
             r.ok && r.message.is_empty(),
             "timed-out triggers report an empty result"
         );
-        // Within the wait the real answer comes back.
-        let r = run_request(&slow, trig, Duration::from_secs(3));
+        // Within the wait the real answer comes back (30 s is only a bound for a broken run; the answer arrives at once).
+        gated.open_gate();
+        let r = run_request(&slow, trig, Duration::from_secs(30));
         assert_eq!(r.message, "done");
     }
 

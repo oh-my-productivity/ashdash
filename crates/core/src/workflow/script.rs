@@ -699,18 +699,19 @@ mod tests {
 
     #[test]
     fn exited_script_with_a_lingering_pipe_holder_returns_promptly() {
-        let mut c = sh("sleep 5 & echo hello");
+        // A caller stuck on the pipe would come back after the 20 s sleep; prompt is anything below half of that.
+        let mut c = sh("sleep 20 & echo hello");
         let start = Instant::now();
-        let out = run_with_timeout(&mut c, None, Duration::from_secs(20)).unwrap();
+        let out = run_with_timeout(&mut c, None, Duration::from_secs(60)).unwrap();
         assert_eq!(out.stdout.trim(), "hello");
-        assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+        assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
     }
 
     #[test]
     fn stdin_is_delivered_and_a_never_reading_script_still_times_out() {
         let mut c = Command::new("/bin/cat");
         c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let out = run_with_timeout(&mut c, Some("héllo"), Duration::from_secs(5)).unwrap();
+        let out = run_with_timeout(&mut c, Some("héllo"), Duration::from_secs(30)).unwrap();
         assert_eq!(out.stdout, "héllo");
 
         let mut c = sh("sleep 30");

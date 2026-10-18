@@ -679,31 +679,48 @@ mod tests {
     fn edits_on_disk_reach_the_engine_through_the_watcher() {
         let mut r = rig("watch", None);
         let mut w = FakeWindow::default();
-        std::thread::sleep(Duration::from_millis(400)); // let FSEvents arm
-        let mut c = Config::load(&r.paths);
-        c.max_results = 9;
-        c.save(&r.paths).unwrap();
-        let end = Instant::now() + Duration::from_secs(10);
+        // There is no signal that the OS file watcher is armed, and an edit made before it is lost for good: repeat the
+        // edit every second until it is seen instead of sleeping a guessed time. The 60 s limit only bounds a real failure.
+        let save = |r: &Rig| {
+            let mut c = Config::load(&r.paths);
+            c.max_results = 9;
+            c.save(&r.paths).unwrap();
+        };
+        save(&r);
+        let end = Instant::now() + Duration::from_secs(60);
+        let mut last_edit = Instant::now();
         while r.engine.config_now().max_results != 9 && Instant::now() < end {
             r.reload.poll(&mut w);
             std::thread::sleep(Duration::from_millis(50));
+            if last_edit.elapsed() > Duration::from_secs(1) {
+                save(&r);
+                last_edit = Instant::now();
+            }
         }
         assert_eq!(r.engine.config_now().max_results, 9, "watcher + debounce + apply");
 
         // a workflow dropped into the folder is loaded and its hotkeys re-read
         let dir = r.paths.workflows_dir().join("user.workflow.w");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("info.plist"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+        let drop_workflow = || {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("info.plist"),
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
             <key>name</key><string>Dropped</string><key>bundleid</key><string>dropped.b</string>
             <key>objects</key><array/><key>connections</key><dict/></dict></plist>"#,
-        )
-        .unwrap();
-        let end = Instant::now() + Duration::from_secs(10);
+            )
+            .unwrap();
+        };
+        drop_workflow();
+        let end = Instant::now() + Duration::from_secs(60);
+        let mut last_edit = Instant::now();
         while w.workflow_hotkey_reloads == 0 && Instant::now() < end {
             r.reload.poll(&mut w);
             std::thread::sleep(Duration::from_millis(50));
+            if last_edit.elapsed() > Duration::from_secs(1) {
+                drop_workflow();
+                last_edit = Instant::now();
+            }
         }
         assert!(w.workflow_hotkey_reloads >= 1);
         assert!(r.engine.workflow_summaries().iter().any(|(n, _, _)| n == "Dropped"));

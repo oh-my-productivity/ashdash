@@ -155,10 +155,14 @@ fn documents_default_mask_leaves_shell_metacharacters_live() {
             "pipe/amp" => "amp",
             _ => "nl",
         };
-        // `&` backgrounds the command; give it a moment
-        std::thread::sleep(Duration::from_millis(if what == "pipe/amp" { 200 } else { 0 }));
+        // `&` backgrounds the command: wait for the marker instead of guessing how long it takes (bounded, 30 s)
+        let marker = format!("{ms}-{suffix}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !Path::new(&marker).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(
-            Path::new(&format!("{ms}-{suffix}")).exists(),
+            Path::new(&marker).exists(),
             "{what}: expected the documented injection to work (if this fails, escaping improved: update SEC-03)"
         );
     }
@@ -315,12 +319,13 @@ fn sf_workflow(script: &str) -> Value {
 #[test]
 fn backgrounded_grandchild_does_not_stall_the_script_filter() {
     let fx = Fx::new("pipehang");
-    let wf = fx.wf(&sf_workflow(r#"sleep 6 & echo '{"items":[{"title":"fast"}]}'"#));
+    let wf = fx.wf(&sf_workflow(r#"sleep 20 & echo '{"items":[{"title":"fast"}]}'"#));
     let start = Instant::now();
     let items = fx.items(&wf, "sf x");
     let took = start.elapsed();
     assert_eq!(items[0].title, "fast");
-    assert!(took < Duration::from_secs(3), "returned after {took:?}");
+    // A caller stuck on the pipe would return after the 20 s sleep: prompt means below half of that.
+    assert!(took < Duration::from_secs(10), "returned after {took:?}");
 }
 
 /// On timeout the whole process group should die, not just the interpreter.
@@ -537,7 +542,7 @@ fn notification_text_cannot_inject_applescript() {
 #[test]
 fn unread_stdin_cannot_defeat_the_timeout() {
     let fx = Fx::new("stdin-block");
-    let mut doc = script_filter_workflow("sf", "sleep 14");
+    let mut doc = script_filter_workflow("sf", "sleep 40");
     doc["objects"][0]["config"]["scriptargtype"] = json!(2);
     let wf = fx.wf(&doc);
     let big = "x".repeat(4 * 1024 * 1024);
@@ -546,7 +551,8 @@ fn unread_stdin_cannot_defeat_the_timeout() {
     let took = start.elapsed();
     assert!(!items.is_empty());
     assert!(
-        took < Duration::from_secs(12),
-        "returned after {took:?} (timeout is 10 s)"
+        // The timeout is 10 s and the script lives 40 s: anything in between separates the two outcomes with a wide margin.
+        took < Duration::from_secs(25),
+        "returned after {took:?} (timeout is 10 s, the script sleeps 40 s)"
     );
 }
