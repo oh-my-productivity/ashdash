@@ -75,16 +75,8 @@ if [ "$gui" = 0 ]; then rec SKIP gui "--no-gui"; cat "$REPORT"; exit "$failed"; 
 # ---- headless CLI checks that need no session ---------------------------------------------------
 mkdir -p "$WORK/home"
 export HOME_REAL=$HOME
-# The application index is built in the background after start-up, so the very first query of a fresh data folder can come back without
-# applications (seen on slower machines such as hosted CI runners): ask again for up to ~15 s before calling it a failure.
-q_try=0
-while [ "$q_try" -lt 8 ]; do
-  q_try=$((q_try + 1))
-  HOME=$WORK/home "$BIN" query saf >"$ART/query-saf.txt" 2>&1 && grep -qi safari "$ART/query-saf.txt" && break
-  sleep 2
-done
-if grep -qi safari "$ART/query-saf.txt"; then
-  rec PASS cli-query "'ashdash query saf' lists Safari (attempt $q_try)"
+if HOME=$WORK/home "$BIN" query saf >"$ART/query-saf.txt" 2>&1 && grep -qi safari "$ART/query-saf.txt"; then
+  rec PASS cli-query "'ashdash query saf' lists Safari"
 else
   rec FAIL cli-query "'ashdash query saf' did not list Safari (see query-saf.txt)"
 fi
