@@ -1,7 +1,7 @@
 // Control for the "+185 MB footprint when the launcher window is first shown" (docs/PERF.md, W4-PERF2):
 // a bare AppKit window with a CAMetalLayer and ONE clear-colour render pass, no wgpu/egui/Ashdash code.
 // Prints the process footprint after each step. Build and run:  swiftc -O scripts/qa/perf-metal-control.swift -o /tmp/ctl && /tmp/ctl
-// (it opens a 640x400 borderless window for about a second: hold the desktop lock first, see docs/briefs/wave3.md).
+// (it opens a 640x400 borderless window for about a second: hold the desktop lock first).
 import AppKit
 import Metal
 import QuartzCore

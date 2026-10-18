@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Merge QA result files (id <TAB> status <TAB> evidence; later files override earlier ones) into the markdown tables of
-docs/qa-runs/<run>.md.   usage: report.py out-table.md results1.tsv [results2.tsv ...]
+a QA run document.   usage: report.py out-table.md results1.tsv [results2.tsv ...]
 The prose of the run document (summary, bug list, owner steps) is written by hand around the generated tables."""
 import re
 import sys

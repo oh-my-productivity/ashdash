@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(t.enter_target(sel, &fin), Target::Row(1), "the user saw 'b' selected");
     }
 
-    // ---- Wave 6 review fixes (docs/reviews/wave5.md 1 and 2)
+    // ---- Wave 6 review fixes
 
     /// A clock-style list: the id of a row is its title, so every rerun gives new ids.
     fn clock(second: u32) -> Vec<ashdash_core::Item> {

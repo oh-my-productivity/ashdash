@@ -631,8 +631,7 @@ impl Workflow {
                 None => self.warn(fx, format!("unsupported music command {}", node.i("command"))),
             },
             kind::ACTION_SYSTEMCOMMAND => match node.i("command") {
-                // Only "Show Trash" is documented (a bundled template's note);
-                // other codes are not mapped so a wrong guess can never log
+                // Only "Show Trash" is mapped; other codes are not mapped so a wrong guess can never log
                 // someone out or shut the Mac down.
                 2 => fx.push(Effect::OpenPath {
                     path: expand_tilde("~/.Trash"),
@@ -641,7 +640,7 @@ impl Workflow {
                 other => self.warn(fx, format!("system command {other} is not mapped")),
             },
             kind::ACTION_SYSTEMWEBSEARCH => {
-                // 1635215215 is 'awgo', the default (Google) search in the bundled template.
+                // 1635215215 is the code of the default (Google) search.
                 if node.i("searcher") == 1_635_215_215 {
                     fx.push(Effect::OpenUrl {
                         url: format!("https://www.google.com/search?q={}", percent_encode(&st.arg)),

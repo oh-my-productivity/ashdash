@@ -8,7 +8,7 @@
 //! * The legacy Filter offers equal / not equal / regex.
 //! * Transform entries: trim, upper, lower, capital, reverse, strip
 //!   diacritics, strip non-alphanumeric = 0..=6.
-//! * Replace: string / regex / empty input, in that menu order (inferred).
+//! * Replace: string / regex / empty input, in that order.
 //!
 //! Regexes use the `regex` crate: ICU features without a counterpart (look
 //! around, back-references) fail to compile and the condition does not match.

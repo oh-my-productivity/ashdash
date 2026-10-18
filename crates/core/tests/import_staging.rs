@@ -1,5 +1,5 @@
 //! Staged imports: the package is opened once, the user is asked about that copy, and exactly
-//! that copy is installed (docs/reviews/wave3.md item 3; docs/SECURITY.md SEC-21).
+//! that copy is installed (docs/SECURITY.md SEC-21).
 
 mod common;
 

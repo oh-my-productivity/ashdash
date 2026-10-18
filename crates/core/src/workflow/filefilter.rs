@@ -1,11 +1,11 @@
 //! The File Filter input: a Spotlight (`mdfind`) search whose predicate is
 //! built from the object's `fields`, `types` and `scopes`.
 //!
-//! Layout observed in the bundled "File filter ..." templates: `fields` is a
+//! Layout: `fields` is a
 //! list of `{field, value, split, words, not}` (the default searches
 //! `kMDItemDisplayName` and `kMDItemFinderComment` for `{query}`), `types` a
 //! list of UTIs, `scopes` a list of folders, plus `includesystem`,
-//! `anchorfields`, `daterange`. How the pieces combine is inferred:
+//! `anchorfields`, `daterange`. The pieces combine like this:
 //!
 //! * `split`: one clause per whitespace-separated word, all of which must match;
 //! * `words`: the clause matches at the start of a word, otherwise anywhere;

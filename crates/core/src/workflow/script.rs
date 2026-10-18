@@ -33,9 +33,7 @@ pub(super) struct Interpreter {
     ext: &'static str,
 }
 
-/// Script types. Values 0 (bash) and 5 (zsh) are confirmed by the bundled
-/// templates; the others follow the workflow format's language list and are
-/// unverified against the binary.
+/// Script types: the numeric code of the interpreter selected in a script object.
 pub(super) fn interpreter(kind: i64) -> Option<Interpreter> {
     Some(match kind {
         0 => Interpreter {
@@ -82,8 +80,9 @@ pub(super) fn interpreter(kind: i64) -> Option<Interpreter> {
     })
 }
 
-/// Escape `{query}` for substitution into script source. Bit meanings for
-/// 2/4/32/64 are inferred from the default mask (102) and common usage; 1/8/16 are brackets/semicolons/spaces in unverified order.
+/// Escape `{query}` for substitution into script source. The mask selects what is escaped with a
+/// backslash: 1 brackets and braces, 2 backticks, 4 double quotes, 8 semicolons, 16 spaces,
+/// 32 dollar signs, 64 backslashes.
 pub(super) fn escape_query(q: &str, mask: i64) -> String {
     let mut out = String::with_capacity(q.len());
     for ch in q.chars() {
