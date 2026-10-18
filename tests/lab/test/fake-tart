@@ -3,6 +3,10 @@
 set -u
 home=${TART_HOME:?}
 mkdir -p "$home/vms"
+# readdir while another process creates or removes entries may skip one (seen on a busy runner: the golden image "vanished" from `list`
+# while two other fake VMs were being deleted), so everything that changes or lists $home/vms holds this lock.
+lock() { local i=0; until mkdir "$home/.lock" 2>/dev/null; do i=$((i + 1)); [ "$i" -gt 500 ] && break; sleep 0.02; done; }
+unlock() { rmdir "$home/.lock" 2>/dev/null; }
 cmd=${1:-}; shift || true
 case "$cmd" in
   list)
@@ -15,7 +19,7 @@ case "$cmd" in
         *) shift ;;
       esac
     done
-    names=$(ls "$home/vms" 2>/dev/null)
+    lock; names=$(ls "$home/vms" 2>/dev/null); unlock
     # Like real tart: pulled OCI images (kept in $home/oci/<name>, "/" written as "%") are only listed without `--source local`.
     if [ "$src" != local ]; then names="$names $(find "$home/oci" -mindepth 1 -maxdepth 1 -exec basename {} \; 2>/dev/null | tr % /)"; fi
     if [ "$fmt" = json ]; then
@@ -36,7 +40,7 @@ case "$cmd" in
     [ -d "$home/vms/$1" ] || { echo "no such VM: $1" >&2; exit 1; }
     [ -e "$home/vms/$2" ] && { echo "exists: $2" >&2; exit 1; }
     [ -n "${FAKE_TART_CLONE_FAIL:-}" ] && { echo "clone failed (injected)" >&2; exit 1; }
-    mkdir "$home/vms/$2"; echo stopped >"$home/vms/$2/state"
+    lock; mkdir "$home/vms/$2"; echo stopped >"$home/vms/$2/state"; unlock
     ;;
   run)
     name=""
@@ -68,7 +72,7 @@ case "$cmd" in
   delete)
     [ -d "$home/vms/$1" ] || { echo "no such VM: $1" >&2; exit 1; }
     if [ "$(cat "$home/vms/$1/state" 2>/dev/null)" = running ]; then echo "VM is running" >&2; exit 1; fi
-    rm -rf "${home:?}/vms/$1"
+    lock; rm -rf "${home:?}/vms/$1"; unlock
     ;;
   *) echo "fake-tart: unsupported: $cmd" >&2; exit 2 ;;
 esac

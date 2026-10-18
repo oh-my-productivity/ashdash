@@ -121,7 +121,8 @@ Full Disk Access is not enforced with SIP off, nothing to type with an IME, ...)
 Rows that fail only sometimes are not hidden either: a GUI check on a shared 3-core virtual machine can miss its timing. When the first
 pass of the checklist has a FAILed row, `run-checklist.sh` runs the sections that contain it once more; a row that fails twice fails the
 job, and one that passes the second time is listed in the job summary as flaky (`CI_RETRY=0` turns the second pass off). Seen during
-bring-up: 3.3.6b and 3.5.5b on macOS 26 in one run, 3.2.9b on macOS 26 in another; each passed in the other runs.
+bring-up, all on macOS 26 and all passing on the second pass or in the next run: 3.2.9b (twice), 3.3.6b and 3.5.5b (once each; the Large
+Type check now waits up to 5 s for the window to go away).
 
 `tests/lab/ci/blocked.tsv` is empty at the moment: every row that failed on a hosted runner while this was set up was a real bug, now
 fixed, or flaky. Add a row there (with the reason and, if it applies to one image only, the image) when a check needs something a hosted
@@ -142,6 +143,23 @@ runner cannot give.
 * **`advisories.yml` is red:** `cargo deny check advisories` reports the yanked crate `inout 0.2.3` (dependency path `ashdash-core` -> `zip 9.0.3`
   -> `aes 0.9.3` -> `cipher 0.5.2` -> `inout`). Fixing it means changing `Cargo.lock` (or pinning a different `zip`), which this work does not do.
 * **`macos-14` is retired on 2026-11-02**; `release.yml` built on it and now uses `macos-15` (the app is still built for macOS 12.0 and later).
+
+## Typical durations
+
+Measured on the proof runs of 2026-10-18 (warm `rust-cache`; a cold cache adds 3 to 20 minutes, most on the Intel image):
+
+| Job | Time |
+|---|---|
+| `deny` | 0.5 min |
+| `packaging` | 0.5 min |
+| `lab-scripts` | 2 min |
+| `check` | 2 min |
+| `gui-smoke` (macOS 15 / 26) | 2 to 3 min |
+| `bundle` | 3.5 to 4 min |
+| `x86-64` (build, tests and GUI smoke) | 6 to 8 min (25 min cold) |
+| whole `ci.yml` run on `main` | about 10 min wall clock when the five-macOS-job limit does not queue anything |
+| `checklist` (macOS 15 / 26) | 20 / 23 min (including the build, and the second pass when there is one) |
+| `soak`, 7200 s | 2 h 2 min (240 cycles, no missed hotkey, no crash) |
 
 ## Reproducing a CI failure locally
 
