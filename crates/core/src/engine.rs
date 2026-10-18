@@ -705,7 +705,7 @@ impl Engine {
         msg_to_outcome(apply_effects(effects))
     }
 
-    /// Fire a workflow's External Trigger, like `reference://runtrigger`.
+    /// Fire a workflow's External Trigger, the way the `ashdash://` trigger URL does.
     pub fn run_trigger(&self, bundle_id: &str, trigger_id: &str, arg: &str) -> Outcome {
         let effects = {
             let wfs = self.workflows.read().unwrap();
@@ -949,6 +949,7 @@ pub fn run_in_terminal(cmd: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format_ids::kind;
     use serde_json::json;
     use std::time::Duration;
 
@@ -1050,9 +1051,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let doc = json!({
             "name": "T", "bundleid": "t.t", "objects": [
-                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                     "keyword": "shout", "withspace": true, "argumenttype": 0, "text": "Shout", "subtext": "say {query}"}},
-                {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "{query}!"}}
+                {"uid": "L", "type": kind::OUTPUT_LARGETYPE, "config": {"largetypetext": "{query}!"}}
             ],
             "connections": {"K": [{"destinationuid": "L", "modifiers": 0}]}
         });
@@ -1082,7 +1083,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let doc = json!({
                 "name": "P", "bundleid": "p.p", "objects": [
-                    {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                    {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                         "keyword": builtin, "withspace": true, "argumenttype": 1, "text": "Mine", "subtext": ""}}
                 ],
                 "connections": {}
@@ -1620,7 +1621,7 @@ mod tests {
                 {"variable": "loud", "type": "checkbox", "config": {"default": false}}
             ],
             "objects": [
-                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                     "keyword": "who", "withspace": false, "argumenttype": 2, "text": "Hello {var:name}", "subtext": "loud={var:loud}"}}
             ],
             "connections": {}

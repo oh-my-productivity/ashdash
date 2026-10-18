@@ -351,6 +351,8 @@ mod tests {
 
     use super::*;
 
+    use ashdash_core::format_ids::{THEME_KEY, appearance_file};
+
     /// Records what the reload asks of the window.
     #[derive(Default)]
     struct FakeWindow {
@@ -591,11 +593,13 @@ mod tests {
     fn theme_changes_reload_the_theme_and_bad_themes_are_reported() {
         let mut r = rig("theme", None);
         let mut w = FakeWindow::default();
-        let good = r.root.join("t.alfredappearance");
+        let good = r.root.join(appearance_file("t"));
         std::fs::write(
             &good,
-            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict>
-            <key>name</key><string>Night</string></dict></dict></plist>"#,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>{THEME_KEY}</key><dict>
+            <key>name</key><string>Night</string></dict></dict></plist>"#
+            ),
         )
         .unwrap();
         let mut c = Config::load(&r.paths);
@@ -606,7 +610,7 @@ mod tests {
         assert_eq!(w.themes[0].name, "Night");
 
         let mut c = Config::load(&r.paths);
-        c.theme = Some(r.root.join("missing.alfredappearance"));
+        c.theme = Some(r.root.join(appearance_file("missing")));
         c.save(&r.paths).unwrap();
         r.reload.apply_disk_config(&mut w);
         r.reload.publish();
@@ -818,7 +822,7 @@ mod tests {
     fn other_settings_pick_only_what_they_touch() {
         let old = cfg();
         let mut new = old.clone();
-        new.theme = Some("/t.alfredappearance".into());
+        new.theme = Some(appearance_file("/t").into());
         let p = plan(&old, &new, &old.hotkey);
         assert!(p.reload_theme && p.apply_engine && !p.rearm_watcher && p.rebind_hotkey.is_none());
         let mut new = old.clone();

@@ -60,7 +60,7 @@ pub struct Workflow {
     pub version: String,
     /// Entries of the workflow configuration sheet (`userconfigurationconfig`).
     pub user_config: Vec<ConfigVar>,
-    /// Variables the reference launcher strips when exporting (`variablesdontexport`).
+    /// Variables that are not included when a workflow is exported (`variablesdontexport`).
     pub dont_export: Vec<String>,
     /// Session variables, script-filter cache and user-set values. Shared by
     /// clones so a deferred (delayed) continuation sees the same state.
@@ -159,8 +159,7 @@ impl Workflow {
             }
         }
         // Streams leaving one object run top to bottom by the Y position of
-        // their destination on the canvas (observed in the reference launcher's "Stream
-        // Order" template). The sort is stable, so without `uidata` the file
+        // their destination on the canvas. The sort is stable, so without `uidata` the file
         // order is kept.
         let ypos = |uid: &str| {
             j.get("uidata")
@@ -234,8 +233,8 @@ impl Workflow {
             .collect()
     }
 
-    /// Forget session variables and cached Script Filter output (what the reference launcher
-    /// does when the launcher closes / the workflow is reloaded).
+    /// Forget session variables and cached Script Filter output (done when
+    /// the launcher closes / the workflow is reloaded).
     pub fn reset_session(&self) {
         self.runtime.reset();
     }
@@ -254,7 +253,7 @@ impl Workflow {
 /// Hidden folders (a name starting with `.`) are not workflows: the importer keeps staging
 /// folders, the new tree and the previous version of a workflow being replaced there
 /// (`.import-*`), and a reload during an install must not see a second copy of it. This only
-/// reads: a root may belong to someone else (a synced reference launcher folder, read-only), so cleaning up
+/// reads: a root may belong to someone else (a synced folder, read-only), so cleaning up
 /// after an interrupted install is [`sweep_interrupted_installs`], called for the app's own
 /// workflows folder only.
 pub fn load_all(roots: &[PathBuf]) -> Vec<Workflow> {

@@ -60,7 +60,7 @@ pub enum Request {
     Prefs,
     /// Forget everything learned from earlier picks (the launcher holds it in memory).
     ClearUsage,
-    /// Absolute path of an `.alfredappearance` file.
+    /// Absolute path of an appearance (theme) file.
     Theme {
         file: PathBuf,
     },
@@ -542,7 +542,9 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
     use crate::events::VecSink;
+    use ashdash_core::format_ids::appearance_file;
 
     struct FakeBackend {
         triggers: Mutex<Vec<(String, String, String)>>,
@@ -612,7 +614,7 @@ mod tests {
                 arg: "x\ty".into(),
             },
             Request::Theme {
-                file: PathBuf::from("/tmp/a b.alfredappearance"),
+                file: PathBuf::from(appearance_file("/tmp/a b")),
             },
         ];
         for r in all {
@@ -634,7 +636,7 @@ mod tests {
             r#"{"cmd":"search","text":5}"#,
             r#"{"cmd":"trigger","bundle":"b"}"#,
             r#"{"cmd":"trigger","bundle":"","id":"x"}"#,
-            r#"{"cmd":"theme","file":"relative.alfredappearance"}"#,
+            r#"{"cmd":"theme","file":appearance_file("relative")}"#,
         ] {
             assert!(Request::parse(bad).is_err(), "should reject {bad:?}");
         }

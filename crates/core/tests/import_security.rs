@@ -7,6 +7,7 @@
 
 mod common;
 
+use ashdash_core::format_ids::workflow_file;
 use std::path::{Path, PathBuf};
 
 use ashdash_core::workflow::import_package;
@@ -30,7 +31,7 @@ impl Sandbox {
         std::fs::create_dir_all(&dest_root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("canary.txt"), b"keep me").unwrap();
-        let pkg = root.join("pkg.alfredworkflow");
+        let pkg = root.join(workflow_file("pkg"));
         Sandbox {
             root,
             dest_root,
@@ -47,7 +48,7 @@ impl Sandbox {
     fn untouched_snapshot(&self) -> Vec<String> {
         snapshot(self.root.path())
             .into_iter()
-            .filter(|p| !p.starts_with("workflows") && p != "pkg.alfredworkflow")
+            .filter(|p| !p.starts_with("workflows") && *p != workflow_file("pkg"))
             .collect()
     }
 
@@ -98,7 +99,7 @@ fn escaping_symlinks(dir: &Path) -> Vec<String> {
 #[test]
 fn well_formed_package_installs_and_is_found_by_the_engine() {
     let env = Env::new("imp-ok", &["Safari"]);
-    let pkg = env.root.join("good.alfredworkflow");
+    let pkg = env.root.join(workflow_file("good"));
     write_zip(
         &pkg,
         &[
@@ -385,7 +386,7 @@ fn malformed_archives_are_errors_not_panics() {
         assert!(import_package(&sb.pkg, &sb.dest_root).is_err(), "truncated at {cut}");
     }
     // missing file
-    assert!(import_package(&sb.root.join("nope.alfredworkflow"), &sb.dest_root).is_err());
+    assert!(import_package(&sb.root.join(workflow_file("nope")), &sb.dest_root).is_err());
 }
 
 #[test]
@@ -518,7 +519,7 @@ fn concurrent_imports_do_not_interfere() {
     std::fs::create_dir_all(&dest_root).unwrap();
     let mut pkgs = Vec::new();
     for i in 0..4 {
-        let p = root.join(format!("p{i}.alfredworkflow"));
+        let p = root.join(workflow_file(&format!("p{i}")));
         let doc = keyword_workflow(&format!("W{i}"), &format!("qa.concurrent.{i}"), &format!("k{i}"));
         write_zip(
             &p,

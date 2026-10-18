@@ -2,6 +2,7 @@
 //! temp directory; nothing here touches the real user's data or HOME.
 #![allow(dead_code)] // each test binary uses a different subset
 
+use ashdash_core::format_ids::kind;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,7 +68,7 @@ impl Env {
         Engine::new(self.paths.clone(), self.config())
     }
 
-    /// Write a reference-style workflow directory (info.plist) into the managed workflows dir.
+    /// Write a workflow directory (info.plist) into the managed workflows dir.
     pub fn install_workflow(&self, dir_name: &str, doc: &Value) -> PathBuf {
         let dir = self.paths.workflows_dir().join(dir_name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -105,9 +106,9 @@ pub fn keyword_workflow(name: &str, bundle: &str, kw: &str) -> Value {
     json!({
         "name": name, "bundleid": bundle,
         "objects": [
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+            {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                 "keyword": kw, "withspace": true, "argumenttype": 1, "text": name, "subtext": "sub {query}"}},
-            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "{query}!"}}
+            {"uid": "L", "type": kind::OUTPUT_LARGETYPE, "config": {"largetypetext": "{query}!"}}
         ],
         "connections": {"K": [{"destinationuid": "L", "modifiers": 0}]}
     })
@@ -118,10 +119,10 @@ pub fn script_filter_workflow(kw: &str, script: &str) -> Value {
     json!({
         "name": "SF", "bundleid": "qa.sf",
         "objects": [
-            {"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {
+            {"uid": "SF", "type": kind::INPUT_SCRIPTFILTER, "config": {
                 "keyword": kw, "withspace": true, "argumenttype": 1, "type": 0, "scriptargtype": 1,
                 "title": "SF", "subtext": "", "script": script}},
-            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "T", "text": "{query}"}}
+            {"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {"title": "T", "text": "{query}"}}
         ],
         "connections": {"SF": [{"destinationuid": "N", "modifiers": 0}]}
     })

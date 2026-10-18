@@ -101,7 +101,7 @@ echo "== guest scripts"
 for f in tcc-grant.sh check-golden.sh tcc-probe.sh provision.sh; do check "guest/$f parses" bash -n "$lab/guest/$f"; done
 check "smoke.sh parses" bash -n "$lab/smoke.sh"
 
-# tcc-grant.sh must not write a single TCC row outside a lab VM, and must check its tools before the first write (docs/reviews/wave5.md 13).
+# tcc-grant.sh must not write a single TCC row outside a lab VM, and must check its tools before the first write.
 # The tools are faked through PATH; the real TCC databases and tccd are never touched.
 tg="$tmp/tcc"; mkdir -p "$tg/bin" "$tg/home"
 tg_fake() { printf '#!/bin/sh\n%s\n' "$2" >"$tg/bin/$1"; chmod +x "$tg/bin/$1"; }

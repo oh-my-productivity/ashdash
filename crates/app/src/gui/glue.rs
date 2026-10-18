@@ -136,7 +136,7 @@ impl LauncherApp {
     /// installed until the user confirms.
     pub(super) fn begin_import(&mut self, ctx: &egui::Context, path: PathBuf) {
         if !is_workflow_package(&path) {
-            self.status = Some("Only .alfredworkflow files can be installed here".into());
+            self.status = Some("Only workflow packages can be installed here".into());
             return;
         }
         self.status = Some("Reading the workflow…".into());
@@ -168,12 +168,12 @@ impl LauncherApp {
         self.status = None;
     }
 
-    /// Dropped `.alfredworkflow` files start the same confirmation.
+    /// Dropped workflow packages start the same confirmation.
     pub(super) fn poll_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         let Some(first) = dropped.iter().find(|p| is_workflow_package(p)).cloned() else {
             if !dropped.is_empty() {
-                self.status = Some("Only .alfredworkflow files can be installed here".into());
+                self.status = Some("Only workflow packages can be installed here".into());
             }
             return;
         };

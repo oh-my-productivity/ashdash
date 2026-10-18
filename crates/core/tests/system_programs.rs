@@ -63,7 +63,7 @@ const KNOWN_SPAWNS: &[(&str, &str, &str)] = &[
     (
         "app/src/mac/opendocs.rs",
         "\"zip\"",
-        "test code: builds a .alfredworkflow fixture with the zip CLI",
+        "test code: builds a workflow package fixture with the zip CLI",
     ),
 ];
 

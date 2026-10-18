@@ -1,13 +1,14 @@
 //! A machine-readable answer to "what will this workflow be allowed to do?", for the import
 //! confirmation and the workflow list (docs/SECURITY.md, section 3).
 //!
-//! The engine keeps the reference launcher's semantics (a workflow is a program the user chose to run: SEC-03,
+//! The engine keeps the workflow format's semantics (a workflow is a program the user chose to run: SEC-03,
 //! SEC-13, SEC-14), so it cannot make an untrusted workflow safe. What it can do is describe the
 //! workflow precisely enough that the UI can ask first. [`Workflow::trust_summary`] only reads the
 //! parsed `info.plist`; it never runs anything and writes nothing. (It looks at the disk in one
 //! place: whether a bare `Something.app` application field names an app shipped in the workflow
 //! folder, see [`app_is_path`].)
 
+use crate::format_ids::kind;
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -56,7 +57,7 @@ pub enum WriteKind {
     Prepend,
 }
 
-/// One Write File object (`alfred.workflow.output.writefile`).
+/// One Write File object (`kind::OUTPUT_WRITEFILE`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileWriteInfo {
     /// The file name template as written in the workflow (cut at 500 characters).
@@ -342,15 +343,15 @@ fn interpreter_label(n: &Node) -> String {
 
 /// Object kinds that run or open something with the data they receive.
 const ACTING_KINDS: &[&str] = &[
-    "alfred.workflow.action.script",
-    "alfred.workflow.output.script",
-    "alfred.workflow.action.applescript",
-    "alfred.workflow.input.scriptfilter",
-    "alfred.workflow.action.openurl",
-    "alfred.workflow.action.openfile",
-    "alfred.workflow.action.launchfiles",
-    "alfred.workflow.output.writefile",
-    "alfred.workflow.action.terminalcommand",
+    kind::ACTION_SCRIPT,
+    kind::OUTPUT_SCRIPT,
+    kind::ACTION_APPLESCRIPT,
+    kind::INPUT_SCRIPTFILTER,
+    kind::ACTION_OPENURL,
+    kind::ACTION_OPENFILE,
+    kind::ACTION_LAUNCHFILES,
+    kind::OUTPUT_WRITEFILE,
+    kind::ACTION_TERMINALCOMMAND,
 ];
 
 impl Workflow {
@@ -394,9 +395,7 @@ impl Workflow {
         let mut shipped = BTreeSet::new();
         for n in &self.nodes {
             match n.kind.as_str() {
-                "alfred.workflow.action.script"
-                | "alfred.workflow.output.script"
-                | "alfred.workflow.input.scriptfilter" => {
+                kind::ACTION_SCRIPT | kind::OUTPUT_SCRIPT | kind::INPUT_SCRIPTFILTER => {
                     s.scripts += 1;
                     interpreters.insert(interpreter_label(n));
                     let file = n.s("scriptfile");
@@ -408,41 +407,41 @@ impl Workflow {
                         s.query_in_source += 1;
                     }
                 }
-                "alfred.workflow.action.applescript" => {
+                kind::ACTION_APPLESCRIPT => {
                     s.scripts += 1;
                     interpreters.insert("osascript".into());
                     if n.s("applescript").contains("{query}") {
                         s.query_in_source += 1;
                     }
                 }
-                "alfred.workflow.action.openurl" => {
+                kind::ACTION_OPENURL => {
                     schemes.insert(url_scheme(&n.s("url")));
                     note_app(&n.s("browser"), &self.dir, &mut apps);
                 }
                 // "Search the web" opens a fixed https URL, in the `browser` application if set.
-                "alfred.workflow.action.systemwebsearch" => {
+                kind::ACTION_SYSTEMWEBSEARCH => {
                     schemes.insert("https".into());
                     note_app(&n.s("browser"), &self.dir, &mut apps);
                 }
-                "alfred.workflow.action.terminalcommand" => {
+                kind::ACTION_TERMINALCOMMAND => {
                     let t: String = n.s("text").chars().take(MAX_COMMAND_CHARS).collect();
                     s.terminal_commands.push(t);
                 }
-                "alfred.workflow.action.openfile" => {
+                kind::ACTION_OPENFILE => {
                     note_opened(&n.s("sourcefile"), &mut runtime, &mut files, &mut shipped, &mut schemes);
                     note_app(&n.s("openwith"), &self.dir, &mut apps);
                 }
-                "alfred.workflow.action.launchfiles" => {
+                kind::ACTION_LAUNCHFILES => {
                     for p in n.config.get("paths").and_then(|p| p.as_array()).into_iter().flatten() {
                         if let Some(p) = p.as_str() {
                             note_opened(p, &mut runtime, &mut files, &mut shipped, &mut schemes);
                         }
                     }
                 }
-                "alfred.workflow.output.writefile" => {
+                kind::OUTPUT_WRITEFILE => {
                     s.file_writes.extend(file_write(n));
                 }
-                "alfred.workflow.output.clipboard" => s.copies_to_clipboard += 1,
+                kind::OUTPUT_CLIPBOARD => s.copies_to_clipboard += 1,
                 KIND_EXTERNAL_TRIGGER => s.external_triggers += 1,
                 _ => {}
             }
@@ -480,18 +479,17 @@ mod tests {
 
     #[test]
     fn script_filter_results_steering_later_steps_are_flagged() {
-        let sf =
-            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
+        let sf = json!({"uid": "SF", "type": kind::INPUT_SCRIPTFILTER, "config": {"type": 0, "script": "echo"}});
         // each acting kind, directly and through a junction
         for kind in [
-            "alfred.workflow.action.script",
-            "alfred.workflow.output.script",
-            "alfred.workflow.action.applescript",
-            "alfred.workflow.action.openurl",
-            "alfred.workflow.action.openfile",
-            "alfred.workflow.action.launchfiles",
-            "alfred.workflow.output.writefile",
-            "alfred.workflow.action.terminalcommand",
+            kind::ACTION_SCRIPT,
+            kind::OUTPUT_SCRIPT,
+            kind::ACTION_APPLESCRIPT,
+            kind::ACTION_OPENURL,
+            kind::ACTION_OPENFILE,
+            kind::ACTION_LAUNCHFILES,
+            kind::OUTPUT_WRITEFILE,
+            kind::ACTION_TERMINALCOMMAND,
         ] {
             let direct = wf_wired(
                 json!([sf, {"uid": "X", "type": kind, "config": {}}]),
@@ -501,7 +499,7 @@ mod tests {
             assert!(direct.results_steer_later_steps, "{kind} direct");
             assert!(!direct.is_passive(), "{kind} direct");
             let via = wf_wired(
-                json!([sf, {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
+                json!([sf, {"uid": "J", "type": kind::UTILITY_JUNCTION, "config": {}},
                        {"uid": "X", "type": kind, "config": {}}]),
                 json!({"SF": [wire("J")], "J": [wire("X")]}),
             )
@@ -512,20 +510,19 @@ mod tests {
 
     #[test]
     fn script_filter_into_harmless_steps_or_unwired_acting_steps_is_not_flagged() {
-        let sf =
-            json!({"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 0, "script": "echo"}});
-        let acting = json!({"uid": "A", "type": "alfred.workflow.action.openurl", "config": {"url": "https://x.test"}});
-        let note = json!({"uid": "N", "type": "alfred.workflow.output.notification", "config": {}});
+        let sf = json!({"uid": "SF", "type": kind::INPUT_SCRIPTFILTER, "config": {"type": 0, "script": "echo"}});
+        let acting = json!({"uid": "A", "type": kind::ACTION_OPENURL, "config": {"url": "https://x.test"}});
+        let note = json!({"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {}});
         // only a notification / clipboard after it
         let s = wf_wired(json!([sf, note, acting]), json!({"SF": [wire("N")]})).trust_summary();
         assert!(!s.results_steer_later_steps);
         // an acting object that no Script Filter reaches (keyword -> url)
-        let kw = json!({"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "k"}});
+        let kw = json!({"uid": "K", "type": kind::INPUT_KEYWORD, "config": {"keyword": "k"}});
         let s = wf_wired(json!([sf, kw, acting]), json!({"K": [wire("A")]})).trust_summary();
         assert!(!s.results_steer_later_steps);
         // a cycle terminates
-        let j1 = json!({"uid": "J1", "type": "alfred.workflow.utility.junction", "config": {}});
-        let j2 = json!({"uid": "J2", "type": "alfred.workflow.utility.junction", "config": {}});
+        let j1 = json!({"uid": "J1", "type": kind::UTILITY_JUNCTION, "config": {}});
+        let j2 = json!({"uid": "J2", "type": kind::UTILITY_JUNCTION, "config": {}});
         let s = wf_wired(
             json!([sf, j1, j2]),
             json!({"SF": [wire("J1")], "J1": [wire("J2")], "J2": [wire("J1")]}),
@@ -547,8 +544,8 @@ mod tests {
         );
         assert!(!s.runs_code());
         let s = wf(json!([
-            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "a", "text": "b"}},
-            {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {}},
+            {"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {"title": "a", "text": "b"}},
+            {"uid": "C", "type": kind::OUTPUT_CLIPBOARD, "config": {}},
         ]))
         .trust_summary();
         assert!(!s.runs_code() && s.scripts == 0 && s.open_url_schemes.is_empty());
@@ -557,13 +554,13 @@ mod tests {
     #[test]
     fn scripts_interpreters_and_query_substitution_are_counted() {
         let s = wf(json!([
-            {"uid": "A", "type": "alfred.workflow.action.script", "config": {"type": 0, "scriptargtype": 1, "script": "echo \"$1\""}},
-            {"uid": "B", "type": "alfred.workflow.action.script", "config": {"type": 0, "scriptargtype": 0, "script": "echo {query}"}},
-            {"uid": "C", "type": "alfred.workflow.input.scriptfilter", "config": {"type": 3, "scriptargtype": 0, "script": "print('{query}')"}},
-            {"uid": "D", "type": "alfred.workflow.output.script", "config": {"type": 7, "script": "1"}},
-            {"uid": "E", "type": "alfred.workflow.action.applescript", "config": {"applescript": "display dialog \"{query}\""}},
-            {"uid": "F", "type": "alfred.workflow.action.script", "config": {"type": 0, "script": "", "scriptfile": "run.sh"}},
-            {"uid": "G", "type": "alfred.workflow.action.script", "config": {"type": 99, "script": "x"}},
+            {"uid": "A", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "scriptargtype": 1, "script": "echo \"$1\""}},
+            {"uid": "B", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "scriptargtype": 0, "script": "echo {query}"}},
+            {"uid": "C", "type": kind::INPUT_SCRIPTFILTER, "config": {"type": 3, "scriptargtype": 0, "script": "print('{query}')"}},
+            {"uid": "D", "type": kind::OUTPUT_SCRIPT, "config": {"type": 7, "script": "1"}},
+            {"uid": "E", "type": kind::ACTION_APPLESCRIPT, "config": {"applescript": "display dialog \"{query}\""}},
+            {"uid": "F", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "script": "", "scriptfile": "run.sh"}},
+            {"uid": "G", "type": kind::ACTION_SCRIPT, "config": {"type": 99, "script": "x"}},
         ]))
         .trust_summary();
         assert_eq!(s.scripts, 7);
@@ -586,13 +583,13 @@ mod tests {
     #[test]
     fn open_url_schemes_are_collected_lowercase_and_distinct() {
         let s = wf(json!([
-            {"uid": "A", "type": "alfred.workflow.action.openurl", "config": {"url": "https://x.test/?q={query}"}},
-            {"uid": "B", "type": "alfred.workflow.action.openurl", "config": {"url": "HTTPS://y.test"}},
-            {"uid": "C", "type": "alfred.workflow.action.openurl", "config": {"url": "x-apple.systempreferences:com.apple.x"}},
-            {"uid": "D", "type": "alfred.workflow.action.openurl", "config": {"url": "{query}"}},
-            {"uid": "E", "type": "alfred.workflow.action.openurl", "config": {"url": "example.com/path"}},
-            {"uid": "F", "type": "alfred.workflow.action.openurl", "config": {"url": "file:///Applications"}},
-            {"uid": "G", "type": "alfred.workflow.action.openurl", "config": {"url": "1bad://x"}},
+            {"uid": "A", "type": kind::ACTION_OPENURL, "config": {"url": "https://x.test/?q={query}"}},
+            {"uid": "B", "type": kind::ACTION_OPENURL, "config": {"url": "HTTPS://y.test"}},
+            {"uid": "C", "type": kind::ACTION_OPENURL, "config": {"url": "x-apple.systempreferences:com.apple.x"}},
+            {"uid": "D", "type": kind::ACTION_OPENURL, "config": {"url": "{query}"}},
+            {"uid": "E", "type": kind::ACTION_OPENURL, "config": {"url": "example.com/path"}},
+            {"uid": "F", "type": kind::ACTION_OPENURL, "config": {"url": "file:///Applications"}},
+            {"uid": "G", "type": kind::ACTION_OPENURL, "config": {"url": "1bad://x"}},
         ]))
         .trust_summary();
         assert_eq!(
@@ -606,15 +603,15 @@ mod tests {
     fn terminal_commands_and_external_files_are_listed() {
         let long = "x".repeat(900);
         let s = wf(json!([
-            {"uid": "T1", "type": "alfred.workflow.action.terminalcommand", "config": {"text": "brew update && brew upgrade"}},
-            {"uid": "T2", "type": "alfred.workflow.action.terminalcommand", "config": {"text": long}},
-            {"uid": "O1", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "~/Documents/a.txt"}},
-            {"uid": "O2", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "local/readme.md"}},
-            {"uid": "O3", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": ""}},
-            {"uid": "L1", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["/Applications/Safari.app", "inside/x", "../up/y"]}},
-            {"uid": "S1", "type": "alfred.workflow.action.script", "config": {"type": 0, "script": "", "scriptfile": "/usr/local/bin/tool"}},
-            {"uid": "S2", "type": "alfred.workflow.action.script", "config": {"type": 0, "script": " ", "scriptfile": "../shared/x.sh"}},
-            {"uid": "X", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "go"}},
+            {"uid": "T1", "type": kind::ACTION_TERMINALCOMMAND, "config": {"text": "brew update && brew upgrade"}},
+            {"uid": "T2", "type": kind::ACTION_TERMINALCOMMAND, "config": {"text": long}},
+            {"uid": "O1", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "~/Documents/a.txt"}},
+            {"uid": "O2", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "local/readme.md"}},
+            {"uid": "O3", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": ""}},
+            {"uid": "L1", "type": kind::ACTION_LAUNCHFILES, "config": {"paths": ["/Applications/Safari.app", "inside/x", "../up/y"]}},
+            {"uid": "S1", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "script": "", "scriptfile": "/usr/local/bin/tool"}},
+            {"uid": "S2", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "script": " ", "scriptfile": "../shared/x.sh"}},
+            {"uid": "X", "type": kind::TRIGGER_EXTERNAL, "config": {"triggerid": "go"}},
         ]))
         .trust_summary();
         assert_eq!(s.terminal_commands.len(), 2);
@@ -644,10 +641,10 @@ mod tests {
         // argument to a file shipped in the package -> Open File with an empty field. It runs
         // no script of its own and names no external file, yet it launches shipped code.
         let s = wf(json!([
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go", "argumenttype": 2}},
-            {"uid": "A", "type": "alfred.workflow.utility.argument",
+            {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {"keyword": "go", "argumenttype": 2}},
+            {"uid": "A", "type": kind::UTILITY_ARGUMENT,
              "config": {"argument": "~/Library/Application Support/Ashdash/workflows/user.workflow.t.trust/payload.app"}},
-            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": ""}},
+            {"uid": "O", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": ""}},
         ]))
         .trust_summary();
         assert_eq!(s.scripts, 0);
@@ -657,9 +654,9 @@ mod tests {
 
         // Placeholders are decided by data, in Open File and in Launch Files.
         let s = wf(json!([
-            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "{query}"}},
-            {"uid": "P", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "{var:app}/Contents"}},
-            {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["{var:p}", "/Applications/Safari.app"]}},
+            {"uid": "O", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "{query}"}},
+            {"uid": "P", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "{var:app}/Contents"}},
+            {"uid": "L", "type": kind::ACTION_LAUNCHFILES, "config": {"paths": ["{var:p}", "/Applications/Safari.app"]}},
         ]))
         .trust_summary();
         assert!(!s.is_passive());
@@ -674,8 +671,8 @@ mod tests {
         let (w, dir) = wf_in(
             "launched",
             json!([
-                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go"}},
-                {"uid": "O", "type": "alfred.workflow.action.openfile",
+                {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {"keyword": "go"}},
+                {"uid": "O", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": ".", "openwith": "payload.app"}},
             ]),
         );
@@ -693,7 +690,7 @@ mod tests {
 
         // The same with the absolute installed path from the review.
         let s = wf(json!([
-            {"uid": "O", "type": "alfred.workflow.action.openfile",
+            {"uid": "O", "type": kind::ACTION_OPENFILE,
              "config": {"sourcefile": "Applications",
                         "openwith": "~/Library/Application Support/Ashdash/workflows/user.workflow.t.trust/payload.app"}},
         ]))
@@ -703,11 +700,11 @@ mod tests {
 
         // Open URL `browser`: named apps and system apps are listed but not "shipped".
         let s = wf(json!([
-            {"uid": "U", "type": "alfred.workflow.action.openurl",
+            {"uid": "U", "type": kind::ACTION_OPENURL,
              "config": {"url": "https://x.test", "browser": "Safari"}},
-            {"uid": "V", "type": "alfred.workflow.action.openurl",
+            {"uid": "V", "type": kind::ACTION_OPENURL,
              "config": {"url": "https://x.test", "browser": "./bin/Browser.app"}},
-            {"uid": "W", "type": "alfred.workflow.action.openurl",
+            {"uid": "W", "type": kind::ACTION_OPENURL,
              "config": {"url": "https://x.test", "browser": ""}},
         ]))
         .trust_summary();
@@ -732,8 +729,8 @@ mod tests {
         // `open` resolves a relative path against the launcher's working directory; the
         // executor resolves it against the workflow folder, so the summary calls it shipped.
         let s = wf(json!([
-            {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "payload.app"}},
-            {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["tools/run.command"]}},
+            {"uid": "O", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "payload.app"}},
+            {"uid": "L", "type": kind::ACTION_LAUNCHFILES, "config": {"paths": ["tools/run.command"]}},
         ]))
         .trust_summary();
         assert!(!s.is_passive());
@@ -755,13 +752,13 @@ mod tests {
         let (w, dir) = wf_in(
             "apps",
             json!([
-                {"uid": "A", "type": "alfred.workflow.action.openfile",
+                {"uid": "A", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": ".", "openwith": "payload.app"}},
-                {"uid": "B", "type": "alfred.workflow.action.openfile",
+                {"uid": "B", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": ".", "openwith": "Safari.app"}},
-                {"uid": "C", "type": "alfred.workflow.action.openurl",
+                {"uid": "C", "type": kind::ACTION_OPENURL,
                  "config": {"url": "https://x.test", "browser": "com.google.Chrome"}},
-                {"uid": "D", "type": "alfred.workflow.action.openurl",
+                {"uid": "D", "type": kind::ACTION_OPENURL,
                  "config": {"url": "https://x.test", "browser": "sub/Tool.app"}},
             ]),
         );
@@ -792,9 +789,9 @@ mod tests {
     #[test]
     fn urls_given_to_open_file_are_urls_not_files_shipped_with_the_workflow() {
         let s = wf(json!([
-            {"uid": "A", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "https://example.com/x"}},
-            {"uid": "B", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": "mailto:a@b.c"}},
-            {"uid": "C", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["tel:12345", "Documents/y"]}},
+            {"uid": "A", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "https://example.com/x"}},
+            {"uid": "B", "type": kind::ACTION_OPENFILE, "config": {"sourcefile": "mailto:a@b.c"}},
+            {"uid": "C", "type": kind::ACTION_LAUNCHFILES, "config": {"paths": ["tel:12345", "Documents/y"]}},
         ]))
         .trust_summary();
         assert_eq!(s.open_url_schemes, ["https", "mailto", "tel"]);
@@ -815,7 +812,7 @@ mod tests {
         let dir = home.join("Library/Application Support/ashdash/workflows/user.workflow.t.own");
         let doc = |app: &str| {
             json!({"name": "T", "bundleid": "t.own", "connections": {}, "objects": [
-                {"uid": "O", "type": "alfred.workflow.action.openfile",
+                {"uid": "O", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "Applications", "openwith": app}}]})
         };
         let launched = |app: &str| {
@@ -848,7 +845,7 @@ mod tests {
     #[test]
     fn write_file_is_reported_and_is_never_passive() {
         let s = wf(json!([
-            {"uid": "W", "type": "alfred.workflow.output.writefile", "config": {"filename": "~/.zshenv", "type": 1, "filetext": "x"}},
+            {"uid": "W", "type": kind::OUTPUT_WRITEFILE, "config": {"filename": "~/.zshenv", "type": 1, "filetext": "x"}},
         ]))
         .trust_summary();
         assert!(!s.runs_code(), "it runs no code ...");
@@ -867,8 +864,7 @@ mod tests {
     #[test]
     fn write_file_targets_are_classified_like_the_executor_resolves_them() {
         let one = |cfg: serde_json::Value| {
-            let s =
-                wf(json!([{"uid": "W", "type": "alfred.workflow.output.writefile", "config": cfg}])).trust_summary();
+            let s = wf(json!([{"uid": "W", "type": kind::OUTPUT_WRITEFILE, "config": cfg}])).trust_summary();
             s.file_writes.into_iter().next()
         };
         // relative paths land in the workflow's own folders
@@ -917,16 +913,16 @@ mod tests {
     #[test]
     fn clipboard_is_listed_and_reveal_in_finder_is_a_documented_non_capability() {
         let s = wf(json!([
-            {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {}},
-            {"uid": "C2", "type": "alfred.workflow.output.clipboard", "config": {}},
+            {"uid": "C", "type": kind::OUTPUT_CLIPBOARD, "config": {}},
+            {"uid": "C2", "type": kind::OUTPUT_CLIPBOARD, "config": {}},
         ]))
         .trust_summary();
         assert_eq!(s.copies_to_clipboard, 2);
         assert!(!s.is_passive());
         let s = wf(json!([
-            {"uid": "R", "type": "alfred.workflow.action.revealfile", "config": {}},
-            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "a", "text": "b"}},
-            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {}},
+            {"uid": "R", "type": kind::ACTION_REVEALFILE, "config": {}},
+            {"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {"title": "a", "text": "b"}},
+            {"uid": "L", "type": kind::OUTPUT_LARGETYPE, "config": {}},
         ]))
         .trust_summary();
         assert!(s.is_passive(), "reveal, notification and Large Type change nothing");

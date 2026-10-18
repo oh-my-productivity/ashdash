@@ -1,4 +1,5 @@
-//! Double-clicked / dropped documents: `.alfredworkflow`, `.alfredappearance`, `.alfredsnippets`.
+//! Double-clicked / dropped documents: workflow packages, appearance files and snippet collections
+//! (the extensions are listed in `ashdash_core::format_ids`).
 //!
 //! Finder (or `open -a Ashdash.app file`) delivers the files to the running app as the
 //! `odoc` Apple Event. [`install`] registers a handler for it; the handler hands the paths
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use ashdash_core::clipboard::snippets::{collections_dir, safe_file_stem};
 use ashdash_core::config::write_private;
+use ashdash_core::format_ids::{APPEARANCE_EXT, SNIPPETS_EXT, appearance_file};
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Paths, brand};
 
@@ -43,16 +45,16 @@ pub enum DocKind {
     Snippets,
 }
 
-/// Decide what a file is from its extension (case-insensitive). The reference launcher workflow
-/// extensions are all the same zip format.
+/// Decide what a file is from its extension (case-insensitive). Every workflow package
+/// extension is the same zip format.
 pub fn classify(path: &Path) -> Option<DocKind> {
     if ashdash_core::workflow::is_workflow_package(path) {
         return Some(DocKind::Workflow);
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "alfredappearance" => Some(DocKind::Appearance),
-        "alfredsnippets" => Some(DocKind::Snippets),
+        e if e == APPEARANCE_EXT => Some(DocKind::Appearance),
+        e if e == SNIPPETS_EXT => Some(DocKind::Snippets),
         _ => None,
     }
 }
@@ -292,7 +294,7 @@ fn install_theme_with(paths: &Paths, file: &Path, read: impl FnOnce(&Path) -> Re
     } else {
         &theme.name
     });
-    let dest = paths.data.join("themes").join(format!("{stem}.alfredappearance"));
+    let dest = paths.data.join("themes").join(appearance_file(&stem));
     write_private(&dest, &bytes).context("copying the theme")?;
     Config::edit_locked(paths, |config| {
         config.theme = Some(dest);
@@ -474,6 +476,9 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use ashdash_core::format_ids::{
+        SNIPPET_KEY, THEME_KEY, WORKFLOW_EXT, WORKFLOW_EXTENSIONS, kind, snippets_file, workflow_file,
+    };
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("oa-opendocs-{tag}-{}", std::process::id()));
@@ -520,25 +525,26 @@ mod tests {
     #[test]
     fn classification_by_extension() {
         let k = |s: &str| classify(Path::new(s));
-        assert_eq!(k("/x/a.alfredworkflow"), Some(DocKind::Workflow));
-        assert_eq!(k("/x/a.ALFRED5WORKFLOW"), Some(DocKind::Workflow));
-        assert_eq!(k("a.alfred3workflow"), Some(DocKind::Workflow));
-        assert_eq!(k("a.alfred4workflow"), Some(DocKind::Workflow));
-        assert_eq!(k("a.alfredappearance"), Some(DocKind::Appearance));
-        assert_eq!(k("a.alfredsnippets"), Some(DocKind::Snippets));
+        let [e1, e3, e4, e5] = WORKFLOW_EXTENSIONS;
+        assert_eq!(k(&workflow_file("/x/a")), Some(DocKind::Workflow));
+        assert_eq!(k(&format!("/x/a.{}", e5.to_uppercase())), Some(DocKind::Workflow));
+        assert_eq!(k(&format!("a.{e3}")), Some(DocKind::Workflow));
+        assert_eq!(k(&format!("a.{e4}")), Some(DocKind::Workflow));
+        assert_eq!(k(&appearance_file("a")), Some(DocKind::Appearance));
+        assert_eq!(k(&snippets_file("a")), Some(DocKind::Snippets));
         assert_eq!(k("a.zip"), None);
-        assert_eq!(k("alfredworkflow"), None);
-        assert_eq!(k("a.alfredworkflow.txt"), None);
-        assert_eq!(k("a.prefs"), None);
+        assert_eq!(k(e1), None);
+        assert_eq!(k(&format!("a.{e1}.txt")), None);
+        assert_eq!(k("a.preferences"), None);
     }
 
     #[test]
     fn dispatches_each_kind_to_its_importer() {
         let dir = temp_dir("dispatch");
         let files = [
-            touch(&dir, "w.alfredworkflow"),
-            touch(&dir, "t.alfredappearance"),
-            touch(&dir, "s.alfredsnippets"),
+            touch(&dir, &workflow_file("w")),
+            touch(&dir, &appearance_file("t")),
+            touch(&dir, &snippets_file("s")),
         ];
         let f = Fake {
             allow: true,
@@ -549,10 +555,10 @@ mod tests {
         assert_eq!(
             *f.log.borrow(),
             vec![
-                "confirm w.alfredworkflow",
-                "workflow w.alfredworkflow",
-                "appearance t.alfredappearance",
-                "snippets s.alfredsnippets"
+                workflow_file("confirm w"),
+                workflow_file("workflow w"),
+                appearance_file("appearance t"),
+                snippets_file("snippets s")
             ]
         );
     }
@@ -560,14 +566,14 @@ mod tests {
     #[test]
     fn declined_workflow_is_never_installed() {
         let dir = temp_dir("declined");
-        let w = touch(&dir, "w.alfredworkflow");
+        let w = touch(&dir, &workflow_file("w"));
         let f = Fake {
             allow: false,
             ..Default::default()
         };
         let r = open_documents(&f, &[w]);
         assert_eq!(r[0].status, Status::Cancelled);
-        assert_eq!(*f.log.borrow(), vec!["confirm w.alfredworkflow"]);
+        assert_eq!(*f.log.borrow(), vec![workflow_file("confirm w")]);
         assert_eq!(summarize(&r), None, "cancelling is silent");
     }
 
@@ -577,7 +583,7 @@ mod tests {
         let f = Fake::default(); // allow = false would block workflows only
         let r = open_documents(
             &f,
-            &[touch(&dir, "a.alfredsnippets"), touch(&dir, "b.alfredappearance")],
+            &[touch(&dir, &snippets_file("a")), touch(&dir, &appearance_file("b"))],
         );
         assert!(r.iter().all(|i| matches!(i.status, Status::Imported(_))));
     }
@@ -585,11 +591,11 @@ mod tests {
     #[test]
     fn bad_inputs_are_reported_and_do_not_stop_the_rest() {
         let dir = temp_dir("bad");
-        let ok = touch(&dir, "ok.alfredsnippets");
-        let dir_named_like_doc = dir.join("folder.alfredsnippets");
+        let ok = touch(&dir, &snippets_file("ok"));
+        let dir_named_like_doc = dir.join(snippets_file("folder"));
         std::fs::create_dir_all(&dir_named_like_doc).unwrap();
         let files = vec![
-            dir.join("missing.alfredworkflow"),
+            dir.join(workflow_file("missing")),
             touch(&dir, "notes.txt"),
             dir_named_like_doc,
             ok.clone(),
@@ -603,7 +609,7 @@ mod tests {
         assert!(matches!(&r[1].status, Status::Failed(m) if m.contains("not a workflow")));
         assert!(matches!(&r[2].status, Status::Failed(m) if m.contains("regular file")));
         assert_eq!(r[3].status, Status::Imported("Snippets imported".into()));
-        assert_eq!(*f.log.borrow(), vec!["snippets ok.alfredsnippets"]);
+        assert_eq!(*f.log.borrow(), vec![snippets_file("snippets ok")]);
     }
 
     #[test]
@@ -613,24 +619,24 @@ mod tests {
             fail_snippets: true,
             ..Default::default()
         };
-        let r = open_documents(&f, &[touch(&dir, "s.alfredsnippets")]);
+        let r = open_documents(&f, &[touch(&dir, &snippets_file("s"))]);
         assert_eq!(r[0].status, Status::Failed("bad archive".into()));
         let (title, body) = summarize(&r).unwrap();
         assert!(title.contains("could not import"));
-        assert!(body.contains("s.alfredsnippets: bad archive"));
+        assert!(body.contains(&format!("{}: bad archive", snippets_file("s"))));
     }
 
     #[test]
     fn duplicates_are_collapsed_and_floods_are_capped() {
         let dir = temp_dir("dups");
-        let a = touch(&dir, "a.alfredsnippets");
+        let a = touch(&dir, &snippets_file("a"));
         let f = Fake::default();
         let r = open_documents(&f, &[a.clone(), a]);
         assert_eq!(r.len(), 1);
         assert_eq!(f.log.borrow().len(), 1);
 
         let many: Vec<PathBuf> = (0..MAX_FILES_PER_EVENT + 5)
-            .map(|i| touch(&dir, &format!("n{i}.alfredsnippets")))
+            .map(|i| touch(&dir, &snippets_file(&format!("n{i}"))))
             .collect();
         let f = Fake::default();
         let r = open_documents(&f, &many);
@@ -646,7 +652,7 @@ mod tests {
             status: Status::Imported("Done A".into()),
         };
         let bad = Imported {
-            path: "/x/b.alfredsnippets".into(),
+            path: snippets_file("/x/b").into(),
             status: Status::Failed("nope".into()),
         };
         assert_eq!(summarize(std::slice::from_ref(&ok)).unwrap().0, brand::NAME);
@@ -657,16 +663,16 @@ mod tests {
                 .contains("with problems")
         );
         let (_, body) = summarize(&[ok, bad]).unwrap();
-        assert_eq!(body, "Done A\nb.alfredsnippets: nope");
+        assert_eq!(body, format!("Done A\n{}: nope", snippets_file("b")));
     }
 
     #[test]
     fn display_names_cannot_inject_lines_or_overflow() {
         assert_eq!(
-            display_name(Path::new("/x/a\nb\u{7}.alfredworkflow")),
-            "a b.alfredworkflow"
+            display_name(Path::new(&format!("/x/a\nb\u{7}.{WORKFLOW_EXT}"))),
+            workflow_file("a b")
         );
-        let long = format!("/x/{}.alfredworkflow", "n".repeat(300));
+        let long = format!("/x/{}", workflow_file(&"n".repeat(300)));
         let shown = display_name(Path::new(&long));
         assert_eq!(shown.chars().count(), 80);
         assert!(shown.ends_with('…'));
@@ -675,8 +681,8 @@ mod tests {
     #[test]
     fn finder_messages_clean_file_names_like_the_import_prompt() {
         // bidi override, zero-width space, word joiner, Hangul filler, newline and tab in a name
-        let nasty = "/x/inv\u{202e}gnp.\u{200b}ok\u{2060}\u{3164}\n\tnow.alfredsnippets";
-        let shown = display_name(Path::new(nasty));
+        let nasty = format!("/x/inv\u{202e}gnp.\u{200b}ok\u{2060}\u{3164}\n\tnow.{SNIPPETS_EXT}");
+        let shown = display_name(Path::new(&nasty));
         assert!(
             !shown
                 .chars()
@@ -735,19 +741,23 @@ mod tests {
         assert!(!dialog_confirmed(true, ""));
     }
 
-    const THEME_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    fn theme_xml() -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>alfredtheme</key><dict>
+<plist version="1.0"><dict><key>{THEME_KEY}</key><dict>
 <key>name</key><string>Night/Owl</string>
 <key>window</key><dict><key>color</key><string>#112233FF</string><key>width</key><real>640</real></dict>
-</dict></dict></plist>"#;
+</dict></dict></plist>"#
+        )
+    }
 
     #[test]
     fn theme_install_copies_validates_and_selects() {
         let root = temp_dir("theme");
         let paths = Paths::under(&root);
-        let src = root.join("download.alfredappearance");
-        std::fs::write(&src, THEME_XML).unwrap();
+        let src = root.join(appearance_file("download"));
+        std::fs::write(&src, theme_xml()).unwrap();
         let msg = install_theme(&paths, &src).unwrap();
         assert!(msg.contains("Night/Owl"), "{msg}");
 
@@ -769,18 +779,18 @@ mod tests {
     fn theme_install_reads_the_file_once_and_installs_what_it_validated() {
         let root = temp_dir("theme-once");
         let paths = Paths::under(&root);
-        let src = root.join("download.alfredappearance");
+        let src = root.join(appearance_file("download"));
         std::fs::write(&src, "swapped in after the check: not even a plist").unwrap();
         let reads = std::cell::Cell::new(0);
         let msg = install_theme_with(&paths, &src, |_| {
             reads.set(reads.get() + 1);
-            Ok(THEME_XML.as_bytes().to_vec())
+            Ok(theme_xml().into_bytes())
         })
         .unwrap();
         assert_eq!(reads.get(), 1, "one read of the source");
         assert!(msg.contains("Night/Owl"), "{msg}");
         let installed = Config::load(&paths).theme.unwrap();
-        assert_eq!(std::fs::read(&installed).unwrap(), THEME_XML.as_bytes());
+        assert_eq!(std::fs::read(&installed).unwrap(), theme_xml().as_bytes());
         // a read error is reported and leaves the config alone
         let root = temp_dir("theme-once-err");
         let paths = Paths::under(&root);
@@ -792,12 +802,12 @@ mod tests {
     fn a_deeply_nested_theme_is_refused_not_fatal() {
         let root = temp_dir("theme-deep");
         let paths = Paths::under(&root);
-        let src = root.join("deep.alfredappearance");
+        let src = root.join(appearance_file("deep"));
         let depth = 120_000;
         std::fs::write(
             &src,
             format!(
-                r#"<?xml version="1.0"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+                r#"<?xml version="1.0"?><plist version="1.0"><dict><key>{THEME_KEY}</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
                 "<array>".repeat(depth),
                 "</array>".repeat(depth)
             ),
@@ -811,8 +821,8 @@ mod tests {
     fn theme_install_waits_for_the_config_lock() {
         let root = temp_dir("theme-lock");
         let paths = Paths::under(&root);
-        let src = root.join("download.alfredappearance");
-        std::fs::write(&src, THEME_XML).unwrap();
+        let src = root.join(appearance_file("download"));
+        std::fs::write(&src, theme_xml()).unwrap();
         let guard = ashdash_core::config::ConfigLock::acquire(&paths).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let (p2, s2) = (paths.clone(), src.clone());
@@ -832,13 +842,13 @@ mod tests {
     fn theme_install_rejects_garbage_without_touching_config() {
         let root = temp_dir("theme-bad");
         let paths = Paths::under(&root);
-        let src = root.join("x.alfredappearance");
+        let src = root.join(appearance_file("x"));
         std::fs::write(&src, "not a plist").unwrap();
         assert!(install_theme(&paths, &src).is_err());
         assert!(!paths.config_file().exists());
         assert!(Config::load(&paths).theme.is_none());
 
-        let big = root.join("big.alfredappearance");
+        let big = root.join(appearance_file("big"));
         std::fs::write(&big, vec![b'x'; (MAX_THEME_BYTES + 1) as usize]).unwrap();
         assert!(format!("{:#}", install_theme(&paths, &big).unwrap_err()).contains("large"));
     }
@@ -869,7 +879,7 @@ mod tests {
 <key>bundleid</key><string>test.opendocs.sample</string><key>objects</key><array/></dict></plist>"#,
         )
         .unwrap();
-        let wf_pkg = root.join("sample.alfredworkflow");
+        let wf_pkg = root.join(workflow_file("sample"));
         let status = Command::new("zip")
             .current_dir(&wf_dir)
             .arg("-q")
@@ -887,15 +897,17 @@ mod tests {
                 .any(|(_, b, _)| b == "test.opendocs.sample")
         );
 
-        // Snippets package: one snippet JSON per file, in the documented reference launcher layout.
+        // Snippets package: one snippet JSON per file, in the documented layout.
         let sn_dir = root.join("sn-src");
         std::fs::create_dir_all(&sn_dir).unwrap();
         std::fs::write(
             sn_dir.join("one [AAAA-1].json"),
-            r#"{"alfredsnippet":{"snippet":"hello there","uid":"AAAA-1","name":"Greeting","keyword":"hi"}}"#,
+            format!(
+                r#"{{"{SNIPPET_KEY}":{{"snippet":"hello there","uid":"AAAA-1","name":"Greeting","keyword":"hi"}}}}"#
+            ),
         )
         .unwrap();
-        let sn_pkg = root.join("Samples.alfredsnippets");
+        let sn_pkg = root.join(snippets_file("Samples"));
         let status = Command::new("zip")
             .current_dir(&sn_dir)
             .arg("-q")
@@ -914,9 +926,10 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>name</key><string>{name}</string>
 <key>bundleid</key><string>{bundle}</string><key>objects</key><array>
-<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<dict><key>uid</key><string>A</string><key>type</key><string>{ty}</string>
 <key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo {marker}</string></dict></dict>
-</array></dict></plist>"#
+</array></dict></plist>"#,
+            ty = kind::ACTION_SCRIPT
         );
         let src = path.with_extension("src");
         let _ = std::fs::remove_dir_all(&src);
@@ -939,7 +952,7 @@ mod tests {
         let root = temp_dir("swap");
         let paths = Paths::under(&root);
         let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
-        let pkg = root.join("w.alfredworkflow");
+        let pkg = root.join(workflow_file("w"));
         if !write_workflow_zip(&pkg, "Harmless", "test.swap.harmless", "SHOWN") {
             eprintln!("skipping: no zip tool");
             return;
@@ -973,7 +986,7 @@ mod tests {
         let root = temp_dir("decline");
         let paths = Paths::under(&root);
         let engine = Arc::new(Engine::new(paths.clone(), Config::default()));
-        let pkg = root.join("w.alfredworkflow");
+        let pkg = root.join(workflow_file("w"));
         if !write_workflow_zip(&pkg, "No", "test.decline", "x") {
             eprintln!("skipping: no zip tool");
             return;

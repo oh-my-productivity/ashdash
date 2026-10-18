@@ -1,6 +1,10 @@
 //! Running Script objects: interpreter table, query escaping, environment,
 //! and process execution with a timeout.
 
+use crate::format_ids::{
+    ENV_PREFIX, ENV_VERSION, ENV_WORKFLOW_BUNDLEID, ENV_WORKFLOW_CACHE, ENV_WORKFLOW_DATA, ENV_WORKFLOW_NAME,
+    ENV_WORKFLOW_UID, ENV_WORKFLOW_VERSION, SCRIPT_HANDLER,
+};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -29,9 +33,7 @@ pub(super) struct Interpreter {
     ext: &'static str,
 }
 
-/// Script types. Values 0 (bash) and 5 (zsh) are confirmed by the bundled
-/// templates; the others follow the reference launcher's documented language list and are
-/// unverified against the binary.
+/// Script types: the numeric code of the interpreter selected in a script object.
 pub(super) fn interpreter(kind: i64) -> Option<Interpreter> {
     Some(match kind {
         0 => Interpreter {
@@ -78,9 +80,9 @@ pub(super) fn interpreter(kind: i64) -> Option<Interpreter> {
     })
 }
 
-/// Escape `{query}` for substitution into script source. Bit meanings for
-/// 2/4/32/64 are inferred from the default mask (102) and the reference launcher's forum
-/// guidance; 1/8/16 are brackets/semicolons/spaces in unverified order.
+/// Escape `{query}` for substitution into script source. The mask selects what is escaped with a
+/// backslash: 1 brackets and braces, 2 backticks, 4 double quotes, 8 semicolons, 16 spaces,
+/// 32 dollar signs, 64 backslashes.
 pub(super) fn escape_query(q: &str, mask: i64) -> String {
     let mut out = String::with_capacity(q.len());
     for ch in q.chars() {
@@ -134,10 +136,10 @@ pub(super) fn safe_key(raw: &str) -> String {
 /// previous object's `variables`): SEC-02. Matching is case-insensitive.
 ///
 /// The rule applied by [`script_env`]: a dynamic variable is dropped when it is listed here, when
-/// it starts with `alfred_` (the engine owns that namespace), or when its name/value cannot be an
+/// it starts with the reserved prefix (the engine owns that namespace), or when its name/value cannot be an
 /// environment entry at all - unless its value is exactly the author's own value (the author's
 /// variables travel through the same variable set, so this keeps them working). Everything else
-/// is exported as before, as the reference launcher does.
+/// is exported as before.
 pub(super) fn is_protected_env_name(name: &str) -> bool {
     const EXACT: &[&str] = &[
         "PATH",
@@ -179,9 +181,11 @@ pub(super) fn is_protected_env_name(name: &str) -> bool {
         "HOSTALIASES",
         "MALLOC_CONF",
     ];
-    const PREFIXES: &[&str] = &["DYLD_", "LD_", "PYTHON", "BASH_", "ALFRED_"];
+    const PREFIXES: &[&str] = &["DYLD_", "LD_", "PYTHON", "BASH_"];
     let u = name.to_ascii_uppercase();
-    EXACT.contains(&u.as_str()) || PREFIXES.iter().any(|p| u.starts_with(p))
+    EXACT.contains(&u.as_str())
+        || PREFIXES.iter().any(|p| u.starts_with(p))
+        || u.starts_with(&ENV_PREFIX.to_ascii_uppercase())
 }
 
 fn valid_env_entry(k: &str, v: &str) -> bool {
@@ -195,13 +199,13 @@ fn script_env(wf: &Workflow, paths: &Paths, vars: &BTreeMap<String, String>) -> 
     let _ = std::fs::create_dir_all(&data);
     let _ = std::fs::create_dir_all(&cache);
     let mut env: BTreeMap<String, String> = BTreeMap::new();
-    env.insert("alfred_version".into(), "5.0".into());
-    env.insert("alfred_workflow_name".into(), wf.name.clone());
-    env.insert("alfred_workflow_bundleid".into(), wf.bundle_id.clone());
-    env.insert("alfred_workflow_uid".into(), wf.id.clone());
-    env.insert("alfred_workflow_version".into(), wf.version.clone());
-    env.insert("alfred_workflow_data".into(), data.display().to_string());
-    env.insert("alfred_workflow_cache".into(), cache.display().to_string());
+    env.insert(ENV_VERSION.into(), "5.0".into());
+    env.insert(ENV_WORKFLOW_NAME.into(), wf.name.clone());
+    env.insert(ENV_WORKFLOW_BUNDLEID.into(), wf.bundle_id.clone());
+    env.insert(ENV_WORKFLOW_UID.into(), wf.id.clone());
+    env.insert(ENV_WORKFLOW_VERSION.into(), wf.version.clone());
+    env.insert(ENV_WORKFLOW_DATA.into(), data.display().to_string());
+    env.insert(ENV_WORKFLOW_CACHE.into(), cache.display().to_string());
     let base = wf.base_vars(paths);
     for (k, v) in &base {
         if valid_env_entry(k, v) {
@@ -312,7 +316,7 @@ pub(super) fn run_node_script(
 }
 
 /// Run AppleScript source with `osascript`. A script that only defines
-/// `on alfred_script(q)` (the reference launcher's Run NSAppleScript template) gets a `run`
+/// an `on <SCRIPT_HANDLER>(q)` handler (the Run NSAppleScript template) gets a `run`
 /// handler appended that calls it with the argument.
 pub(super) fn run_applescript(
     source: &str,
@@ -323,8 +327,10 @@ pub(super) fn run_applescript(
     timeout: Duration,
 ) -> Result<ScriptOutput> {
     let mut src = source.to_string();
-    if src.contains("alfred_script") && !src.contains("on run") {
-        src.push_str("\non run argv\n\treturn alfred_script(item 1 of argv)\nend run\n");
+    if src.contains(SCRIPT_HANDLER) && !src.contains("on run") {
+        src.push_str(&format!(
+            "\non run argv\n\treturn {SCRIPT_HANDLER}(item 1 of argv)\nend run\n"
+        ));
     }
     let file = write_temp_script(paths, "applescript", &src)?;
     let mut cmd = Command::new("/usr/bin/osascript");
@@ -494,6 +500,8 @@ mod tests {
 
     use super::*;
 
+    use crate::format_ids::kind;
+
     #[test]
     fn a_denied_automation_request_says_where_to_allow_it() {
         let raw = "49:75: execution error: Not authorized to send Apple events to Terminal. (-1743)";
@@ -568,7 +576,7 @@ mod tests {
             "SHELLOPTS",
             "BASH_FUNC_x%%",
             "HOME",
-            "alfred_workflow_data",
+            ENV_WORKFLOW_DATA,
         ] {
             assert!(is_protected_env_name(n), "{n}");
         }
@@ -605,7 +613,7 @@ mod tests {
                 ("BASH_ENV", "/tmp/evil"),
                 ("PATH", "/tmp/bin"),
                 ("DYLD_INSERT_LIBRARIES", "/tmp/x.dylib"),
-                ("alfred_workflow_data", "/etc"),
+                (ENV_WORKFLOW_DATA, "/etc"),
                 ("greeting", "overridden"),
                 ("fresh", "1"),
                 ("bad=name", "x"),
@@ -617,7 +625,7 @@ mod tests {
             assert!(!env.contains_key(n), "{n} leaked");
         }
         assert!(env.get("PATH").is_none_or(|p| p != "/tmp/bin"));
-        assert_ne!(env["alfred_workflow_data"], "/etc");
+        assert_ne!(env[ENV_WORKFLOW_DATA], "/etc");
         // ordinary dynamic variables still work, and may still override the author's ordinary ones
         assert_eq!(env["greeting"], "overridden");
         assert_eq!(env["fresh"], "1");
@@ -726,7 +734,7 @@ mod tests {
             (7, "function run(argv) { return argv[0]; }", ""),
         ] {
             let doc = json!({"name": "O", "bundleid": "t.optq", "connections": {}, "objects": [
-                {"uid": "S", "type": "alfred.workflow.action.script", "config": {
+                {"uid": "S", "type": kind::ACTION_SCRIPT, "config": {
                     "type": kind, "scriptargtype": 1, "script": script}}]});
             let wf = Workflow::from_json(&root, "o", &doc).unwrap();
             let node = wf.node("S").unwrap();

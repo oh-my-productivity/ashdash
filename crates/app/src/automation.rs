@@ -105,6 +105,7 @@ pub fn start(engine: &Arc<Engine>, primary: Option<ipc::Primary>) -> Started {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ashdash_core::format_ids::kind;
     use ashdash_core::{Config, Paths};
 
     struct NoOs;
@@ -130,12 +131,15 @@ mod tests {
         std::fs::create_dir_all(extra.join("wf")).unwrap();
         std::fs::write(
             extra.join("wf").join("info.plist"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
             <key>name</key><string>Late</string><key>bundleid</key><string>late.b</string>
             <key>objects</key><array><dict><key>uid</key><string>T</string>
-            <key>type</key><string>alfred.workflow.trigger.external</string>
+            <key>type</key><string>{}</string>
             <key>config</key><dict><key>triggerid</key><string>go</string></dict></dict></array>
             <key>connections</key><dict/></dict></plist>"#,
+                kind::TRIGGER_EXTERNAL
+            ),
         )
         .unwrap();
         let config = Config {

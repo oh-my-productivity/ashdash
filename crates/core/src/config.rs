@@ -77,11 +77,11 @@ pub struct Config {
     pub max_results: usize,
     pub app_dirs: Vec<PathBuf>,
     /// Extra directories scanned for workflow folders (each containing
-    /// `info.plist`). Point this at an existing reference launcher `workflows` directory
-    /// to run workflows you already have.
+    /// `info.plist`). Point this at an existing folder of
+    /// workflows to run workflows you already have.
     pub workflow_dirs: Vec<PathBuf>,
     pub web_searches: Vec<WebSearch>,
-    /// Path to an `.alfredappearance` theme file.
+    /// Path to an appearance (theme) file.
     pub theme: Option<PathBuf>,
     /// Browser bookmark search (`bm`), added in schema 2.
     pub bookmarks: BookmarkSettings,
@@ -626,6 +626,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format_ids::appearance_file;
 
     #[test]
     fn save_refuses_to_clobber_newer_config() {
@@ -1206,7 +1207,7 @@ mod tests {
                 "version": CURRENT_VERSION,
                 "workflow_dirs": ["~/dotfiles/workflows", "~", "/abs/wf", "rel/wf", "~other/x", "a~/b"],
                 "app_dirs": ["~/Apps"],
-                "theme": "~/themes/Midnight.alfredappearance",
+                "theme": appearance_file("~/themes/Midnight"),
             }),
         );
         for c in [
@@ -1226,7 +1227,7 @@ mod tests {
                 .map(PathBuf::from)
             );
             assert_eq!(c.app_dirs, [PathBuf::from("/home/u/Apps")]);
-            assert_eq!(c.theme, Some(PathBuf::from("/home/u/themes/Midnight.alfredappearance")));
+            assert_eq!(c.theme, Some(PathBuf::from(appearance_file("/home/u/themes/Midnight"))));
         }
         let _ = std::fs::remove_dir_all(&paths.data);
     }
@@ -1251,11 +1252,11 @@ mod tests {
         let paths = tmp_paths("tilde-no-home");
         write_raw(
             &paths,
-            json!({"version": CURRENT_VERSION, "workflow_dirs": ["~/wf", "/abs"], "theme": "~/t.alfredappearance"}),
+            json!({"version": CURRENT_VERSION, "workflow_dirs": ["~/wf", "/abs"], "theme": appearance_file("~/t")}),
         );
         let c = Config::load_in(&paths, none);
         assert_eq!(c.workflow_dirs, [PathBuf::from("~/wf"), PathBuf::from("/abs")]);
-        assert_eq!(c.theme, Some(PathBuf::from("~/t.alfredappearance")));
+        assert_eq!(c.theme, Some(PathBuf::from(appearance_file("~/t"))));
         let _ = std::fs::remove_dir_all(&paths.data);
     }
 
@@ -1269,7 +1270,7 @@ mod tests {
                 "version": CURRENT_VERSION,
                 "workflow_dirs": ["~/dotfiles/workflows", "/abs/wf"],
                 "app_dirs": ["~/Apps", "/Applications"],
-                "theme": "~/themes/T.alfredappearance",
+                "theme": appearance_file("~/themes/T"),
                 "future_key": 1,
             }),
         );
@@ -1280,7 +1281,7 @@ mod tests {
         assert_eq!(raw["max_results"], 7);
         assert_eq!(raw["workflow_dirs"], json!(["~/dotfiles/workflows", "/abs/wf"]));
         assert_eq!(raw["app_dirs"], json!(["~/Apps", "/Applications"]));
-        assert_eq!(raw["theme"], "~/themes/T.alfredappearance");
+        assert_eq!(raw["theme"], appearance_file("~/themes/T"));
         assert_eq!(raw["future_key"], 1);
 
         // reorder, remove and add: kept entries keep their spelling, new ones are written as given
@@ -1290,7 +1291,7 @@ mod tests {
             PathBuf::from("~/typed/tilde"),
         ];
         c.app_dirs.truncate(1);
-        c.theme = Some(PathBuf::from("/elsewhere/T.alfredappearance"));
+        c.theme = Some(PathBuf::from(appearance_file("/elsewhere/T")));
         c.save_in(&paths, home).unwrap();
         let raw = read_raw(&paths);
         assert_eq!(
@@ -1298,7 +1299,7 @@ mod tests {
             json!(["/new/abs", "~/dotfiles/workflows", "~/typed/tilde"])
         );
         assert_eq!(raw["app_dirs"], json!(["~/Apps"]));
-        assert_eq!(raw["theme"], "/elsewhere/T.alfredappearance");
+        assert_eq!(raw["theme"], appearance_file("/elsewhere/T"));
 
         // and the next load sees the same folders again
         let c2 = Config::load_strict_in(&paths, home).unwrap();
@@ -1327,14 +1328,14 @@ mod tests {
         let paths = tmp_paths("tilde-set");
         let (c, ()) = Config::edit_locked(&paths, |c| {
             c.workflow_dirs = vec![PathBuf::from("~/dotfiles/workflows")];
-            c.theme = Some(PathBuf::from("~/t.alfredappearance"));
+            c.theme = Some(PathBuf::from(appearance_file("~/t")));
             Ok(())
         })
         .unwrap();
         assert_eq!(c.workflow_dirs, [PathBuf::from("~/dotfiles/workflows")]);
         let raw = read_raw(&paths);
         assert_eq!(raw["workflow_dirs"], json!(["~/dotfiles/workflows"]));
-        assert_eq!(raw["theme"], "~/t.alfredappearance");
+        assert_eq!(raw["theme"], appearance_file("~/t"));
         let _ = std::fs::remove_dir_all(&paths.data);
     }
 }

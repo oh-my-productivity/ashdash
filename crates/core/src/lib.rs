@@ -10,6 +10,7 @@ pub mod config;
 pub mod confine;
 pub mod engine;
 pub mod files;
+pub mod format_ids;
 pub mod fuzzy;
 pub mod index;
 pub mod item;

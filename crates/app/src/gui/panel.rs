@@ -414,6 +414,8 @@ mod tests {
 
     use super::*;
 
+    use ashdash_core::format_ids::{WORKFLOW_EXTENSIONS, snippets_file, workflow_file};
+
     fn file_item(p: &Path) -> Item {
         Item::new("f", p.file_name().unwrap().to_string_lossy()).action(Action::Open(p.to_path_buf()))
     }
@@ -498,7 +500,7 @@ mod tests {
     #[test]
     fn workflow_packages_offer_an_install_row_first() {
         let dir = temp("install");
-        let pkg = dir.join("Thing.alfredworkflow");
+        let pkg = dir.join(workflow_file("Thing"));
         std::fs::write(&pkg, "x").unwrap();
         let item = file_item(&pkg);
         let rows = build_actions(&item, actions_for(&item));
@@ -521,21 +523,25 @@ mod tests {
 
     #[test]
     fn extensions_are_matched_case_insensitively() {
-        for ok in [
-            "a.alfredworkflow",
-            "/x/A.ALFRED5WORKFLOW",
-            "b.alfred3workflow",
-            "c.alfred4workflow",
-        ] {
+        let [e1, e3, e4, e5] = WORKFLOW_EXTENSIONS;
+        let ok = [
+            workflow_file("a"),
+            format!("/x/A.{}", e5.to_uppercase()),
+            format!("b.{e3}"),
+            format!("c.{e4}"),
+            format!("d.{}", e1.to_uppercase()),
+        ];
+        for ok in &ok {
             assert!(is_workflow_package(Path::new(ok)), "{ok}");
         }
-        for no in [
-            "a.zip",
-            "alfredworkflow",
-            "a.alfredworkflow.txt",
-            "a.alfredsnippets",
-            "",
-        ] {
+        let no = [
+            "a.zip".to_string(),
+            e1.to_string(),
+            format!("a.{e1}.txt"),
+            snippets_file("a"),
+            String::new(),
+        ];
+        for no in &no {
             assert!(!is_workflow_package(Path::new(no)), "{no}");
         }
     }

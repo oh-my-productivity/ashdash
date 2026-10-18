@@ -2,8 +2,9 @@
 //! converted to a real `info.plist` and loaded back, so the plist path is
 //! exercised too. Nothing here touches the user's data or the network.
 
+use crate::format_ids::{FILTER_FLAG_KEY, WORKFLOW_EXT, kind};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -13,8 +14,8 @@ use super::*;
 use crate::config::Paths;
 use crate::item::{Action, Mods};
 
-const NOTIFY: &str = "alfred.workflow.output.notification";
-const JUNCTION: &str = "alfred.workflow.utility.junction";
+const NOTIFY: &str = kind::OUTPUT_NOTIFICATION;
+const JUNCTION: &str = kind::UTILITY_JUNCTION;
 
 fn notif(uid: &str, text: &str) -> Value {
     json!({"uid": uid, "type": NOTIFY, "config": {"title": uid, "text": text}})
@@ -120,7 +121,7 @@ fn conditional_workflow(tag: &str) -> (Workflow, Paths, PathBuf) {
         json!({
             "objects": [
                 obj("J", JUNCTION, json!({})),
-                obj("C", "alfred.workflow.utility.conditional", json!({"conditions": [
+                obj("C", kind::UTILITY_CONDITIONAL, json!({"conditions": [
                     cond("eq", 0, "hello", false),
                     cond("ne", 1, "x", true),
                     cond("gt", 2, "10", false),
@@ -191,7 +192,7 @@ fn conditional_input_string_uses_variables() {
             "variables": {"mode": "fast"},
             "objects": [
                 obj("J", JUNCTION, json!({})),
-                obj("C", "alfred.workflow.utility.conditional", json!({"conditions": [
+                obj("C", kind::UTILITY_CONDITIONAL, json!({"conditions": [
                     {"uid": "m", "inputstring": "{var:mode}", "matchmode": 0, "matchstring": "fast", "matchcasesensitive": true}
                 ]})),
                 notif("YES", "yes"), notif("NO", "no"),
@@ -211,7 +212,7 @@ fn legacy_filter_stops_the_stream_unless_matching() {
         "filter",
         json!({
             "objects": [
-                obj("F", "alfred.workflow.utility.filter",
+                obj("F", kind::UTILITY_FILTER,
                     json!({"matchmode": 2, "matchstring": "^\\d+$", "matchcasesensitive": false})),
                 notif("N", "{query}"),
             ],
@@ -230,7 +231,7 @@ fn replace_string_regex_and_empty_input() {
     let mk = |tag: &str, cfg: Value| {
         load(
             tag,
-            json!({"objects": [obj("R", "alfred.workflow.utility.replace", cfg), notif("N", "{query}")],
+            json!({"objects": [obj("R", kind::UTILITY_REPLACE, cfg), notif("N", "{query}")],
                    "connections": {"R": [wire("N")]}}),
         )
     };
@@ -270,8 +271,8 @@ fn transform_and_argument_objects() {
         "transform",
         json!({
             "objects": [
-                obj("T", "alfred.workflow.utility.transform", json!({"type": 1})),
-                obj("A", "alfred.workflow.utility.argument",
+                obj("T", kind::UTILITY_TRANSFORM, json!({"type": 1})),
+                obj("A", kind::UTILITY_ARGUMENT,
                     json!({"argument": "{query}!", "variables": {"k": "[{query}]"}})),
                 notif("N", "{query}/{var:k}"),
             ],
@@ -290,14 +291,14 @@ fn split_to_variables_and_to_arguments_then_merge() {
         "split",
         json!({
             "objects": [
-                obj("S1", "alfred.workflow.utility.split",
+                obj("S1", kind::UTILITY_SPLIT,
                     json!({"delimiter": ",", "outputas": 0, "trimarguments": true, "discardemptyarguments": true, "variableprefix": "p"})),
                 notif("V", "{var:p1}|{var:p2}|{var:p3}"),
-                obj("S2", "alfred.workflow.utility.split",
+                obj("S2", kind::UTILITY_SPLIT,
                     json!({"delimiter": ",", "outputas": 1, "trimarguments": true, "discardemptyarguments": true})),
                 notif("EACH", "{query}"),
-                obj("S3", "alfred.workflow.utility.split", json!({"delimiter": ",", "outputas": 1, "trimarguments": true})),
-                obj("M", "alfred.workflow.utility.merge", json!({"delimiter": "+"})),
+                obj("S3", kind::UTILITY_SPLIT, json!({"delimiter": ",", "outputas": 1, "trimarguments": true})),
+                obj("M", kind::UTILITY_MERGE, json!({"delimiter": "+"})),
                 notif("JOINED", "{query}"),
             ],
             "connections": {
@@ -323,7 +324,7 @@ fn delay_yields_without_blocking_and_resumes_later() {
         json!({
             "objects": [
                 obj("J", JUNCTION, json!({})),
-                obj("D", "alfred.workflow.utility.delay", json!({"seconds": "30"})),
+                obj("D", kind::UTILITY_DELAY, json!({"seconds": "30"})),
                 notif("LATE", "late {query}"),
                 notif("NOW", "now {query}"),
             ],
@@ -354,9 +355,9 @@ fn run_script_action_feeds_next_object_and_output_script_ends_stream() {
         "scripts",
         json!({
             "objects": [
-                obj("A", "alfred.workflow.action.script",
+                obj("A", kind::ACTION_SCRIPT,
                     json!({"type": 0, "scriptargtype": 1, "script": "printf 'A<%s>' \"$1\""})),
-                obj("O", "alfred.workflow.output.script",
+                obj("O", kind::OUTPUT_SCRIPT,
                     json!({"type": 0, "scriptargtype": 1, "script": "printf '%s' \"$1\" > \"$out\""})),
                 notif("AFTER", "never"),
                 notif("SHOWN", "{query}"),
@@ -381,7 +382,7 @@ fn write_file_output_resolves_path_and_modes() {
         "write",
         json!({
             "objects": [
-                obj("W", "alfred.workflow.output.writefile", json!({
+                obj("W", kind::OUTPUT_WRITEFILE, json!({
                     "filename": "out/{query}.txt", "filetext": "line {query}\n", "type": 1,
                     "relativepathmode": 0, "createintermediatefolders": true, "adduuid": false})),
                 notif("N", "{query}"),
@@ -424,7 +425,7 @@ fn write_file_never_rewrites_the_workflows_own_info_plist() {
         json!({
             "variables": {},
             "objects": [
-                obj("W", "alfred.workflow.output.writefile", json!({
+                obj("W", kind::OUTPUT_WRITEFILE, json!({
                     "filename": "{query}", "filetext": "<plist/>", "type": 0,
                     "relativepathmode": 2, "createintermediatefolders": true})),
             ],
@@ -466,7 +467,7 @@ fn trigger_workflow(tag: &str) -> (Workflow, Paths, PathBuf) {
             "objects": [
                 obj("TR", KIND_EXTERNAL_TRIGGER, json!({"triggerid": "go"})),
                 notif("N", "{query}/{var:base}/{var:extra}"),
-                obj("CALL", "alfred.workflow.output.callexternaltrigger",
+                obj("CALL", kind::OUTPUT_CALLEXTERNALTRIGGER,
                     json!({"externaltriggerid": "go", "passinputasargument": true, "passvariables": true, "workflowbundleid": ""})),
                 obj("START", KIND_KEYWORD, json!({"keyword": "k", "argumenttype": 1, "withspace": true})),
             ],
@@ -663,9 +664,9 @@ fn script_filter_skipknowledge_keeps_script_order() {
 }
 
 #[test]
-fn script_filter_reference_filters_results_with_match_field() {
+fn script_filter_launcher_filters_results_with_match_field() {
     let script = r#"echo '{"items":[{"title":"Safari"},{"title":"Notes","match":"scribble"},{"title":"Mail"}]}'"#;
-    let (wf, paths, root) = sf_workflow("alfilter", script, json!({"alfredfiltersresults": true}));
+    let (wf, paths, root) = sf_workflow("alfilter", script, json!({FILTER_FLAG_KEY: true}));
     let titles = |q: &str| -> Vec<String> {
         wf.keyword_results(q, &paths)
             .items
@@ -798,7 +799,7 @@ fn user_configuration_defaults_reach_scripts_templates_and_overrides() {
             {"variable": "secret", "type": "textfield", "config": {"default": "s"}}
         ],
         "objects": [
-            obj("SC", "alfred.workflow.action.script",
+            obj("SC", kind::ACTION_SCRIPT,
                 json!({"type": 0, "scriptargtype": 1, "script": "printf '%s-%s-%s' \"$name\" \"$loud\" \"$plain\""})),
             notif("N", "{query}|{var:name}|{var:loud}"),
         ],
@@ -843,9 +844,9 @@ fn every_flow_kind_is_handled_by_the_executor() {
             );
         }
     }
-    let doc = json!({"name": "k", "bundleid": "k", "objects": [obj("X", "alfred.workflow.trigger.hotkey", json!({}))]});
+    let doc = json!({"name": "k", "bundleid": "k", "objects": [obj("X", kind::TRIGGER_HOTKEY, json!({}))]});
     let wf = Workflow::from_json(&root, "k", &doc).unwrap();
-    assert_eq!(wf.unsupported_kinds(), ["alfred.workflow.trigger.hotkey"]);
+    assert_eq!(wf.unsupported_kinds(), [kind::TRIGGER_HOTKEY]);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -856,11 +857,11 @@ fn effect_objects_produce_expected_effects() {
         json!({
             "objects": [
                 obj("J", JUNCTION, json!({})),
-                obj("CB", "alfred.workflow.output.clipboard", json!({"clipboardtext": "c:{query}"})),
-                obj("LT", "alfred.workflow.output.largetype", json!({"largetypetext": "l:{query}"})),
-                obj("DB", "alfred.workflow.utility.debug", json!({"argument": "d:{query}"})),
-                obj("REV", "alfred.workflow.action.revealfile", json!({})),
-                obj("URL", "alfred.workflow.action.openurl", json!({"url": "https://e.test/?q={query}", "utf8": true})),
+                obj("CB", kind::OUTPUT_CLIPBOARD, json!({"clipboardtext": "c:{query}"})),
+                obj("LT", kind::OUTPUT_LARGETYPE, json!({"largetypetext": "l:{query}"})),
+                obj("DB", kind::UTILITY_DEBUG, json!({"argument": "d:{query}"})),
+                obj("REV", kind::ACTION_REVEALFILE, json!({})),
+                obj("URL", kind::ACTION_OPENURL, json!({"url": "https://e.test/?q={query}", "utf8": true})),
             ],
             "connections": {"J": [wire("CB"), wire("LT"), wire("DB"), wire("REV"), wire("URL")]}
         }),
@@ -882,28 +883,30 @@ fn effect_objects_produce_expected_effects() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-// ------------------------------------------------------------ The reference launcher's bundled templates
+// ------------------------------------------------------------ sample workflow packages (optional)
 
+/// Packages in the folder named by `ASHDASH_COMPAT_TEMPLATES` (none when it is unset).
 fn bundled_templates() -> Vec<PathBuf> {
-    let dir =
-        Path::new("/Applications/Reference.app/Contents/Resources");
+    let Some(dir) = std::env::var_os("ASHDASH_COMPAT_TEMPLATES") else {
+        return Vec::new();
+    };
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut v: Vec<PathBuf> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "alfredworkflow"))
+        .filter(|p| p.extension().is_some_and(|e| e == WORKFLOW_EXT))
         .collect();
     v.sort();
     v
 }
 
 #[test]
-fn bundled_reference_templates_load_and_report_unsupported_objects() {
+fn sample_templates_load_and_report_unsupported_objects() {
     let templates = bundled_templates();
     if templates.is_empty() {
-        eprintln!("skipping: the reference launcher is not installed");
+        eprintln!("skipping: ASHDASH_COMPAT_TEMPLATES is not set to a folder with workflow packages");
         return;
     }
     let root = std::env::temp_dir().join(format!("oa-wf-bundled-{}", std::process::id()));
@@ -928,7 +931,7 @@ fn bundled_reference_templates_load_and_report_unsupported_objects() {
         seen.extend(w.nodes.iter().map(|n| n.kind.clone()));
     }
     eprintln!(
-        "bundled templates: {} workflows, {} object types seen",
+        "sample templates: {} workflows, {} object types seen",
         loaded.len(),
         seen.len()
     );
@@ -939,7 +942,7 @@ fn bundled_reference_templates_load_and_report_unsupported_objects() {
         .filter(|k| {
             ["input.", "action.", "output.", "utility."]
                 .iter()
-                .any(|p| k.starts_with(&format!("alfred.workflow.{p}")))
+                .any(|p| k.starts_with(&format!("{}{p}", kind::PREFIX)))
         })
         .collect();
     assert!(missing.is_empty(), "unsupported object types: {missing:?}");

@@ -1,4 +1,4 @@
-//! Dynamic placeholders for snippets (modelled on the reference launcher's documented syntax).
+//! Dynamic placeholders for snippets (`{date}`, `{clipboard}` and similar).
 //!
 //! | Placeholder | Result |
 //! |---|---|

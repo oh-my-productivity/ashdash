@@ -1,34 +1,40 @@
-//! Compatibility suite against the workflow templates that ship inside an installed
-//! The reference launcher. Skips cleanly when the reference launcher is not installed.
+//! Compatibility suite against a folder of existing workflow packages (templates).
 //!
-//! Reads the bundled `*.alfredworkflow` files (zip + info.plist) at test time and imports
-//! them into a temp dir; nothing is copied into the repository and nothing outside the
-//! temp dir is written. The bundled scripts are tiny, side-effect free templates, and
-//! workflow *effects* (notifications, URLs, files) are returned, never performed.
+//! Point `ASHDASH_COMPAT_TEMPLATES` at a folder containing workflow package files. The tests
+//! are skipped with a message when the variable is unset or the folder holds no package.
 //!
-//! Run with `cargo test -p ashdash-core --test compat_packages -- --nocapture` to see the
-//! node-type table.
+//! The packages are read at test time and imported into a temp dir; nothing is copied into
+//! the repository and nothing outside the temp dir is written. Workflow *effects*
+//! (notifications, URLs, files) are returned, never performed.
+//!
+//! Run with
+//! `ASHDASH_COMPAT_TEMPLATES=/path/to/folder cargo test -p ashdash-core --test compat_packages -- --nocapture`
+//! to see the node-type table.
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use ashdash_core::format_ids::WORKFLOW_EXT;
 use ashdash_core::item::Mods;
 use ashdash_core::workflow::{Effect, Workflow, WorkflowAction};
 use common::*;
 
-const RESOURCES: &str =
-    "/Applications/Reference.app/Contents/Resources";
+/// Environment variable naming the folder of workflow packages to test against.
+const TEMPLATES_ENV: &str = "ASHDASH_COMPAT_TEMPLATES";
 
-fn bundled() -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(RESOURCES) else {
+fn templates() -> Vec<PathBuf> {
+    let Some(dir) = std::env::var_os(TEMPLATES_ENV) else {
+        return vec![];
+    };
+    let Ok(rd) = std::fs::read_dir(dir) else {
         return vec![];
     };
     let mut v: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "alfredworkflow"))
+        .filter(|p| p.extension().is_some_and(|e| e == WORKFLOW_EXT))
         .collect();
     v.sort();
     v
@@ -50,10 +56,10 @@ fn start_nodes(wf: &Workflow) -> Vec<String> {
 }
 
 #[test]
-fn every_bundled_reference_workflow_imports_loads_and_runs_without_panics() {
-    let packages = bundled();
+fn every_template_package_imports_loads_and_runs_without_panics() {
+    let packages = templates();
     if packages.is_empty() {
-        eprintln!("compat_packages: the reference launcher not installed, skipping");
+        eprintln!("compat_packages: skipped, {TEMPLATES_ENV} is not set to a folder with workflow packages");
         return;
     }
     let env = Env::new("compat", &[]);
@@ -121,7 +127,7 @@ fn every_bundled_reference_workflow_imports_loads_and_runs_without_panics() {
     }
 
     eprintln!("compat_packages: {keyword_items_total} keyword/script-filter items generated");
-    eprintln!("compat_packages: node types seen across bundled workflows:");
+    eprintln!("compat_packages: node types seen across the template workflows:");
     for (k, n) in &seen {
         let mark = if unsupported.contains_key(k) {
             "UNSUPPORTED"
@@ -142,10 +148,10 @@ fn every_bundled_reference_workflow_imports_loads_and_runs_without_panics() {
 }
 
 #[test]
-fn bundled_info_plists_all_parse_with_the_loader() {
-    let packages = bundled();
+fn template_info_plists_all_parse_with_the_loader() {
+    let packages = templates();
     if packages.is_empty() {
-        eprintln!("compat_packages: the reference launcher not installed, skipping");
+        eprintln!("compat_packages: skipped, {TEMPLATES_ENV} is not set to a folder with workflow packages");
         return;
     }
     // Direct unzip of just info.plist into temp dirs, bypassing import_package, so a

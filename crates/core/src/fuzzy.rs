@@ -1,8 +1,7 @@
 //! Matching and scoring of a typed query against a candidate title.
 //!
-//! The reference launcher matches on prefixes of words and on word initials ("vsc" finds
-//! "Visual Studio Code"). This module reproduces that behaviour from
-//! observation; the exact numeric scores are our own.
+//! Matching is on prefixes of words and on word initials ("vsc" finds
+//! "Visual Studio Code"). The exact numeric scores are our own.
 //!
 //! Hot paths (thousands of candidates per keystroke) should build a
 //! [`Query`] once per keystroke and a [`Candidate`] once per candidate (at

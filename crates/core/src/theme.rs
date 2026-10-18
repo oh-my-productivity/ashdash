@@ -1,10 +1,11 @@
-//! Reader for the reference launcher `.alfredappearance` theme files.
+//! Reader for appearance (theme) files.
 //!
-//! The file is a plist with a top-level `alfredtheme` dictionary containing
+//! The file is a plist with a top-level theme dictionary (key `format_ids::THEME_KEY`) containing
 //! `window`, `search`, `result`, `separator` and `scrollbar` sections. Colours
 //! are `#RRGGBBAA` strings. Themes are read from disk at runtime; none are
 //! bundled with this project.
 
+use crate::format_ids::THEME_KEY;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -166,7 +167,7 @@ pub struct Theme {
 }
 
 impl Default for Theme {
-    /// A dark theme with values in the same ballpark as the reference launcher's stock dark look.
+    /// A dark theme with values for a conventional dark look.
     fn default() -> Self {
         Theme {
             name: "Ashdash Dark".into(),
@@ -224,8 +225,8 @@ impl Theme {
         let root = parse_plist(bytes)?;
         let t = root
             .as_dictionary()
-            .and_then(|d| d.get("alfredtheme"))
-            .context("missing alfredtheme dictionary")?;
+            .and_then(|d| d.get(THEME_KEY))
+            .context("missing theme dictionary")?;
         let mut out = Theme::default();
         if let Some(n) = t
             .as_dictionary()
@@ -291,6 +292,7 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format_ids::{THEME_KEY, appearance_file};
 
     #[test]
     fn hex_colours() {
@@ -302,16 +304,18 @@ mod tests {
 
     #[test]
     fn loads_theme_file() {
-        let path = std::env::temp_dir().join(format!("oa-theme-{}.alfredappearance", std::process::id()));
+        let path = std::env::temp_dir().join(appearance_file(&format!("oa-theme-{}", std::process::id())));
         std::fs::write(
             &path,
-            r##"<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>alfredtheme</key><dict>
+            format!(
+                r##"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>{THEME_KEY}</key><dict>
 <key>name</key><string>T</string>
 <key>window</key><dict><key>color</key><string>#00000066</string><key>roundness</key><integer>20</integer><key>width</key><integer>640</integer></dict>
 <key>result</key><dict><key>backgroundSelected</key><string>#480069E4</string>
 <key>text</key><dict><key>size</key><integer>22</integer></dict></dict>
-</dict></dict></plist>"##,
+</dict></dict></plist>"##
+            ),
         )
         .unwrap();
         let t = Theme::load(&path).unwrap();
@@ -324,17 +328,17 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A plist of `depth` nested arrays inside the `alfredtheme` dictionary.
+    /// A plist of `depth` nested arrays inside the theme dictionary.
     fn nested_theme(depth: usize) -> String {
         format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>{THEME_KEY}</key><dict><key>x</key>{}{}</dict></dict></plist>"#,
             "<array>".repeat(depth),
             "</array>".repeat(depth)
         )
     }
 
     fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("oa-theme-{tag}-{}.alfredappearance", std::process::id()));
+        let path = std::env::temp_dir().join(appearance_file(&format!("oa-theme-{tag}-{}", std::process::id())));
         std::fs::write(&path, bytes).unwrap();
         path
     }
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn nesting_up_to_the_cap_parses_and_one_more_level_does_not() {
-        let at_cap = nested_theme(MAX_PLIST_DEPTH - 2); // root dict + alfredtheme dict + arrays
+        let at_cap = nested_theme(MAX_PLIST_DEPTH - 2); // root dict + theme dict + arrays
         assert!(parse_plist(at_cap.as_bytes()).is_ok());
         let over = nested_theme(MAX_PLIST_DEPTH - 1);
         let err = parse_plist(over.as_bytes()).unwrap_err();
@@ -498,7 +502,9 @@ mod tests {
 
     /// A valid theme padded with a long string to `size` bytes.
     fn padded_theme(size: usize) -> Vec<u8> {
-        let head = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>alfredtheme</key><dict><key>name</key><string>Big</string><key>pad</key><string>"#;
+        let head = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>{THEME_KEY}</key><dict><key>name</key><string>Big</string><key>pad</key><string>"#
+        );
         let tail = "</string></dict></dict></plist>";
         let mut v = head.as_bytes().to_vec();
         v.resize(size - tail.len(), b'x');

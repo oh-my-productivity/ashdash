@@ -530,7 +530,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    // ---- Wave 6 review fixes (docs/reviews/wave5.md 3 to 6)
+    // ---- Wave 6 review fixes
 
     #[test]
     fn the_message_is_cut_to_its_first_line_and_200_characters() {

@@ -7,6 +7,7 @@
 //! a key that does not exist is an error instead of being silently dropped
 //! (serde ignores unknown keys when loading).
 
+use crate::format_ids::{APPEARANCE_EXT, appearance_file};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -414,7 +415,7 @@ pub struct WorkflowInfo {
     pub version: String,
     pub disabled: bool,
     /// Lives in Ashdash's own workflows folder, so it can be disabled and removed here. Workflows
-    /// from `workflow_dirs` (for example a reference launcher folder) are only listed: they belong to
+    /// from `workflow_dirs` (for example a synced folder) are only listed: they belong to
     /// whoever owns that folder.
     pub managed: bool,
     /// Entries of its configuration sheet.
@@ -459,7 +460,7 @@ fn owned_workflow_dir(paths: &Paths, dir: &Path) -> Result<PathBuf> {
 }
 
 /// Enable or disable a workflow of Ashdash's own folder by writing the `disabled` key of its
-/// `info.plist` (the same key the reference launcher uses). Atomic; other keys are kept.
+/// `info.plist` (the key the workflow format defines for it). Atomic; other keys are kept.
 pub fn set_workflow_enabled(paths: &Paths, dir: &Path, enabled: bool) -> Result<()> {
     let dir = owned_workflow_dir(paths, dir)?;
     let file = dir.join("info.plist");
@@ -558,13 +559,13 @@ fn themes_dir(paths: &Paths) -> PathBuf {
     paths.data.join("themes")
 }
 
-/// `.alfredappearance` files in `<data>/themes/` that parse, by name.
+/// Appearance files in `<data>/themes/` that parse, by name.
 pub fn list_themes(paths: &Paths) -> Vec<ThemeInfo> {
     let mut out: Vec<ThemeInfo> = std::fs::read_dir(themes_dir(paths))
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "alfredappearance") && p.is_file())
+                .filter(|p| p.extension().is_some_and(|x| x == APPEARANCE_EXT) && p.is_file())
                 .filter_map(|p| {
                     let t = Theme::load(&p).ok()?;
                     let name = if t.name.is_empty() {
@@ -597,7 +598,7 @@ pub fn import_theme(paths: &Paths, file: &Path) -> Result<PathBuf> {
     } else {
         &theme.name
     });
-    let dest = themes_dir(paths).join(format!("{stem}.alfredappearance"));
+    let dest = themes_dir(paths).join(appearance_file(&stem));
     write_private(&dest, &bytes).context("copying the theme")?;
     Ok(dest)
 }
@@ -1026,10 +1027,10 @@ mod tests {
     fn strings_lists_and_options_accept_plain_text() {
         let mut c = Config::default();
         set(&mut c, "hotkey", "alt+space").unwrap();
-        set(&mut c, "theme", "/tmp/dark.alfredappearance").unwrap();
+        set(&mut c, "theme", &appearance_file("/tmp/dark")).unwrap();
         assert_eq!(
             c.theme.as_deref(),
-            Some(std::path::Path::new("/tmp/dark.alfredappearance"))
+            Some(std::path::Path::new(&appearance_file("/tmp/dark")))
         );
         set(&mut c, "providers_disabled", "calc, system").unwrap();
         assert_eq!(c.providers_disabled, vec!["calc", "system"]);

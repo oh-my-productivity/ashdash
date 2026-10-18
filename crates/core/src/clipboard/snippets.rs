@@ -1,4 +1,4 @@
-//! Snippets: collections, loading, and import of the reference launcher `.alfredsnippets`.
+//! Snippets: collections, loading, and import of snippet collection packages.
 //!
 //! # On-disk layout (under the data directory)
 //! * `snippets.json` - flat array of `{name, keyword, text}` (the original
@@ -7,15 +7,16 @@
 //!   `{"name": "...", "keyword_prefix": "", "keyword_suffix": "", "snippets": [...]}`
 //!   (a bare array is accepted too; the collection is then the file stem).
 //!
-//! # `.alfredsnippets` packages
+//! # Snippet collection packages
 //! A zip archive holding one `*.json` file per snippet,
-//! `{"alfredsnippet": {"snippet": "...", "uid": "...", "name": "...", "keyword": "..."}}`,
+//! `{"<SNIPPET_KEY>": {"snippet": "...", "uid": "...", "name": "...", "keyword": "..."}}`,
 //! plus (in collections that define them) an `info.plist` with
-//! `snippetkeywordprefix` / `snippetkeywordsuffix`. This layout is taken from
-//! public descriptions of the format, not from the reference launcher's code. The collection
-//! name is the package's file name without extension. Archive entries are
+//! `snippetkeywordprefix` / `snippetkeywordsuffix`. The collection
+//! name is the package's file name without extension. The identifiers are in
+//! [`crate::format_ids`]. Archive entries are
 //! only read in memory, never extracted, and size-limited.
 
+use crate::format_ids::SNIPPET_KEY;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
@@ -182,7 +183,7 @@ pub struct ImportReport {
     pub path: Option<PathBuf>,
 }
 
-/// Import a `.alfredsnippets` package into `dir` (see [`collections_dir`]),
+/// Import a snippet collection package into `dir` (see [`collections_dir`]),
 /// replacing a collection of the same name.
 pub fn import_snippet_package(package: &Path, dir: &Path) -> Result<ImportReport> {
     let name = package
@@ -197,7 +198,7 @@ pub fn import_snippet_package(package: &Path, dir: &Path) -> Result<ImportReport
 
 /// Parse a package from any reader. `name` becomes the collection name.
 pub fn parse_snippet_package<R: Read + Seek>(reader: R, name: &str) -> Result<(Collection, ImportReport)> {
-    let mut zip = zip::ZipArchive::new(reader).context("not a valid .alfredsnippets archive")?;
+    let mut zip = zip::ZipArchive::new(reader).context("not a valid snippet collection archive")?;
     if zip.len() > MAX_PACKAGE_ENTRIES {
         bail!("archive has too many entries ({})", zip.len());
     }
@@ -285,7 +286,7 @@ pub fn parse_snippet_package<R: Read + Seek>(reader: R, name: &str) -> Result<(C
 
 fn parse_snippet_json(bytes: &[u8]) -> Option<Snippet> {
     let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let o = v.get("alfredsnippet")?;
+    let o = v.get(SNIPPET_KEY)?;
     let text = o.get("snippet")?.as_str()?.to_string();
     if text.is_empty() {
         return None;
@@ -314,7 +315,9 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::*;
+
     use crate::clipboard::history::tests::tmp;
+    use crate::format_ids::snippets_file;
 
     /// Build a package in memory from (file name, content) pairs.
     fn package(files: &[(&str, &str)]) -> Vec<u8> {
@@ -328,7 +331,7 @@ mod tests {
     }
 
     fn snip_json(name: &str, kw: &str, text: &str, uid: &str) -> String {
-        serde_json::json!({"alfredsnippet": {"snippet": text, "uid": uid, "name": name, "keyword": kw}}).to_string()
+        serde_json::json!({SNIPPET_KEY: {"snippet": text, "uid": uid, "name": name, "keyword": kw}}).to_string()
     }
 
     fn info_plist(prefix: &str, suffix: &str) -> String {
@@ -419,7 +422,7 @@ mod tests {
     fn hostile_entry_names_never_touch_the_filesystem() {
         let root = tmp("snip-zipslip");
         let zip = package(&[("../../escape.json", &snip_json("Evil", "e", "t", "1"))]);
-        let pkg = root.join("Evil.alfredsnippets");
+        let pkg = root.join(snippets_file("Evil"));
         std::fs::write(&pkg, zip).unwrap();
         let dir = root.join("data").join("snippets");
         let r = import_snippet_package(&pkg, &dir).unwrap();
@@ -434,7 +437,7 @@ mod tests {
     fn import_writes_private_file_and_load_resolves_keywords() {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp("snip-import");
-        let pkg = root.join("My Work.alfredsnippets");
+        let pkg = root.join(snippets_file("My Work"));
         std::fs::write(
             &pkg,
             package(&[

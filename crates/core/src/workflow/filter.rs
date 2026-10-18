@@ -12,8 +12,9 @@
 //! Variable precedence when a result is actioned (lowest first): workflow
 //! variables < script-level `variables` < item `variables` < the pressed
 //! mod's `variables`. A mod that has its own `variables` object replaces the
-//! item's (script-level ones remain), as documented by the reference launcher.
+//! item's (script-level ones remain), as the workflow format defines.
 
+use crate::format_ids::FILTER_FLAG_KEY;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -392,7 +393,7 @@ impl Workflow {
             v.extend(parsed.variables.clone());
             v
         };
-        let filter = node.b("alfredfiltersresults");
+        let filter = node.b(FILTER_FLAG_KEY);
         let mut items: Vec<Item> = parsed
             .items
             .iter()
@@ -451,7 +452,7 @@ impl Workflow {
     }
 
     /// Turn one script-filter / list-filter entry into a result item.
-    /// `filter_query` is set when the reference launcher (not the script) filters the results.
+    /// `filter_query` is set when the launcher (not the script) filters the results.
     /// `fixed_order` keeps the given order instead of ranking by match quality.
     fn build_item(&self, cx: &ItemCtx, raw: &Value, idx: usize) -> Option<Item> {
         let ItemCtx {

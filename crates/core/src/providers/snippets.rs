@@ -70,7 +70,7 @@ impl Provider for SnippetsProvider {
                 (
                     "No snippets",
                     format!(
-                        "Add some to {} or import a .alfredsnippets package",
+                        "Add some to {} or import a snippet collection package",
                         st.paths.snippets_file().display()
                     ),
                 )

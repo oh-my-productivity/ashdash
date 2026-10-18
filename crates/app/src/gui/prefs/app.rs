@@ -6,6 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use ashdash_core::format_ids::{APPEARANCE_EXT, SNIPPETS_EXT};
 use ashdash_core::workflow::StagedPackage;
 use ashdash_core::{Config, Paths};
 use eframe::egui::{self, Frame, Key, Modifiers};
@@ -36,8 +37,8 @@ pub fn drop_target(path: &std::path::Path) -> Option<Purpose> {
         return Some(Purpose::Workflow);
     }
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-        "alfredappearance" => Some(Purpose::Theme),
-        "alfredsnippets" => Some(Purpose::Snippets),
+        ext if ext == APPEARANCE_EXT => Some(Purpose::Theme),
+        ext if ext == SNIPPETS_EXT => Some(Purpose::Snippets),
         _ => None,
     }
 }
@@ -967,6 +968,7 @@ mod drop_tests {
     use std::path::Path;
 
     use super::{Purpose, drop_target};
+    use ashdash_core::format_ids::{SNIPPETS_EXT, WORKFLOW_EXT, appearance_file};
 
     #[test]
     fn the_drop_zone_accepts_every_workflow_extension_the_launcher_does() {
@@ -975,9 +977,14 @@ mod drop_tests {
                 assert_eq!(drop_target(Path::new(&name)), Some(Purpose::Workflow), "{name}");
             }
         }
-        assert_eq!(drop_target(Path::new("x.alfredappearance")), Some(Purpose::Theme));
-        assert_eq!(drop_target(Path::new("x.ALFREDSNIPPETS")), Some(Purpose::Snippets));
-        for no in ["x.zip", "x", "x.alfred2workflow", "x.alfredworkflow.bak"] {
+        assert_eq!(drop_target(Path::new(&appearance_file("x"))), Some(Purpose::Theme));
+        assert_eq!(
+            drop_target(Path::new(&format!("x.{}", SNIPPETS_EXT.to_uppercase()))),
+            Some(Purpose::Snippets)
+        );
+        let unknown_version = format!("x.{}", WORKFLOW_EXT.replace("workflow", "2workflow"));
+        let trailing = format!("x.{WORKFLOW_EXT}.bak");
+        for no in ["x.zip", "x", unknown_version.as_str(), trailing.as_str()] {
             assert_eq!(drop_target(Path::new(no)), None, "{no}");
         }
     }

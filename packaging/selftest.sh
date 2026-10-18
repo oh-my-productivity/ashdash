@@ -34,7 +34,7 @@ fi
 # --- brand / version helpers
 check "brand NAME" equals "$(brand_const NAME)" "Ashdash"
 check "brand BUNDLE_ID" equals "$(brand_const BUNDLE_ID)" "io.github.oh-my-productivity.ashdash"
-check "brand URL_SCHEME is not reference" equals "$(brand_const URL_SCHEME)" "ashdash"
+check "brand URL_SCHEME" equals "$(brand_const URL_SCHEME)" "ashdash"
 check "version looks like semver" bash -c "printf %s '$(app_version)' | grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+'"
 check "BUILD_NUMBER override" equals "$(BUILD_NUMBER=77 build_number)" "77"
 check "adhoc identity default" equals "$(unset CODESIGN_IDENTITY; signing_identity)" "-"
@@ -54,7 +54,7 @@ check "LSUIElement (no Dock icon)" equals "$(plutil -extract LSUIElement raw -o 
 check "URL scheme ashdash" equals "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$plist")" "ashdash"
 check "only one URL scheme" equals "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes raw -o - "$plist")" "1"
 check "document types: 3" equals "$(plutil -extract CFBundleDocumentTypes raw -o - "$plist")" "3"
-check "documents never outrank the reference launcher" bash -c "[ \"\$(plutil -extract CFBundleDocumentTypes.0.LSHandlerRank raw -o - '$plist')\" = Alternate ]"
+check "documents never outrank other handlers" bash -c "[ \"\$(plutil -extract CFBundleDocumentTypes.0.LSHandlerRank raw -o - '$plist')\" = Alternate ]"
 check "AppleEvents usage string" plutil -extract NSAppleEventsUsageDescription raw -o - "$plist"
 check "AppleScript enabled (docs/AUTOMATION.md needs it)" equals "$(plutil -extract NSAppleScriptEnabled raw -o - "$plist")" "true"
 check "scripting definition named in Info.plist" equals "$(plutil -extract OSAScriptingDefinition raw -o - "$plist")" "Ashdash.sdef"

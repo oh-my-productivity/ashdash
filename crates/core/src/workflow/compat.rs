@@ -1,6 +1,7 @@
-//! Which reference launcher object types this engine can run, and a survey helper used
-//! to check imported workflows (and, in tests, the reference launcher's bundled templates).
+//! Which workflow object types this engine can run, and a survey helper used
+//! to check imported workflows (and, in tests, a folder of sample packages).
 
+use crate::format_ids::kind;
 use std::collections::BTreeSet;
 
 use super::{KIND_EXTERNAL_TRIGGER, KIND_FILE_FILTER, KIND_KEYWORD, KIND_LIST_FILTER, KIND_SCRIPT_FILTER, Workflow};
@@ -16,37 +17,37 @@ pub const ENTRY_KINDS: [&str; 1] = [KIND_EXTERNAL_TRIGGER];
 /// Objects that can sit in the middle or at the end of a stream. A test runs
 /// every one of them through the executor to keep this list honest.
 pub const FLOW_KINDS: &[&str] = &[
-    "alfred.workflow.action.script",
-    "alfred.workflow.action.applescript",
-    "alfred.workflow.action.openurl",
-    "alfred.workflow.action.openfile",
-    "alfred.workflow.action.launchfiles",
-    "alfred.workflow.action.revealfile",
-    "alfred.workflow.action.terminalcommand",
-    "alfred.workflow.action.itunescommand",
-    "alfred.workflow.action.systemcommand",
-    "alfred.workflow.action.systemwebsearch",
-    "alfred.workflow.action.browseinalfred",
-    "alfred.workflow.action.actioninalfred",
-    "alfred.workflow.output.notification",
-    "alfred.workflow.output.clipboard",
-    "alfred.workflow.output.largetype",
-    "alfred.workflow.output.script",
-    "alfred.workflow.output.writefile",
-    "alfred.workflow.output.callexternaltrigger",
-    "alfred.workflow.utility.argument",
-    "alfred.workflow.utility.junction",
-    "alfred.workflow.utility.debug",
-    "alfred.workflow.utility.conditional",
-    "alfred.workflow.utility.filter",
-    "alfred.workflow.utility.replace",
-    "alfred.workflow.utility.transform",
-    "alfred.workflow.utility.split",
-    "alfred.workflow.utility.splitargument",
-    "alfred.workflow.utility.merge",
-    "alfred.workflow.utility.joinargs",
-    "alfred.workflow.utility.joinarguments",
-    "alfred.workflow.utility.delay",
+    kind::ACTION_SCRIPT,
+    kind::ACTION_APPLESCRIPT,
+    kind::ACTION_OPENURL,
+    kind::ACTION_OPENFILE,
+    kind::ACTION_LAUNCHFILES,
+    kind::ACTION_REVEALFILE,
+    kind::ACTION_TERMINALCOMMAND,
+    kind::ACTION_ITUNESCOMMAND,
+    kind::ACTION_SYSTEMCOMMAND,
+    kind::ACTION_SYSTEMWEBSEARCH,
+    kind::ACTION_BROWSE,
+    kind::ACTION_UNIVERSAL,
+    kind::OUTPUT_NOTIFICATION,
+    kind::OUTPUT_CLIPBOARD,
+    kind::OUTPUT_LARGETYPE,
+    kind::OUTPUT_SCRIPT,
+    kind::OUTPUT_WRITEFILE,
+    kind::OUTPUT_CALLEXTERNALTRIGGER,
+    kind::UTILITY_ARGUMENT,
+    kind::UTILITY_JUNCTION,
+    kind::UTILITY_DEBUG,
+    kind::UTILITY_CONDITIONAL,
+    kind::UTILITY_FILTER,
+    kind::UTILITY_REPLACE,
+    kind::UTILITY_TRANSFORM,
+    kind::UTILITY_SPLIT,
+    kind::UTILITY_SPLITARGUMENT,
+    kind::UTILITY_MERGE,
+    kind::UTILITY_JOINARGS,
+    kind::UTILITY_JOINARGUMENTS,
+    kind::UTILITY_DELAY,
 ];
 
 pub fn is_supported(kind: &str) -> bool {

@@ -40,33 +40,35 @@ if pgrep -x ashdash >/dev/null; then echo "an ashdash is already running"; exit 
 
 # --- fixtures (all synthetic)
 echo hello > "$T/files/report.txt"; echo hi > "$T/files/notes.txt"
-python3 - "$T" <<'PY'
+python3 - "$T" "$ROOT/scripts" <<'PY'
 import plistlib, zipfile, sys, os
 t = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+import format_ids as ids
 pkg = {
  "name": "Smoke Sample", "bundleid": "qa.smoke.sample", "createdby": "Ann Author",
  "description": "Synthetic workflow for the UI smoke",
  "objects": [
-  {"uid":"S1","type":"alfred.workflow.action.script","config":{"type":0,"script":"echo hi {query}","concurrently":False}},
-  {"uid":"U1","type":"alfred.workflow.action.openurl","config":{"url":"https://example.com/{query}"}},
-  {"uid":"K1","type":"alfred.workflow.input.keyword","config":{"keyword":"smk","withspace":True,"argumenttype":1,"text":"Smoke","subtext":""}},
-  {"uid":"T1","type":"alfred.workflow.action.terminalcommand","config":{"text":"echo {query}"}},
+  {"uid":"S1","type":ids.ACTION_SCRIPT,"config":{"type":0,"script":"echo hi {query}","concurrently":False}},
+  {"uid":"U1","type":ids.ACTION_OPENURL,"config":{"url":"https://example.com/{query}"}},
+  {"uid":"K1","type":ids.INPUT_KEYWORD,"config":{"keyword":"smk","withspace":True,"argumenttype":1,"text":"Smoke","subtext":""}},
+  {"uid":"T1","type":ids.ACTION_TERMINALCOMMAND,"config":{"text":"echo {query}"}},
  ],
  "connections":{"K1":[{"destinationuid":"S1","modifiers":0}]},
 }
-with zipfile.ZipFile(f"{t}/files/sample.alfredworkflow", "w") as z:
+with zipfile.ZipFile(f"{t}/files/{ids.workflow_file('sample')}", "w") as z:
     z.writestr("info.plist", plistlib.dumps(pkg))
 d = f"{t}/home/Library/Application Support/ashdash/workflows/user.workflow.smoke2"
 os.makedirs(d, exist_ok=True)
 live = {
  "name":"Smoke Live","bundleid":"qa.smoke.live",
  "objects":[
-  {"uid":"SF","type":"alfred.workflow.input.scriptfilter","config":{"keyword":"sf","withspace":True,"argumenttype":1,"type":0,"scriptargtype":1,"title":"Lookup","subtext":"","runningsubtext":"Working on {query}…",
+  {"uid":"SF","type":ids.INPUT_SCRIPTFILTER,"config":{"keyword":"sf","withspace":True,"argumenttype":1,"type":0,"scriptargtype":1,"title":"Lookup","subtext":"","runningsubtext":"Working on {query}…",
      "script":"sleep 0.9; s=$(date +%S); echo \"{\\\"rerun\\\":1,\\\"items\\\":[{\\\"title\\\":\\\"tick $s\\\",\\\"subtitle\\\":\\\"query $1\\\",\\\"valid\\\":false}]}\""}},
-  {"uid":"LT","type":"alfred.workflow.input.scriptfilter","config":{"keyword":"lt","withspace":True,"argumenttype":1,"type":0,"scriptargtype":1,"title":"Long","subtext":"",
+  {"uid":"LT","type":ids.INPUT_SCRIPTFILTER,"config":{"keyword":"lt","withspace":True,"argumenttype":1,"type":0,"scriptargtype":1,"title":"Long","subtext":"",
      "script":"text=$(yes 'lorem ipsum dolor sit amet' | head -n 900 | tr '\\n' ' '); echo \"{\\\"items\\\":[{\\\"title\\\":\\\"Long text\\\",\\\"valid\\\":false,\\\"text\\\":{\\\"largetype\\\":\\\"$text\\\"}}]}\""}},
-  {"uid":"T","type":"alfred.workflow.trigger.external","config":{"triggerid":"t1"}},
-  {"uid":"B","type":"alfred.workflow.action.browseinalfred","config":{"path": t + "/files/"}},
+  {"uid":"T","type":ids.TRIGGER_EXTERNAL,"config":{"triggerid":"t1"}},
+  {"uid":"B","type":ids.ACTION_BROWSE,"config":{"path": t + "/files/"}},
  ],
  "connections":{"T":[{"destinationuid":"B","modifiers":0}]},
 }

@@ -4,12 +4,13 @@
 //!
 //! Tests marked `#[ignore = "known: SEC-nn ..."]` demonstrate an open finding
 //! and should be un-ignored when it is fixed. Tests named `documents_*`
-//! pin *intentional* (reference-compatible) behaviour that callers must know about.
+//! pin *intentional* (workflow-format) behaviour that callers must know about.
 //!
 //! Everything runs in a temp dir; the scripts are authored here.
 
 mod common;
 
+use ashdash_core::format_ids::{ENV_WORKFLOW_BUNDLEID, ENV_WORKFLOW_DATA, kind};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -52,11 +53,11 @@ fn keyword_script(kw: &str, script: &str, argtype: i64, escaping: i64) -> Value 
     json!({
         "name": "KS", "bundleid": "qa.ks",
         "objects": [
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+            {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                 "keyword": kw, "withspace": true, "argumenttype": 0, "text": "KS", "subtext": ""}},
-            {"uid": "S", "type": "alfred.workflow.action.script", "config": {
+            {"uid": "S", "type": kind::ACTION_SCRIPT, "config": {
                 "type": 0, "scriptargtype": argtype, "escaping": escaping, "script": script}},
-            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "T", "text": "{query}"}}
+            {"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {"title": "T", "text": "{query}"}}
         ],
         "connections": {
             "K": [{"destinationuid": "S", "modifiers": 0}],
@@ -171,12 +172,12 @@ fn workflow_variables_reach_scripts_and_data_dirs_are_private_to_the_env() {
     let doc = json!({
         "name": "E", "bundleid": "qa.env", "variables": {"greeting": "hello"},
         "objects": [
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+            {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                 "keyword": "e", "withspace": true, "argumenttype": 1, "text": "E"}},
-            {"uid": "S", "type": "alfred.workflow.action.script", "config": {
+            {"uid": "S", "type": kind::ACTION_SCRIPT, "config": {
                 "type": 0, "scriptargtype": 1,
-                "script": "printf '%s|%s|%s' \"$greeting\" \"$alfred_workflow_data\" \"$alfred_workflow_bundleid\""}},
-            {"uid": "N", "type": "alfred.workflow.output.notification", "config": {"title": "T", "text": "{query}"}}
+                "script": format!("printf '%s|%s|%s' \"$greeting\" \"${ENV_WORKFLOW_DATA}\" \"${ENV_WORKFLOW_BUNDLEID}\"")}},
+            {"uid": "N", "type": kind::OUTPUT_NOTIFICATION, "config": {"title": "T", "text": "{query}"}}
         ],
         "connections": {"K": [{"destinationuid": "S", "modifiers": 0}], "S": [{"destinationuid": "N", "modifiers": 0}]}
     });
@@ -209,9 +210,9 @@ fn script_filter_variables_cannot_inject_loader_env() {
     let doc = json!({
         "name": "I", "bundleid": "qa.inject",
         "objects": [
-            {"uid": "SF", "type": "alfred.workflow.input.scriptfilter", "config": {
+            {"uid": "SF", "type": kind::INPUT_SCRIPTFILTER, "config": {
                 "keyword": "inj", "withspace": true, "argumenttype": 1, "type": 0, "scriptargtype": 1, "title": "I", "script": sf}},
-            {"uid": "S", "type": "alfred.workflow.action.script", "config": {
+            {"uid": "S", "type": kind::ACTION_SCRIPT, "config": {
                 "type": 0, "scriptargtype": 1, "script": "echo -n ok"}},
         ],
         "connections": {"SF": [{"destinationuid": "S", "modifiers": 0}]}
@@ -241,7 +242,7 @@ fn script_filter_variables_cannot_replace_path() {
         bin.display()
     );
     let mut doc = keyword_script("zz", "date", 1, 102);
-    doc["objects"][0] = json!({"uid": "K", "type": "alfred.workflow.input.scriptfilter", "config": {
+    doc["objects"][0] = json!({"uid": "K", "type": kind::INPUT_SCRIPTFILTER, "config": {
         "keyword": "p", "withspace": true, "argumenttype": 1, "type": 0, "scriptargtype": 1, "title": "P", "script": sf}});
     let wf = fx.wf(&doc);
     let items = fx.items(&wf, "p x");
@@ -415,7 +416,7 @@ fn long_chain_is_cut_off_with_a_warning_and_finishes_fast() {
     let fx = Fx::new("chain");
     let n = 20_000;
     let objects: Vec<Value> = (0..n)
-        .map(|i| json!({"uid": format!("J{i}"), "type": "alfred.workflow.utility.junction", "config": {}}))
+        .map(|i| json!({"uid": format!("J{i}"), "type": kind::UTILITY_JUNCTION, "config": {}}))
         .collect();
     let mut conns = serde_json::Map::new();
     for i in 0..n - 1 {
@@ -452,7 +453,7 @@ fn wide_fanout_and_self_loops_are_bounded() {
         .collect();
     conns.insert("A".into(), Value::Array(dests));
     let doc = json!({"name": "Fan", "bundleid": "qa.fan",
-        "objects": [{"uid": "A", "type": "alfred.workflow.utility.junction", "config": {}}],
+        "objects": [{"uid": "A", "type": kind::UTILITY_JUNCTION, "config": {}}],
         "connections": conns});
     let wf = fx.wf(&doc);
     let act = ashdash_core::workflow::WorkflowAction {
@@ -473,7 +474,7 @@ fn wide_fanout_and_self_loops_are_bounded() {
 fn connections_to_missing_objects_and_odd_shapes_are_ignored() {
     let fx = Fx::new("odd");
     let doc = json!({"name": "Odd", "bundleid": "qa.odd",
-    "objects": [{"uid": "A", "type": "alfred.workflow.utility.junction", "config": null}],
+    "objects": [{"uid": "A", "type": kind::UTILITY_JUNCTION, "config": null}],
     "connections": {
         "A": [{"destinationuid": "NOPE", "modifiers": 0}, {"destinationuid": 5}, "str", null, {"modifiers": 1}],
         "B": "not-a-list",
