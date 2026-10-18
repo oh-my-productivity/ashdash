@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Squash-merged pull requests take their title as the commit, and it must be a Conventional Commit (commit-lint workflow).
+    # With include: scope, Dependabot writes the prefix, then "(deps)" or "(deps-dev)", then a colon: "ci(deps): bump actions/checkout ...".
+    commit-message:
+      prefix: "ci"
+      include: "scope"
 
   - package-ecosystem: "cargo"
     directory: "/"
@@ -16,3 +21,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    commit-message:
+      prefix: "build"
+      include: "scope"
