@@ -21,11 +21,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::{Context, Result};
 use ashdash_core::clipboard::snippets::{collections_dir, safe_file_stem};
 use ashdash_core::config::write_private;
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Paths, brand};
-use anyhow::{Context, Result};
 
 use crate::gui::importprompt::clean;
 

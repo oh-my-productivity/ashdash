@@ -36,8 +36,8 @@ mod workflows;
 
 use std::process::{Command, Stdio};
 
-use ashdash_core::Paths;
 use anyhow::{Context, Result};
+use ashdash_core::Paths;
 
 /// Start the preferences window as its own process (or bring the open one forward). Returns at
 /// once; used by the CLI, the status-item menu and the URL scheme.

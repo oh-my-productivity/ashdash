@@ -5,8 +5,8 @@ use std::str::FromStr;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 
-use ashdash_core::Engine;
 use anyhow::{Result, anyhow};
+use ashdash_core::Engine;
 use eframe::egui::{self, Pos2, Vec2};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};

@@ -160,7 +160,7 @@ tcc_reset
 ask '> echo prompt-deny' 1.0 >/dev/null; key_code $KC_RETURN; sleep 3
 dlg=$(consent "Don’t Allow" 10); sleep 2; show; o=$(look auto-deny); hide_
 result PKG-19 PASS "first use of '> command': prompt = $(echo "$dlg" | cut -c1-420); after Don't Allow the launcher shows: ${o:-nothing}"
-tccutil reset AppleEvents dev.ashdash.launcher >/dev/null 2>&1
+tccutil reset AppleEvents io.github.oh-my-productivity.ashdash >/dev/null 2>&1
 ask '> echo prompt-allow' 1.0 >/dev/null; key_code $KC_RETURN; sleep 2; dlg=$(consent Allow 10); sleep 4
 result PKG-20 PASS "after tccutil reset and Allow: prompt again ($(echo "$dlg" | cut -c1-80)...), the command opens in Terminal (Terminal windows: $(wd 20 osascript -e 'tell application "System Events" to tell process "Terminal" to get count of windows' | tail -1))"
 # Accessibility: no prompt, an explanation

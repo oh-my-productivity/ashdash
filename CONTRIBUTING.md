@@ -1,6 +1,6 @@
 # Contributing to Ashdash
 
-Thank you for helping. Ashdash is a macOS keyboard launcher written in Rust; "Ashdash" is a working name and the
+Thank you for helping. The repository is <https://github.com/oh-my-productivity/ashdash>. Ashdash is a macOS keyboard launcher written in Rust; the
 project is independent of the reference launcher application ([docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md)). Read
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first: it explains the two crates, the provider model and the threads.
 

@@ -646,7 +646,7 @@ mod tests {
         let s = wf(json!([
             {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "go", "argumenttype": 2}},
             {"uid": "A", "type": "alfred.workflow.utility.argument",
-             "config": {"argument": "~/Library/Application Support/reference-launchero/workflows/user.workflow.t.trust/payload.app"}},
+             "config": {"argument": "~/Library/Application Support/Ashdash/workflows/user.workflow.t.trust/payload.app"}},
             {"uid": "O", "type": "alfred.workflow.action.openfile", "config": {"sourcefile": ""}},
         ]))
         .trust_summary();
@@ -695,7 +695,7 @@ mod tests {
         let s = wf(json!([
             {"uid": "O", "type": "alfred.workflow.action.openfile",
              "config": {"sourcefile": "Applications",
-                        "openwith": "~/Library/Application Support/reference-launchero/workflows/user.workflow.t.trust/payload.app"}},
+                        "openwith": "~/Library/Application Support/Ashdash/workflows/user.workflow.t.trust/payload.app"}},
         ]))
         .trust_summary();
         assert!(!s.is_passive(), "{s:?}");

@@ -115,7 +115,7 @@ You own the tool and your data.
 | Open source, no account, no subscription, works offline | MIT OR Apache-2.0, clean-room (`docs/CLEAN_ROOM.md`) | met |
 | Builds from source with one command | `cargo build --release`; `packaging/build-app.sh` for the app bundle | met |
 | Signed and notarized, so installing needs no workaround | ad-hoc signed until a Developer ID is available | not met |
-| The name is free to use | "Ashdash" is a working name (`docs/CLEAN_ROOM.md`) | open |
+| The name is free to use | Renamed to Ashdash on 2026-10-18; a quick web search found no launcher of that name, which is not a legal clearance (`docs/CLEAN_ROOM.md`) | open |
 
 ## When values conflict
 

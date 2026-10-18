@@ -2,7 +2,7 @@
 
 All notable changes to Ashdash are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/) (before 1.0, minor versions may change behaviour).
-"Ashdash" is a working name and may change; see [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md).
+Ashdash was developed under the working name "Ashdash"; older records in `docs/reviews`, `docs/briefs` and `docs/qa-runs` use that name. See [docs/CLEAN_ROOM.md](docs/CLEAN_ROOM.md).
 
 Entries are written from the repository history and the project documents. A claim that nobody has been able to check on a real
 desktop or machine is marked **unverified**; the full list is in [docs/STATUS.md](docs/STATUS.md) and [docs/USER_GUIDE.md](docs/USER_GUIDE.md#10-known-unverified-and-missing).

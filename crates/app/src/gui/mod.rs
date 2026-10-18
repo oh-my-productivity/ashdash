@@ -27,9 +27,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
+use anyhow::{Result, anyhow};
 use ashdash_core::theme::{Rgba, Theme};
 use ashdash_core::{Engine, Item, Mods, Outcome};
-use anyhow::{Result, anyhow};
 use eframe::egui::{self, Color32, FontId, Pos2, Vec2};
 use global_hotkey::GlobalHotKeyManager;
 

@@ -192,6 +192,7 @@ jobs:
             {
               echo "> **Ad-hoc signed build, not notarized.** Gatekeeper will block it until you right-click > Open,"
               echo "> or run \`xattr -dr com.apple.quarantine /Applications/Ashdash.app\`."
+              echo "> Source, documentation and issues: https://github.com/oh-my-productivity/ashdash"
               echo
               cat "$notes_src"
             } > "$notes"

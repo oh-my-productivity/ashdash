@@ -33,7 +33,7 @@ fi
 
 # --- brand / version helpers
 check "brand NAME" equals "$(brand_const NAME)" "Ashdash"
-check "brand BUNDLE_ID" equals "$(brand_const BUNDLE_ID)" "dev.ashdash.launcher"
+check "brand BUNDLE_ID" equals "$(brand_const BUNDLE_ID)" "io.github.oh-my-productivity.ashdash"
 check "brand URL_SCHEME is not reference" equals "$(brand_const URL_SCHEME)" "ashdash"
 check "version looks like semver" bash -c "printf %s '$(app_version)' | grep -Eq '^[0-9]+\\.[0-9]+\\.[0-9]+'"
 check "BUILD_NUMBER override" equals "$(BUILD_NUMBER=77 build_number)" "77"
@@ -49,7 +49,7 @@ render_template "$REPO_ROOT/crates/app/resources/Info.plist.template" \
   "EXECUTABLE=$(brand_const SLUG)" "BUNDLE_ID=$(brand_const BUNDLE_ID)" "NAME=$(brand_const NAME)" \
   "VERSION=$(app_version)" "BUILD=1" "MIN_OS=12.0" "URL_SCHEME=$(brand_const URL_SCHEME)" "YEAR=2026" >"$plist"
 check "Info.plist is valid" plutil -lint "$plist"
-check "bundle id" equals "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "dev.ashdash.launcher"
+check "bundle id" equals "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "io.github.oh-my-productivity.ashdash"
 check "LSUIElement (no Dock icon)" equals "$(plutil -extract LSUIElement raw -o - "$plist")" "true"
 check "URL scheme ashdash" equals "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$plist")" "ashdash"
 check "only one URL scheme" equals "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes raw -o - "$plist")" "1"

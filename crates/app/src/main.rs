@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
 use ashdash_core::theme::Theme;
 use ashdash_core::{Config, Engine, Mods, Outcome, Paths};
-use anyhow::{Context, Result, bail};
 
 const HELP: &str = "\
 ashdash — a keyboard launcher for macOS

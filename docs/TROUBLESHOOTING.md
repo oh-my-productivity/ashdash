@@ -68,13 +68,13 @@ synthetic keys. **Unverified**: real Cmd+V behaviour in many apps.
 To reset a permission that seems stuck (a standard macOS tool, not part of Ashdash):
 
 ```sh
-tccutil reset Accessibility dev.ashdash.launcher
-tccutil reset AppleEvents dev.ashdash.launcher
-tccutil reset SystemPolicyAllFiles dev.ashdash.launcher     # Full Disk Access
+tccutil reset Accessibility io.github.oh-my-productivity.ashdash
+tccutil reset AppleEvents io.github.oh-my-productivity.ashdash
+tccutil reset SystemPolicyAllFiles io.github.oh-my-productivity.ashdash     # Full Disk Access
 ```
 
 Then start the action again so macOS asks again. If you run the bare binary instead of `Ashdash.app` the permission belongs to
-your terminal app, not to `dev.ashdash.launcher`.
+your terminal app, not to `io.github.oh-my-productivity.ashdash`.
 
 ## "Not authorized to send Apple events" or an action does nothing
 
