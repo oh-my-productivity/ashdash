@@ -4,6 +4,7 @@
 
 mod common;
 
+use ashdash_core::format_ids::{THEME_KEY, appearance_file, kind, workflow_file};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -198,7 +199,7 @@ fn watcher_reports_config_and_workflow_edits_but_not_noise() {
 #[test]
 fn watcher_follows_extra_workflow_folders() {
     let env = Env::new("watch-extra", &[]);
-    let extra = env.root.join("reference-workflows");
+    let extra = env.root.join("extra-workflows");
     std::fs::create_dir_all(&extra).unwrap();
     let (tx, rx) = mpsc::channel();
     let w = SettingsWatcher::start(&env.paths, &[], Duration::from_millis(100), move |set| {
@@ -302,7 +303,7 @@ fn removing_a_workflow_does_not_let_the_sweep_bring_back_its_previous_version() 
 
 #[test]
 fn only_the_apps_own_workflows_folder_is_swept_for_interrupted_installs() {
-    // Review wave4b item 10: roots from `workflow_dirs` (a synced reference launcher folder) belong to someone
+    // Review wave4b item 10: roots from `workflow_dirs` (a synced folder) belong to someone
     // else; a reload must not rename or delete anything in them, writable or not.
     use std::os::unix::fs::PermissionsExt;
     let env = Env::new("wf-sweep-own", &[]);
@@ -364,13 +365,13 @@ fn preview_describes_a_package_without_installing_it() {
     let doc = json!({
         "name": "Risky", "bundleid": "risky.b", "version": "2.0",
         "objects": [
-            {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {"keyword": "risk", "withspace": true, "argumenttype": 1, "text": "R", "subtext": ""}},
-            {"uid": "S", "type": "alfred.workflow.action.script", "config": {"type": 0, "scriptargtype": 1, "script": "echo hi"}},
-            {"uid": "U", "type": "alfred.workflow.action.openurl", "config": {"url": "https://example.test/{query}", "utf8": true}},
+            {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {"keyword": "risk", "withspace": true, "argumenttype": 1, "text": "R", "subtext": ""}},
+            {"uid": "S", "type": kind::ACTION_SCRIPT, "config": {"type": 0, "scriptargtype": 1, "script": "echo hi"}},
+            {"uid": "U", "type": kind::ACTION_OPENURL, "config": {"url": "https://example.test/{query}", "utf8": true}},
         ],
         "connections": {"K": [{"destinationuid": "S", "modifiers": 0}, {"destinationuid": "U", "modifiers": 0}]}
     });
-    let pkg = package(&env, "risky.alfredworkflow", &doc);
+    let pkg = package(&env, &workflow_file("risky"), &doc);
     let before = common::snapshot(&env.paths.workflows_dir());
     let staged = env.engine().stage_workflow(&pkg).unwrap();
     let pv = staged.preview().clone();
@@ -401,10 +402,10 @@ fn preview_describes_a_package_without_installing_it() {
     drop(again);
 
     // garbage and traversal are rejected like an import
-    let bad = env.root.join("bad.alfredworkflow");
+    let bad = env.root.join(workflow_file("bad"));
     std::fs::write(&bad, b"not a zip").unwrap();
     assert!(env.engine().stage_workflow(&bad).is_err());
-    let evil = env.root.join("evil.alfredworkflow");
+    let evil = env.root.join(workflow_file("evil"));
     write_zip(&evil, &[Entry::File("../escape.txt", b"x".to_vec())]);
     assert!(env.engine().stage_workflow(&evil).is_err());
     assert!(!env.root.join("escape.txt").exists());
@@ -413,8 +414,8 @@ fn preview_describes_a_package_without_installing_it() {
 // ---------------------------------------------------------------- themes
 
 fn theme_file(dir: &std::path::Path, name: &str) -> PathBuf {
-    let doc = json!({"alfredtheme": {"name": name, "window": {"color": "#112233ff"}}});
-    let p = dir.join(format!("{name}-src.alfredappearance"));
+    let doc = json!({THEME_KEY: {"name": name, "window": {"color": "#112233ff"}}});
+    let p = dir.join(appearance_file(&format!("{name}-src")));
     common::json_to_plist(&doc).to_file_xml(&p).unwrap();
     p
 }
@@ -431,7 +432,7 @@ fn themes_are_validated_copied_and_listed() {
     assert_eq!(list[0].name, "Midnight");
     assert_eq!(list[0].path, copy);
 
-    let junk = env.root.join("junk.alfredappearance");
+    let junk = env.root.join(appearance_file("junk"));
     std::fs::write(&junk, b"nope").unwrap();
     assert!(sv::import_theme(&env.paths, &junk).is_err());
     assert!(sv::import_theme(&env.paths, &env.root.join("missing")).is_err());

@@ -9,9 +9,8 @@ use crate::workflow::WorkflowAction;
 
 /// Keyboard modifiers held while activating a result.
 ///
-/// The numeric flag values match `NSEventModifierFlags`, which is what the reference launcher
-/// workflow connections store in their `modifiers` field (observed in the
-/// bundled `.alfredworkflow` templates: `"modifiers": 0` for the plain action).
+/// The numeric flag values match `NSEventModifierFlags`, which is what workflow
+/// connections store in their `modifiers` field (`0` for the plain action).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Mods {
     pub cmd: bool,

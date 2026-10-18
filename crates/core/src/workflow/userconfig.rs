@@ -5,10 +5,8 @@
 //! become workflow variables, so they reach scripts as environment variables
 //! and templates as `{var:name}`.
 //!
-//! Observed in the bundled templates: the key itself and `variablesdontexport`
-//! (only the empty list). The per-entry layout (`variable`, `label`,
-//! `description`, `type`, `config.default`) follows published workflows and
-//! The reference launcher's documentation; see docs/REVERSE_ENGINEERING.md.
+//! The per-entry layout is `variable`, `label`, `description`, `type` and
+//! `config.default`; `variablesdontexport` lists variables left out of exports.
 
 use serde_json::Value;
 

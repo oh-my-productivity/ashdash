@@ -1,5 +1,6 @@
 //! General page: launcher shortcut, launch at login, theme, result count, learning.
 
+use ashdash_core::format_ids::APPEARANCE_EXT;
 use std::path::Path;
 use std::time::Duration;
 
@@ -281,11 +282,7 @@ impl PrefsApp {
                         }
                     });
                 if ui.button("Import theme…").clicked() {
-                    self.choose_file(
-                        Purpose::Theme,
-                        "Choose a reference-compatible theme (.alfredappearance)",
-                        &["alfredappearance"],
-                    );
+                    self.choose_file(Purpose::Theme, "Choose a theme (appearance file)", &[APPEARANCE_EXT]);
                 }
             });
             if let Some(theme) = choice {

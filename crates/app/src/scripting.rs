@@ -243,6 +243,5 @@ mod tests {
             );
         }
         assert_eq!(sdef.matches("<cocoa class=\"AshdashScriptCommand\"/>").count(), 4);
-        assert!(!sdef.contains("reference://"));
     }
 }

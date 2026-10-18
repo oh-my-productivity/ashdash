@@ -1,4 +1,4 @@
-//! A small arithmetic expression evaluator (the reference launcher's calculator feature).
+//! A small arithmetic expression evaluator (the launcher's calculator).
 
 use std::f64::consts::{E, PI, TAU};
 

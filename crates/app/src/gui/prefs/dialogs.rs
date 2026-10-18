@@ -39,12 +39,13 @@ pub fn parse_choice(stdout: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ashdash_core::format_ids::workflow_file;
 
     #[test]
     fn only_absolute_paths_are_accepted() {
         assert_eq!(
-            parse_choice("/Users/a/x.alfredworkflow\n"),
-            Some("/Users/a/x.alfredworkflow".into())
+            parse_choice(&format!("{}\n", workflow_file("/Users/a/x"))),
+            Some(workflow_file("/Users/a/x").into())
         );
         assert_eq!(parse_choice(""), None);
         assert_eq!(parse_choice("relative/x\n"), None);

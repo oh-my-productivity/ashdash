@@ -17,9 +17,8 @@
 //! </output>
 //! ```
 //!
-//! The `<output>` wrapper and `<rerun>`/`<variables>` come from the reference launcher's
-//! bundled "Advanced Script Filters" template; the bare `<items>` root and
-//! the item attributes/children follow the pre-JSON documentation (the reference launcher).
+//! Both the `<output>` wrapper (with `<rerun>` and `<variables>`) and a bare
+//! `<items>` root are accepted.
 //! The parser is deliberately small: elements, attributes, text, CDATA,
 //! comments, processing instructions and the five predefined plus numeric
 //! entities. It does not validate and does not resolve DTD entities.

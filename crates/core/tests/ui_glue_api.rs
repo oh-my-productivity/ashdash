@@ -5,6 +5,7 @@
 
 mod common;
 
+use ashdash_core::format_ids::kind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -66,9 +67,9 @@ fn open_launcher_objects_come_back_as_an_outcome_not_an_error() {
         &json!({
             "name": "Go", "bundleid": "qa.go",
             "objects": [
-                {"uid": "K", "type": "alfred.workflow.input.keyword", "config": {
+                {"uid": "K", "type": kind::INPUT_KEYWORD, "config": {
                     "keyword": "go", "withspace": true, "argumenttype": 1, "text": "Go", "subtext": ""}},
-                {"uid": "B", "type": "alfred.workflow.action.browseinalfred", "config": {"path": "open {query}"}}
+                {"uid": "B", "type": kind::ACTION_BROWSE, "config": {"path": "open {query}"}}
             ],
             "connections": {"K": [{"destinationuid": "B", "modifiers": 0}]}
         }),

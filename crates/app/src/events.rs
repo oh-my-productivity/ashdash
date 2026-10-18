@@ -31,7 +31,7 @@ pub enum AppEvent {
     Quit,
     /// Open the preferences window (a separate process).
     Preferences,
-    /// Apply an `.alfredappearance` file.
+    /// Apply an appearance (theme) file.
     Theme(std::path::PathBuf),
     /// Present the result of something that ran without the window (a hotkey,
     /// a URL): Large Type text, or an error/confirmation message.

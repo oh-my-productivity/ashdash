@@ -21,9 +21,9 @@
 //! so nothing is searched until the user edits the text.
 //! Invocations are logged without arguments.
 //!
-//! Only `ashdash://` is handled. `reference://` belongs to a real reference launcher install
-//! and is rejected here.
+//! Only `ashdash://` is handled; any other scheme is rejected here.
 
+use ashdash_core::format_ids::{APPEARANCE_EXT, appearance_file};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::Write;
@@ -584,10 +584,10 @@ impl UrlDispatcher {
     }
 
     fn theme_file(&self, name: &str) -> Result<PathBuf, String> {
-        let file = if name.ends_with(".alfredappearance") {
+        let file = if name.ends_with(&format!(".{APPEARANCE_EXT}")) {
             name.to_string()
         } else {
-            format!("{name}.alfredappearance")
+            appearance_file(name)
         };
         let path = self.themes_dir.join(file);
         match fs::symlink_metadata(&path) {
@@ -839,7 +839,7 @@ mod tests {
     fn rejects_hostile_or_malformed_urls() {
         use UrlError::*;
         let cases: Vec<(String, UrlError)> = vec![
-            ("reference://search?query=x".into(), WrongScheme),
+            ("other://search?query=x".into(), WrongScheme),
             ("ashdash:search?query=x".into(), WrongScheme),
             ("http://search?query=x".into(), WrongScheme),
             ("".into(), WrongScheme),
@@ -1055,7 +1055,7 @@ mod tests {
             ]
         );
         assert!(r.d.dispatch("ashdash://prefs?x=1").is_err());
-        assert!(r.d.dispatch("reference://search?query=saf").is_err());
+        assert!(r.d.dispatch("other://search?query=saf").is_err());
         assert!(r.sink.take().is_empty());
         let _ = fs::remove_dir_all(&r.dir);
     }
@@ -1235,19 +1235,19 @@ mod tests {
     #[test]
     fn theme_loads_only_plain_names_from_the_themes_folder() {
         let r = rig("theme", true, Outcome::Done);
-        fs::write(r.dir.join("themes/Dark.alfredappearance"), "x").unwrap();
-        fs::write(r.dir.join("secret.alfredappearance"), "x").unwrap();
+        fs::write(r.dir.join(appearance_file("themes/Dark")), "x").unwrap();
+        fs::write(r.dir.join(appearance_file("secret")), "x").unwrap();
         r.d.dispatch("ashdash://theme?name=Dark").unwrap();
         assert_eq!(
             r.sink.take(),
-            vec![AppEvent::Theme(r.dir.join("themes/Dark.alfredappearance"))]
+            vec![AppEvent::Theme(r.dir.join(appearance_file("themes/Dark")))]
         );
         assert!(r.d.dispatch("ashdash://theme?name=Missing").is_err());
         assert!(r.d.dispatch("ashdash://theme?name=..%2Fsecret").is_err());
         // A symlink inside the folder is not followed.
         std::os::unix::fs::symlink(
-            r.dir.join("secret.alfredappearance"),
-            r.dir.join("themes/Link.alfredappearance"),
+            r.dir.join(appearance_file("secret")),
+            r.dir.join(appearance_file("themes/Link")),
         )
         .unwrap();
         assert!(r.d.dispatch("ashdash://theme?name=Link").is_err());

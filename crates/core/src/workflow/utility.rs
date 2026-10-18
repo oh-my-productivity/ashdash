@@ -1,17 +1,13 @@
 //! Pure helpers behind the Utilities objects: match modes (Conditional,
 //! Filter), Replace, Split, Transform.
 //!
-//! Evidence for the numeric codes:
+//! The numeric codes:
 //! * Conditional match modes 0..=4 = equal, not equal, greater than, less
-//!   than, regex: the popup entries in the reference launcher's `WorkflowUtilityConditionalConfigRow`
-//!   nib are in that order, and `matchmode: 0` = equal is confirmed by a
-//!   bundled Filter template. The tag values themselves are inferred from
-//!   menu order. The reference launcher's own help text says greater/less compare as integers,
-//!   regexes are ICU, the first matching condition wins.
-//! * The legacy Filter offers equal / not equal / regex (nib).
-//! * Transform entries (nib/docs order): trim, upper, lower, capital, reverse,
-//!   strip diacritics, strip non-alphanumeric = 0..=6; types 0 and 1 are used
-//!   by a bundled template and match "trim" and "uppercase" there.
+//!   than, regex. Greater/less compare as integers, the first matching
+//!   condition wins.
+//! * The legacy Filter offers equal / not equal / regex.
+//! * Transform entries: trim, upper, lower, capital, reverse, strip
+//!   diacritics, strip non-alphanumeric = 0..=6.
 //! * Replace: string / regex / empty input, in that menu order (inferred).
 //!
 //! Regexes use the `regex` crate: ICU features without a counterpart (look

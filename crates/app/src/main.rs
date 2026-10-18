@@ -25,13 +25,13 @@ USAGE:
   ashdash                         start the launcher (default hotkey: Option+Shift+Space)
   ashdash query <text>            print the ranked results for <text>
   ashdash run <text> [index]      run result <index> (default 0) for <text>
-  ashdash import [--yes] <file>   install an .alfredworkflow package after showing what it can
+  ashdash import [--yes] <file>   install a workflow package after showing what it can
                                       do and asking (--yes: skip the question)
   ashdash workflows               list installed workflows
   ashdash trigger <bundle-id> <trigger-id> [argument]
                                       fire a workflow's External Trigger (through the
                                       running launcher when there is one)
-  ashdash theme <file>            validate an .alfredappearance file; apply it to the
+  ashdash theme <file>            validate an appearance file; apply it to the
                                       running launcher, or print it when none runs
   ashdash show                    show the launcher (starts it if needed)
   ashdash search <text>           show the launcher with <text> typed (starts it if needed)
@@ -49,7 +49,7 @@ USAGE:
   ashdash config keys             list every setting name
 ";
 
-const IMPORT_USAGE: &str = "usage: ashdash import [--yes] [--] <file.alfredworkflow>";
+const IMPORT_USAGE: &str = "usage: ashdash import [--yes] [--] <file>";
 
 /// Arguments of `ashdash import`: `--yes` and `--` (end of options) are the only options; any
 /// other `-`-prefixed word is an error (exit code 2), so a typo such as `--yess` can never be
@@ -306,7 +306,7 @@ fn run_launcher(paths: Paths, config: Config) -> Result<()> {
         }
     };
     let engine = Arc::new(Engine::new(paths, config));
-    // Double-clicked .alfredworkflow / .alfredappearance / .alfredsnippets files.
+    // Double-clicked workflow packages, appearance files and snippet collections.
     mac::opendocs::install(Arc::clone(&engine));
     let started = automation::start(&engine, primary);
     gui::run(engine, started.automation)
@@ -369,6 +369,7 @@ fn report(o: Outcome) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ashdash_core::format_ids::workflow_file;
 
     fn parse(a: &[&str]) -> std::result::Result<(bool, PathBuf), String> {
         parse_import_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -413,30 +414,25 @@ mod tests {
 
     #[test]
     fn import_takes_a_file_and_the_yes_flag_in_any_order() {
-        assert_eq!(parse(&["a.alfredworkflow"]), Ok((false, "a.alfredworkflow".into())));
-        assert_eq!(
-            parse(&["--yes", "a.alfredworkflow"]),
-            Ok((true, "a.alfredworkflow".into()))
-        );
-        assert_eq!(
-            parse(&["a.alfredworkflow", "--yes"]),
-            Ok((true, "a.alfredworkflow".into()))
-        );
+        let a = workflow_file("a");
+        let odd = workflow_file("--odd");
+        assert_eq!(parse(&[a.as_str()]), Ok((false, a.clone().into())));
+        assert_eq!(parse(&["--yes", a.as_str()]), Ok((true, a.clone().into())));
+        assert_eq!(parse(&[a.as_str(), "--yes"]), Ok((true, a.clone().into())));
         // `--` ends the options, so a file whose name starts with a dash can still be imported
-        assert_eq!(
-            parse(&["--", "--odd.alfredworkflow"]),
-            Ok((false, "--odd.alfredworkflow".into()))
-        );
+        assert_eq!(parse(&["--", odd.as_str()]), Ok((false, odd.clone().into())));
         assert_eq!(parse(&["--yes", "--", "-x"]), Ok((true, "-x".into())));
     }
 
     #[test]
     fn import_rejects_unknown_flags_and_wrong_file_counts() {
+        let a = workflow_file("a");
+        let a = a.as_str();
         for bad in [
-            &["--yess", "a.alfredworkflow"][..],
-            &["a.alfredworkflow", "--force"],
-            &["-y", "a.alfredworkflow"],
-            &["--yes=1", "a.alfredworkflow"],
+            &["--yess", a][..],
+            &[a, "--force"],
+            &["-y", a],
+            &["--yes=1", a],
             &["--", "a", "b"],
             &["a", "b"],
             &["--yes"],

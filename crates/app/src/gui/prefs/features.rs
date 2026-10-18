@@ -1,5 +1,6 @@
 //! Features page: what Ashdash searches and how.
 
+use ashdash_core::format_ids::SNIPPETS_EXT;
 use std::path::Path;
 
 use ashdash_core::bookmarks::ALL_SOURCE_IDS;
@@ -471,12 +472,8 @@ impl PrefsApp {
                         self.features.sn_edit = Some((None, SnippetDraft::default()));
                         self.features.sn_msg = None;
                     }
-                    if ui.button("Import .alfredsnippets…").clicked() {
-                        self.choose_file(
-                            Purpose::Snippets,
-                            "Choose a snippet collection (.alfredsnippets)",
-                            &["alfredsnippets"],
-                        );
+                    if ui.button("Import snippets…").clicked() {
+                        self.choose_file(Purpose::Snippets, "Choose a snippet collection", &[SNIPPETS_EXT]);
                     }
                 });
             }
@@ -561,7 +558,7 @@ impl PrefsApp {
             ui.horizontal(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.features.sn_input)
-                        .hint_text("path of an .alfredsnippets file")
+                        .hint_text("path of a snippet collection file")
                         .desired_width(220.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -604,7 +601,7 @@ impl PrefsApp {
         self.features.library = Some(SnippetLibrary::load(&file));
     }
 
-    /// Install a `.alfredsnippets` package as a collection.
+    /// Install a snippet collection package as a collection.
     pub(super) fn import_snippets(&mut self, file: &Path) {
         let dir = ashdash_core::clipboard::snippets::collections_dir(&self.paths.snippets_file());
         self.features.sn_msg = Some(match ashdash_core::clipboard::import_snippet_package(file, &dir) {

@@ -1,13 +1,14 @@
 //! Executing a workflow graph when a result is actioned, plus `{query}` /
 //! `{var:name}` template rendering.
 //!
-//! Execution model (confirmed by the reference launcher's "Stream Order" template): the
+//! Execution model: the
 //! outgoing wires of an object run top to bottom by destination Y position,
 //! each stream depth-first to completion; a Delay yields, so its continuation
 //! runs after the other streams. Side effects are not performed here: they are
 //! returned as [`Effect`]s and the caller performs them. Scripts are the one
 //! exception, they run in-line because their output feeds the next object.
 
+use crate::format_ids::{SCRIPT_OUTPUT_KEY, kind};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -174,7 +175,7 @@ pub enum Effect {
     WriteFile(WriteFile),
     /// Run an AppleScript snippet (Music/iTunes commands); fire and forget.
     AppleScript(String),
-    /// Show the launcher with this query (Browse in the reference launcher, Universal
+    /// Show the launcher with this query (Browse, Universal
     /// Actions). Needs UI integration the core cannot do alone.
     ShowLauncher {
         query: String,
@@ -258,12 +259,8 @@ struct Task<'a> {
     args: Option<Vec<String>>,
 }
 
-const SPLIT_KINDS: [&str; 2] = ["alfred.workflow.utility.split", "alfred.workflow.utility.splitargument"];
-const MERGE_KINDS: [&str; 3] = [
-    "alfred.workflow.utility.merge",
-    "alfred.workflow.utility.joinargs",
-    "alfred.workflow.utility.joinarguments",
-];
+const SPLIT_KINDS: [&str; 2] = [kind::UTILITY_SPLIT, kind::UTILITY_SPLITARGUMENT];
+const MERGE_KINDS: [&str; 3] = [kind::UTILITY_MERGE, kind::UTILITY_JOINARGS, kind::UTILITY_JOINARGUMENTS];
 
 fn first_nonempty(node: &Node, keys: &[&str]) -> String {
     keys.iter()
@@ -272,8 +269,7 @@ fn first_nonempty(node: &Node, keys: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Music.app AppleScript for a reference launcher "iTunes command" code. The numbering is
-/// fully determined by the names of the reference launcher's bundled one-command templates.
+/// Music.app AppleScript for an "iTunes command" object's numeric code.
 pub(super) fn music_script(code: i64) -> Option<String> {
     let t = |cmd: &str| format!("tell application \"Music\" to {cmd}");
     Some(match code {
@@ -371,7 +367,7 @@ fn rend(st: &State, t: &str) -> String {
 
 impl Workflow {
     /// The file an Open File / Launch Files object opens: `~` expanded, and a relative path
-    /// resolved against the workflow's own folder (the reference launcher's working directory for a workflow)
+    /// resolved against the workflow's own folder (the working directory of a workflow)
     /// rather than left to `open`, which would use the launcher's working directory. The trust
     /// summary reports a relative literal as shipped with the workflow (`trust.rs`).
     fn open_target(&self, s: &str) -> PathBuf {
@@ -431,7 +427,7 @@ impl Workflow {
     }
 
     /// Fire an External Trigger object with an argument and variables, like
-    /// `reference://runtrigger`. `None` when the workflow has no such trigger.
+    /// the `ashdash://` trigger URL. `None` when the workflow has no such trigger.
     pub fn run_trigger(
         &self,
         trigger_id: &str,
@@ -562,19 +558,19 @@ impl Workflow {
     ) -> Flow {
         let mut flow = Flow::Next;
         match node.kind.as_str() {
-            "alfred.workflow.action.script" => {
+            kind::ACTION_SCRIPT => {
                 let res = run_node_script(node, self, paths, &st.arg, &st.vars, SCRIPT_ACTION_TIMEOUT);
                 if !self.script_result(res, st, fx) {
                     return Flow::Stop;
                 }
             }
             // Run Script output: same configuration as the action, but nothing follows.
-            "alfred.workflow.output.script" => {
+            kind::OUTPUT_SCRIPT => {
                 let res = run_node_script(node, self, paths, &st.arg, &st.vars, SCRIPT_ACTION_TIMEOUT);
                 self.script_result(res, st, fx);
                 return Flow::Stop;
             }
-            "alfred.workflow.action.applescript" => {
+            kind::ACTION_APPLESCRIPT => {
                 let res = run_applescript(
                     &node.s("applescript"),
                     &st.arg,
@@ -587,7 +583,7 @@ impl Workflow {
                     return Flow::Stop;
                 }
             }
-            "alfred.workflow.action.openurl" => {
+            kind::ACTION_OPENURL => {
                 let utf8 = node.b("utf8");
                 let spaces = node.s("spaces");
                 let q = if utf8 { percent_encode(&st.arg) } else { st.arg.clone() };
@@ -600,7 +596,7 @@ impl Workflow {
                 let browser = self.open_app(&node.s("browser"));
                 fx.push(Effect::OpenUrl { url, browser });
             }
-            "alfred.workflow.action.openfile" => {
+            kind::ACTION_OPENFILE => {
                 // An empty file field means "the incoming argument" (templates
                 // that follow a File Filter leave it blank).
                 let mut src = rend(st, &node.s("sourcefile"));
@@ -613,7 +609,7 @@ impl Workflow {
                     with,
                 });
             }
-            "alfred.workflow.action.launchfiles" => {
+            kind::ACTION_LAUNCHFILES => {
                 for p in node.config.get("paths").and_then(Value::as_array).into_iter().flatten() {
                     if let Some(s) = p.as_str() {
                         fx.push(Effect::OpenPath {
@@ -623,18 +619,18 @@ impl Workflow {
                     }
                 }
             }
-            "alfred.workflow.action.revealfile" => {
+            kind::ACTION_REVEALFILE => {
                 fx.push(Effect::Reveal(expand_tilde(&st.arg)));
             }
-            "alfred.workflow.action.terminalcommand" => {
+            kind::ACTION_TERMINALCOMMAND => {
                 let q = escape_query(&st.arg, node.i("escaping"));
                 fx.push(Effect::Terminal(render(&node.s("text"), &q, &st.vars)));
             }
-            "alfred.workflow.action.itunescommand" => match music_script(node.i("command")) {
+            kind::ACTION_ITUNESCOMMAND => match music_script(node.i("command")) {
                 Some(s) => fx.push(Effect::AppleScript(s)),
                 None => self.warn(fx, format!("unsupported music command {}", node.i("command"))),
             },
-            "alfred.workflow.action.systemcommand" => match node.i("command") {
+            kind::ACTION_SYSTEMCOMMAND => match node.i("command") {
                 // Only "Show Trash" is documented (a bundled template's note);
                 // other codes are not mapped so a wrong guess can never log
                 // someone out or shut the Mac down.
@@ -644,7 +640,7 @@ impl Workflow {
                 }),
                 other => self.warn(fx, format!("system command {other} is not mapped")),
             },
-            "alfred.workflow.action.systemwebsearch" => {
+            kind::ACTION_SYSTEMWEBSEARCH => {
                 // 1635215215 is 'awgo', the default (Google) search in the bundled template.
                 if node.i("searcher") == 1_635_215_215 {
                     fx.push(Effect::OpenUrl {
@@ -655,23 +651,23 @@ impl Workflow {
                     self.warn(fx, format!("web search engine {} is not mapped", node.i("searcher")));
                 }
             }
-            "alfred.workflow.action.browseinalfred" => {
+            kind::ACTION_BROWSE => {
                 let p = rend(st, &node.s("path"));
                 let p = if p.is_empty() { st.arg.clone() } else { p };
                 fx.push(Effect::ShowLauncher { query: p });
             }
-            "alfred.workflow.action.actioninalfred" => {
+            kind::ACTION_UNIVERSAL => {
                 let p = rend(st, &node.s("path"));
                 let p = if p.is_empty() { st.arg.clone() } else { p };
                 fx.push(Effect::ShowLauncher { query: p });
             }
-            "alfred.workflow.output.notification" => {
+            kind::OUTPUT_NOTIFICATION => {
                 fx.push(Effect::Notify {
                     title: rend(st, &node.s("title")),
                     text: rend(st, &node.s("text")),
                 });
             }
-            "alfred.workflow.output.clipboard" => {
+            kind::OUTPUT_CLIPBOARD => {
                 let text = rend(st, &node.s("clipboardtext"));
                 fx.push(if node.b("transient") {
                     Effect::CopyTransient(text)
@@ -679,10 +675,10 @@ impl Workflow {
                     Effect::Copy(text)
                 });
             }
-            "alfred.workflow.output.largetype" => {
+            kind::OUTPUT_LARGETYPE => {
                 fx.push(Effect::LargeType(rend(st, &node.s("largetypetext"))));
             }
-            "alfred.workflow.output.writefile" => {
+            kind::OUTPUT_WRITEFILE => {
                 let name = rend(st, &node.s("filename"));
                 if name.is_empty() {
                     self.warn(fx, "Write File has no file name");
@@ -703,8 +699,8 @@ impl Workflow {
                 }
                 // The import prompt describes the objects that are in the package. A workflow
                 // that could overwrite its own info.plist could add objects (scripts) later, so
-                // that one file is off limits. Other files in the folder stay writable (the reference launcher
-                // semantics), and a script can of course still write anywhere it wants: this
+                // that one file is off limits. Other files in the folder stay writable (as in
+                // the workflow format), and a script can of course still write anywhere it wants: this
                 // closes the declarative loophole, it is not a sandbox (SEC-30).
                 if is_info_plist_of(&self.dir, &path) {
                     self.warn(fx, "Write File refuses to change the workflow's own info.plist");
@@ -730,7 +726,7 @@ impl Workflow {
                 // "The resolved path is outputted from this object."
                 st.arg = path.display().to_string();
             }
-            "alfred.workflow.output.callexternaltrigger" => {
+            kind::OUTPUT_CALLEXTERNALTRIGGER => {
                 let bundle = rend(st, &node.s("workflowbundleid"));
                 let trigger = rend(st, &node.s("externaltriggerid"));
                 if !(bundle.is_empty() || bundle == "self" || bundle == self.bundle_id) {
@@ -758,7 +754,7 @@ impl Workflow {
                 };
                 return Flow::Jump(t.uid.clone(), next);
             }
-            "alfred.workflow.utility.argument" => {
+            kind::UTILITY_ARGUMENT => {
                 let a = rend(st, &node.s("argument"));
                 if !a.is_empty() {
                     st.arg = a;
@@ -775,11 +771,11 @@ impl Workflow {
                         .insert(k.clone(), render(&stringify(v), &current.arg, &current.vars));
                 }
             }
-            "alfred.workflow.utility.junction" => {}
-            "alfred.workflow.utility.debug" => {
+            kind::UTILITY_JUNCTION => {}
+            kind::UTILITY_DEBUG => {
                 fx.push(Effect::Debug(rend(st, &node.s("argument"))));
             }
-            "alfred.workflow.utility.conditional" => {
+            kind::UTILITY_CONDITIONAL => {
                 let mut chosen: Option<String> = None;
                 for c in node
                     .config
@@ -800,7 +796,7 @@ impl Workflow {
                     let mode = c.get("matchmode").and_then(Value::as_i64).unwrap_or(0);
                     let cs = c.get("matchcasesensitive").and_then(Value::as_bool).unwrap_or(false);
                     match utility::matches(mode, &input, &pattern, cs, MATCH_REGEX) {
-                        // "The reference launcher will process the output of the first matched condition."
+                        // The output of the first matched condition is processed.
                         Ok(true) => {
                             chosen = Some(text("uid"));
                             break;
@@ -814,7 +810,7 @@ impl Workflow {
                     None => Branch::Else,
                 });
             }
-            "alfred.workflow.utility.filter" => {
+            kind::UTILITY_FILTER => {
                 let raw_in = node.s("inputstring");
                 let input = if raw_in.is_empty() {
                     st.arg.clone()
@@ -832,7 +828,7 @@ impl Workflow {
                     }
                 }
             }
-            "alfred.workflow.utility.replace" => {
+            kind::UTILITY_REPLACE => {
                 let opts = ReplaceOpts {
                     mode: node.i("matchmode"),
                     case_insensitive: node.b("caseinsensitive") || node.b("regexcaseinsensitive"),
@@ -848,7 +844,7 @@ impl Workflow {
                     }
                 }
             }
-            "alfred.workflow.utility.transform" => match utility::transform(node.i("type"), &st.arg) {
+            kind::UTILITY_TRANSFORM => match utility::transform(node.i("type"), &st.arg) {
                 Ok(s) => st.arg = s,
                 Err(e) => {
                     self.warn(fx, format!("transform: {e}"));
@@ -881,7 +877,7 @@ impl Workflow {
                     st.arg = list.join(&d);
                 }
             }
-            "alfred.workflow.utility.delay" => {
+            kind::UTILITY_DELAY => {
                 let raw = rend(st, &node.s("seconds"));
                 let seconds = match raw.trim().parse::<f64>() {
                     Ok(s) if s.is_finite() && s >= 0.0 => s,
@@ -904,12 +900,12 @@ impl Workflow {
 }
 
 /// A Run Script object may print plain text (which becomes the next
-/// argument) or the reference launcher's `{"alfredworkflow": {"arg": ..., "variables": {...}}}`.
+/// argument) or a JSON object `{"<SCRIPT_OUTPUT_KEY>": {"arg": ..., "variables": {...}}}`.
 fn apply_script_output(st: &mut State, stdout: &str) {
     let trimmed = stdout.trim_end_matches(['\n', '\r']);
     if trimmed.trim_start().starts_with('{')
         && let Ok(v) = serde_json::from_str::<Value>(trimmed)
-        && let Some(w) = v.get("alfredworkflow")
+        && let Some(w) = v.get(SCRIPT_OUTPUT_KEY)
     {
         if let Some(a) = w.get("arg") {
             st.arg = stringify(a);
@@ -974,12 +970,15 @@ mod tests {
     }
 
     #[test]
-    fn workflow_json_output_sets_vars() {
+    fn json_output_sets_vars() {
         let mut st = State {
             arg: "x".into(),
             vars: BTreeMap::new(),
         };
-        apply_script_output(&mut st, r#"{"alfredworkflow":{"arg":"new","variables":{"k":1}}}"#);
+        apply_script_output(
+            &mut st,
+            &format!(r#"{{"{SCRIPT_OUTPUT_KEY}":{{"arg":"new","variables":{{"k":1}}}}}}"#),
+        );
         assert_eq!(st.arg, "new");
         assert_eq!(st.vars["k"], "1");
         apply_script_output(&mut st, "plain\n");
@@ -992,8 +991,8 @@ mod tests {
         let doc = json!({
             "name": "C", "bundleid": "c",
             "objects": [
-                {"uid": "A", "type": "alfred.workflow.utility.junction", "config": {}},
-                {"uid": "B", "type": "alfred.workflow.utility.junction", "config": {}},
+                {"uid": "A", "type": kind::UTILITY_JUNCTION, "config": {}},
+                {"uid": "B", "type": kind::UTILITY_JUNCTION, "config": {}},
             ],
             "connections": {"A": [{"destinationuid": "B", "modifiers": 0}], "B": [{"destinationuid": "A", "modifiers": 0}]}
         });
@@ -1019,14 +1018,14 @@ mod tests {
         let doc = json!({
             "name": "R", "bundleid": "r",
             "objects": [
-                {"uid": "F", "type": "alfred.workflow.action.openfile",
+                {"uid": "F", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "payload.app", "openwith": "tools/Viewer.app"}},
-                {"uid": "G", "type": "alfred.workflow.action.openfile",
+                {"uid": "G", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "/tmp/x", "openwith": "Safari"}},
-                {"uid": "H", "type": "alfred.workflow.action.openfile",
+                {"uid": "H", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "~/y", "openwith": "/Applications/Safari.app"}},
-                {"uid": "L", "type": "alfred.workflow.action.launchfiles", "config": {"paths": ["sub/a", "/abs/b"]}},
-                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                {"uid": "L", "type": kind::ACTION_LAUNCHFILES, "config": {"paths": ["sub/a", "/abs/b"]}},
+                {"uid": "U", "type": kind::ACTION_OPENURL,
                  "config": {"url": "https://x.test", "browser": "./B.app"}},
             ],
             "connections": {}
@@ -1095,15 +1094,15 @@ mod tests {
         let doc = json!({
             "name": "R", "bundleid": "r",
             "objects": [
-                {"uid": "A", "type": "alfred.workflow.action.openfile",
+                {"uid": "A", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "https://example.com/x", "openwith": "Safari.app"}},
-                {"uid": "B", "type": "alfred.workflow.action.openfile",
+                {"uid": "B", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "", "openwith": "com.google.Chrome"}},
-                {"uid": "C", "type": "alfred.workflow.action.openfile",
+                {"uid": "C", "type": kind::ACTION_OPENFILE,
                  "config": {"sourcefile": "Documents/y", "openwith": "payload.app"}},
-                {"uid": "L", "type": "alfred.workflow.action.launchfiles",
+                {"uid": "L", "type": kind::ACTION_LAUNCHFILES,
                  "config": {"paths": ["mailto:a@b.c", "sub/z"]}},
-                {"uid": "U", "type": "alfred.workflow.action.openurl",
+                {"uid": "U", "type": kind::ACTION_OPENURL,
                  "config": {"url": "https://x.test", "browser": "Chrome.app"}},
             ],
             "connections": {}
@@ -1172,7 +1171,7 @@ mod tests {
         let (paths, root) = temp_paths(tag);
         let doc = json!({
             "name": "W", "bundleid": "w",
-            "objects": [{"uid": "W", "type": "alfred.workflow.output.writefile", "config": {
+            "objects": [{"uid": "W", "type": kind::OUTPUT_WRITEFILE, "config": {
                 "filename": filename, "filetext": "PWNED\n", "type": mode, "relativepathmode": 2}}],
             "connections": {}
         });
@@ -1244,7 +1243,7 @@ mod tests {
 
     #[test]
     fn write_file_still_writes_through_a_link_to_an_ordinary_file() {
-        // A dotfile that is a symlink into a dotfiles repository keeps working (the reference launcher semantics).
+        // A dotfile that is a symlink into a dotfiles repository keeps working.
         let (wf, paths, root) = write_file_workflow("wfok", "notes.txt", 1);
         std::fs::write(wf.dir.join("real.txt"), "a\n").unwrap();
         std::os::unix::fs::symlink("real.txt", wf.dir.join("notes.txt")).unwrap();
@@ -1265,10 +1264,10 @@ mod tests {
         let doc = json!({
             "name": "T", "bundleid": "t",
             "objects": [
-                {"uid": "J", "type": "alfred.workflow.utility.junction", "config": {}},
-                {"uid": "A", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "plain {query}", "transient": false}},
-                {"uid": "B", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "secret {query}", "transient": true}},
-                {"uid": "C", "type": "alfred.workflow.output.clipboard", "config": {"clipboardtext": "unset {query}"}},
+                {"uid": "J", "type": kind::UTILITY_JUNCTION, "config": {}},
+                {"uid": "A", "type": kind::OUTPUT_CLIPBOARD, "config": {"clipboardtext": "plain {query}", "transient": false}},
+                {"uid": "B", "type": kind::OUTPUT_CLIPBOARD, "config": {"clipboardtext": "secret {query}", "transient": true}},
+                {"uid": "C", "type": kind::OUTPUT_CLIPBOARD, "config": {"clipboardtext": "unset {query}"}},
             ],
             "connections": {"J": [
                 {"destinationuid": "A", "modifiers": 0},

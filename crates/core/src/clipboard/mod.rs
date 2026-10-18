@@ -6,7 +6,7 @@
 //!   crate implements it with `NSPasteboard`).
 //! * [`restore`], [`paste`], [`command`] - put entries back, auto-paste (Cmd+V
 //!   via CGEvent, Accessibility), and the [`ClipCommand`] enum tying them together.
-//! * [`snippets`], [`placeholders`] - collections, `.alfredsnippets` import and
+//! * [`snippets`], [`placeholders`] - collections, snippet package import and
 //!   dynamic placeholders.
 //!
 //! # Integration notes for the engine owner

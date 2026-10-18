@@ -1,5 +1,5 @@
 //! What a result row says about itself while a modifier key is held
-//! (The reference launcher swaps the subtitle). Limited to what `ashdash_core::Item` exposes:
+//! (the subtitle is swapped for the modifier's hint). Limited to what `ashdash_core::Item` exposes:
 //! `cmd_action` and a workflow's per-modifier overrides.
 
 use ashdash_core::{Action, Item, Mods};

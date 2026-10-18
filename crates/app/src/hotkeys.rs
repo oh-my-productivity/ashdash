@@ -1,10 +1,8 @@
-//! Global hotkeys for workflows (`alfred.workflow.trigger.hotkey` objects).
+//! Global hotkeys for workflows (hotkey trigger objects, `format_ids::kind::TRIGGER_HOTKEY`).
 //!
-//! # Encoding (inferred from the templates bundled with the reference launcher)
+//! # Encoding
 //!
-//! Observed in `Hotkeys`, `Advanced Hotkeys`, `Universal Actions`,
-//! `Clipboard`, `Show the reference launcher with selected text`... (only `Universal Actions`
-//! ships a populated key; the reference launcher strips hotkeys on export):
+//! A hotkey object stores these config fields (exported workflows usually carry an empty key):
 //!
 //! | field | meaning |
 //! |---|---|
@@ -12,10 +10,10 @@
 //! | `hotmod` | `NSEvent.ModifierFlags` raw value: shift `1<<17`, control `1<<18`, option `1<<19`, command `1<<20`, numeric pad `1<<21`, function `1<<23`. The F5 template stores `0x880000` = option + function |
 //! | `hotstring` | display string such as `"F5"` (informational) |
 //! | `hotkey == 0 && hotmod == 0` | **not set** (key code 0 is "A", but a bare "A" is never a valid hotkey) |
-//! | `action` | `0` pass through to the workflow, `1` show the launcher with the argument as query. *Inferred*: template `Show the reference launcher with selected text` is `1` and has no connections, `Clipboard`/`Universal Actions` use `0` |
-//! | `argument` | `0` none, `1` selection in macOS, `2` clipboard. *Inferred*: the `Universal Actions` readme says its `2` hotkey pre-populates "your clipboard contents", `Show the reference launcher with selected text` is `1` |
-//! | `relatedAppsMode` / `relatedApps` | `0` every app, `1` only while one of `relatedApps` (bundle ids) is frontmost, `2` every app except those. *Inferred*: `Advanced Hotkeys` uses `1` with three apps; `2` follows the reference launcher's UI |
-//! | `focusedappvariable` / `focusedappvariablename` | export the frontmost app's bundle id as a variable; the readme/filters of `Advanced Hotkeys` read `{var:focusedapp}` while the stored name is empty, so the empty name means `focusedapp` |
+//! | `action` | `0` pass through to the workflow, `1` show the launcher with the argument as query. |
+//! | `argument` | `0` none, `1` selection in macOS, `2` clipboard. |
+//! | `relatedAppsMode` / `relatedApps` | `0` every app, `1` only while one of `relatedApps` (bundle ids) is frontmost, `2` every app except those. |
+//! | `focusedappvariable` / `focusedappvariablename` | export the frontmost app's bundle id as a variable; workflows read `{var:focusedapp}` while the stored name is usually empty, so an empty name means `focusedapp` |
 //! | `leftcursor` | cursor placement when showing the launcher; ignored |
 //! | `modsmode` | always `0` in templates; non-zero values (hold/release/double-tap style triggers?) are unknown and the hotkey is skipped with a warning |
 //!
@@ -31,6 +29,7 @@
 //! Firing goes through `Engine::run_node(workflow_id, node_uid, arg, vars)`, which starts the
 //! workflow at the hotkey node and records nothing in `usage.json`.
 
+use ashdash_core::format_ids::kind;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,7 +41,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 use crate::events::{AppEvent, EventSink};
 
-pub const KIND_HOTKEY: &str = "alfred.workflow.trigger.hotkey";
+pub const KIND_HOTKEY: &str = kind::TRIGGER_HOTKEY;
 
 // `NSEvent.ModifierFlags` raw values.
 const NS_SHIFT: i64 = 1 << 17;

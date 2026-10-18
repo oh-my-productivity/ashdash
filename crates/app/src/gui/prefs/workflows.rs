@@ -71,7 +71,7 @@ impl PrefsApp {
         if self.workflows.list.is_empty() {
             hint(
                 ui,
-                "No workflows installed. Import a .alfredworkflow file above, or point workflow_dirs at an existing folder of workflows.",
+                "No workflows installed. Import a workflow package above, or point workflow_dirs at an existing folder of workflows.",
             );
         }
         let list = self.workflows.list.clone();
@@ -98,7 +98,7 @@ impl PrefsApp {
                 if ui.button("Choose workflow file…").clicked() {
                     self.choose_file(
                         Purpose::Workflow,
-                        "Choose a workflow (.alfredworkflow)",
+                        "Choose a workflow package",
                         &ashdash_core::workflow::WORKFLOW_PACKAGE_EXTENSIONS,
                     );
                 }
@@ -118,7 +118,7 @@ impl PrefsApp {
             }
             hint(
                 ui,
-                "You can also drop a .alfredworkflow file onto this window. Nothing is installed before you confirm.",
+                "You can also drop a workflow package onto this window. Nothing is installed before you confirm.",
             );
         });
     }
@@ -393,10 +393,7 @@ impl PrefsApp {
             }
         });
         ui.add_space(style::m::GAP);
-        hint(
-            ui,
-            "Ashdash is open source software. It is not affiliated with the reference launcher or its publisher.",
-        );
+        hint(ui, "Ashdash is open source software.");
         hint(
             ui,
             "Settings are kept in config.json; `ashdash config keys` lists every setting.",
@@ -408,6 +405,7 @@ impl PrefsApp {
 mod tests {
     use super::*;
     use crate::gui::importprompt::is_format_char;
+    use ashdash_core::format_ids::{kind, workflow_file};
 
     fn hostile_package(dir: &Path, name: &str, author: &str) -> PathBuf {
         let _ = std::fs::create_dir_all(dir);
@@ -415,11 +413,12 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>name</key><string>{name}</string><key>bundleid</key><string>t.prefs.hostile</string>
 <key>createdby</key><string>{author}</string><key>objects</key><array>
-<dict><key>uid</key><string>W</string><key>type</key><string>alfred.workflow.output.writefile</string>
+<dict><key>uid</key><string>W</string><key>type</key><string>{ty}</string>
 <key>config</key><dict><key>filename</key><string>~/.zshrc</string><key>type</key><integer>1</integer></dict></dict>
-</array></dict></plist>"#
+</array></dict></plist>"#,
+            ty = kind::OUTPUT_WRITEFILE
         );
-        let p = dir.join("h.alfredworkflow");
+        let p = dir.join(workflow_file("h"));
         std::fs::write(
             &p,
             crate::gui::importprompt::test_zip::stored(&[("info.plist", plist.as_bytes())]),

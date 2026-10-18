@@ -1,4 +1,4 @@
-//! Installing `.alfredworkflow` packages.
+//! Installing workflow packages.
 //!
 //! A package is untrusted input until it has been extracted and validated, so the importer
 //! extracts by hand (no `ZipArchive::extract`) into a private, uniquely named staging directory,
@@ -15,6 +15,7 @@
 //!   folder are on different volumes (`EXDEV`) the tree is copied and fsynced beside the
 //!   destination first, so a half-written install is never visible.
 
+use crate::format_ids::WORKFLOW_EXTENSIONS;
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -26,15 +27,10 @@ use super::script::safe_key;
 use super::{TrustSummary, Workflow};
 use crate::config::Paths;
 
-/// File extensions of the reference launcher workflow packages (the reference launcher all use the same zip format), lower
+/// File extensions of workflow packages (all of them are the same zip format), lower
 /// case, without the dot. The launcher, Finder opens, the CLI and the preferences window share
 /// this list.
-pub const WORKFLOW_PACKAGE_EXTENSIONS: [&str; 4] = [
-    "alfredworkflow",
-    "alfred3workflow",
-    "alfred4workflow",
-    "alfred5workflow",
-];
+pub const WORKFLOW_PACKAGE_EXTENSIONS: [&str; 4] = WORKFLOW_EXTENSIONS;
 
 /// Whether `path` has one of the [`WORKFLOW_PACKAGE_EXTENSIONS`] (case-insensitive).
 pub fn is_workflow_package(path: &Path) -> bool {
@@ -98,7 +94,7 @@ impl Drop for Staging {
 /// next package is staged.
 const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
-/// Install a `.alfredworkflow` package (a zip archive) under `dest_root`, without asking.
+/// Install a workflow package (a zip archive) under `dest_root`, without asking.
 ///
 /// For trusted callers (tests, scripts). Anything that shows the user a confirmation must use
 /// [`stage_package`] and install the [`StagedPackage`] it returns, so that what was confirmed is
@@ -175,7 +171,7 @@ impl StagedPackage {
     }
 }
 
-/// Open a `.alfredworkflow` package once: extract it into a private (0700) staging directory
+/// Open a workflow package once: extract it into a private (0700) staging directory
 /// under the data folder, with the importer's limits, parse and describe it. Nothing is
 /// installed and nothing runs. Install the result with [`StagedPackage::install`] after
 /// confirming; drop it to cancel.
@@ -648,7 +644,7 @@ fn check_link(rel: &Path, target: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn every_reference_package_extension_is_recognised() {
+    fn every_package_extension_is_recognised() {
         use super::{WORKFLOW_PACKAGE_EXTENSIONS, is_workflow_package};
         use std::path::Path;
         assert_eq!(WORKFLOW_PACKAGE_EXTENSIONS.len(), 4);
@@ -659,20 +655,24 @@ mod tests {
                 "{e} upper"
             );
         }
+        let unknown_version = format!("a.{}", WORKFLOW_EXT.replace("workflow", "2workflow"));
+        let trailing = format!("a.{WORKFLOW_EXT}.txt");
         for no in [
-            "a.alfred2workflow",
             "a.zip",
-            "alfredworkflow",
-            "a.alfredworkflow.txt",
+            WORKFLOW_EXT,
             "",
             "a.",
+            unknown_version.as_str(),
+            trailing.as_str(),
         ] {
             assert!(!is_workflow_package(Path::new(no)), "{no:?}");
         }
     }
 
     use super::*;
+
     use crate::config::Paths;
+    use crate::format_ids::{WORKFLOW_EXT, kind, workflow_file};
 
     #[test]
     fn links_must_stay_inside() {
@@ -963,7 +963,7 @@ mod tests {
         let paths = Paths::under(&root);
         let wfs = paths.workflows_dir();
         std::fs::create_dir_all(wfs.join(".import-copy-1000-1-3")).unwrap();
-        let pkg = root.join("sample.alfredworkflow");
+        let pkg = root.join(workflow_file("sample"));
         sample_package(&pkg);
         let _staged = stage_package(&paths, &pkg).unwrap();
         assert!(!wfs.join(".import-copy-1000-1-3").exists());
@@ -1007,11 +1007,13 @@ mod tests {
 <key>createdby</key><string>Ann Author</string>
 <key>description</key><string>Does things</string>
 <key>objects</key><array>
-<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<dict><key>uid</key><string>A</string><key>type</key><string>@SCRIPT@</string>
 <key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo hi</string></dict></dict>
-<dict><key>uid</key><string>B</string><key>type</key><string>alfred.workflow.action.openurl</string>
+<dict><key>uid</key><string>B</string><key>type</key><string>@OPENURL@</string>
 <key>config</key><dict><key>url</key><string>https://example.com/{query}</string></dict></dict>
-</array></dict></plist>"#;
+</array></dict></plist>"#
+            .replace("@SCRIPT@", kind::ACTION_SCRIPT)
+            .replace("@OPENURL@", kind::ACTION_OPENURL);
         let f = std::fs::File::create(path).unwrap();
         let mut z = zip::ZipWriter::new(f);
         z.start_file("info.plist", zip::write::SimpleFileOptions::default())
@@ -1025,7 +1027,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oa-preview-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let pkg = root.join("sample.alfredworkflow");
+        let pkg = root.join(workflow_file("sample"));
         sample_package(&pkg);
         let paths = Paths::under(&root);
 
@@ -1046,9 +1048,9 @@ mod tests {
         drop(staged);
         assert_eq!(std::fs::read_dir(&staging_root).unwrap().count(), 0);
 
-        assert!(stage_package(&paths, &root.join("missing.alfredworkflow")).is_err());
-        std::fs::write(root.join("junk.alfredworkflow"), b"not a zip").unwrap();
-        assert!(stage_package(&paths, &root.join("junk.alfredworkflow")).is_err());
+        assert!(stage_package(&paths, &root.join(workflow_file("missing"))).is_err());
+        std::fs::write(root.join(workflow_file("junk")), b"not a zip").unwrap();
+        assert!(stage_package(&paths, &root.join(workflow_file("junk"))).is_err());
         assert_eq!(
             std::fs::read_dir(&staging_root).unwrap().count(),
             0,
@@ -1081,7 +1083,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("oa-deep-pkg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let pkg = root.join("deep.alfredworkflow");
+        let pkg = root.join(workflow_file("deep"));
         deep_package(&pkg, 120_000);
         assert!(std::fs::metadata(&pkg).unwrap().len() < 10_000, "a small download");
         let paths = Paths::under(&root);

@@ -2,7 +2,7 @@
 //!
 //! * [`loginitem`] - "launch at login" through `SMAppService.mainApp`.
 //! * [`permissions`] - silent probes of Accessibility, Automation and Full Disk Access.
-//! * [`opendocs`] - double-clicked `.alfredworkflow` / `.alfredappearance` / `.alfredsnippets` files.
+//! * [`opendocs`] - double-clicked workflow packages, appearance files and snippet collections.
 //!
 //! (The window-level AppKit glue lives in `gui/mac.rs`.)
 

@@ -6,6 +6,7 @@
 
 mod common;
 
+use ashdash_core::format_ids::kind;
 use ashdash_core::item::{Action, Item, Mods};
 use ashdash_core::system::SystemCommand;
 use ashdash_core::{Engine, Outcome};
@@ -430,8 +431,8 @@ fn external_trigger_runs_to_large_type() {
     let doc = json!({
         "name": "Trig", "bundleid": "qa.trig",
         "objects": [
-            {"uid": "T", "type": "alfred.workflow.trigger.external", "config": {"triggerid": "go"}},
-            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "got {query}"}}
+            {"uid": "T", "type": kind::TRIGGER_EXTERNAL, "config": {"triggerid": "go"}},
+            {"uid": "L", "type": kind::OUTPUT_LARGETYPE, "config": {"largetypetext": "got {query}"}}
         ],
         "connections": {"T": [{"destinationuid": "L", "modifiers": 0}]}
     });
@@ -449,8 +450,8 @@ fn hotkey_like_workflow(bundle: &str) -> serde_json::Value {
     json!({
         "name": "Hk", "bundleid": bundle,
         "objects": [
-            {"uid": "H", "type": "alfred.workflow.trigger.hotkey", "config": {"hotkey": 0, "hotmod": 0}},
-            {"uid": "L", "type": "alfred.workflow.output.largetype", "config": {"largetypetext": "{var:who} got {query}"}}
+            {"uid": "H", "type": kind::TRIGGER_HOTKEY, "config": {"hotkey": 0, "hotmod": 0}},
+            {"uid": "L", "type": kind::OUTPUT_LARGETYPE, "config": {"largetypetext": "{var:who} got {query}"}}
         ],
         "connections": {"H": [{"destinationuid": "L", "modifiers": 0}]}
     })

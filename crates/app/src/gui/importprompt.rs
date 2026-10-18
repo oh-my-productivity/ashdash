@@ -527,6 +527,8 @@ mod tests {
 
     use super::*;
 
+    use ashdash_core::format_ids::{kind, workflow_file};
+
     fn preview() -> PackagePreview {
         PackagePreview {
             name: "Weather".into(),
@@ -955,9 +957,10 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>name</key><string>{name}</string><key>bundleid</key><string>{bundle}</string>
 <key>objects</key><array>
-<dict><key>uid</key><string>A</string><key>type</key><string>alfred.workflow.action.script</string>
+<dict><key>uid</key><string>A</string><key>type</key><string>{ty}</string>
 <key>config</key><dict><key>type</key><integer>0</integer><key>script</key><string>echo {marker}</string></dict></dict>
-</array></dict></plist>"#
+</array></dict></plist>"#,
+            ty = kind::ACTION_SCRIPT
         )
     }
 
@@ -976,7 +979,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let pkg = root.join("w.alfredworkflow");
+        let pkg = root.join(workflow_file("w"));
         let write = |name: &str, bundle: &str, marker: &str| {
             let plist = doc_plist(name, bundle, marker);
             std::fs::write(&pkg, test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();
@@ -1014,7 +1017,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let pkg = root.join("w.alfredworkflow");
+        let pkg = root.join(workflow_file("w"));
         let write = |name: &str, bundle: &str, marker: &str| {
             let plist = doc_plist(name, bundle, marker);
             std::fs::write(&pkg, test_zip::stored(&[("info.plist", plist.as_bytes())])).unwrap();

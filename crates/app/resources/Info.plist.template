@@ -44,7 +44,7 @@
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
 
-  <!-- ashdash:// (never reference://, so a real reference launcher install keeps its scheme). -->
+  <!-- The URL scheme is the project's own (see crates/core/src/brand.rs). -->
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -60,9 +60,10 @@
   </array>
 
   <!--
-    Files we can import. LSHandlerRank "Alternate" keeps us out of the way of an
-    installed reference launcher: we appear in "Open With" but never become the default.
-    Extensions only (no UTIs): the reference launcher UTIs belong to the reference launcher.
+    Files we can import. LSHandlerRank "Alternate" keeps us out of the way of other
+    apps that handle the same files: we appear in "Open With" but never become the
+    default. Extensions only (no UTIs); the extensions are listed in
+    crates/core/src/format_ids.rs.
   -->
   <key>CFBundleDocumentTypes</key>
   <array>
