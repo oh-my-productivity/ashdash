@@ -7,6 +7,10 @@ A claim that nobody has been able to check on a real desktop or machine is marke
 
 ## [Unreleased]
 
+### Fixed
+- Chinese, Japanese and Korean text in the launcher window is drawn with a system font (loaded the first time such text is shown) instead of empty boxes.
+- `ashdash login-item status` says "off" on a fresh install instead of a misleading "not found" warning.
+
 ### Changed
 - Themes: a theme offered for installation (Finder, `ashdash theme <file>`, the preferences window) is limited to 2 MiB, but a theme that is already installed or selected in the settings
   loads up to 8 MiB.
