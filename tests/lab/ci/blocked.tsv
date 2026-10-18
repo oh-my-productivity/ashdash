@@ -1,5 +1,5 @@
 # Checklist rows that cannot work (or not yet) on a GitHub-hosted runner. A FAIL on one of these is reported as BLOCKED with the reason
 # (tests/lab/ci/finalize.py); a PASS stays PASS, and every other FAIL fails the job.
 # columns (tab separated): row id or glob, reason, optional runner image glob (CI_IMAGE, e.g. macos26)
-3.3.6b	Esc left a window of at least 1000x700 points on screen (the Large Type check also matches the app's own hidden full-size window on the 1024x768 hosted display); macOS 15 passes. Not diagnosed on macOS 26, treated as open, see docs/CI.md	macos26
-3.5.5b	the pasteboard type list was empty after Return on a copied file; macOS 15 passes. Not diagnosed on macOS 26 (pasteboard privacy of the new release is the suspect), treated as open, see docs/CI.md	macos26
+# (no rows yet: every row that failed on a hosted runner during bring-up was either a product/script bug, now fixed, or flaky and passed
+# on the second pass; see docs/CI.md)
