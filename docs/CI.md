@@ -118,7 +118,30 @@ image); a PASS stays a PASS and every other FAIL fails the job. The BLOCKED and 
 same ones as in the lab (no second display, display sleep locks the session, restart/logout/lock would end the session, no network switch,
 Full Disk Access is not enforced with SIP off, nothing to type with an IME, ...).
 
-RESULTS_PLACEHOLDER
+Rows that fail only sometimes are not hidden either: a GUI check on a shared 3-core virtual machine can miss its timing. When the first
+pass of the checklist has a FAILed row, `run-checklist.sh` runs the sections that contain it once more; a row that fails twice fails the
+job, and one that passes the second time is listed in the job summary as flaky (`CI_RETRY=0` turns the second pass off). Seen during
+bring-up: 3.3.6b and 3.5.5b on macOS 26 in one run, 3.2.9b on macOS 26 in another; each passed in the other runs.
+
+`tests/lab/ci/blocked.tsv` is empty at the moment: every row that failed on a hosted runner while this was set up was a real bug, now
+fixed, or flaky. Add a row there (with the reason and, if it applies to one image only, the image) when a check needs something a hosted
+runner cannot give.
+
+## Findings while bringing CI up
+
+* **App list truncated by a symlinked bundle (product bug, fixed on branch `ci/w9-fixtest`).** `crates/core/src/index/scan.rs` called
+  walkdir's `skip_current_dir` on every `.app`; for a symlink such as `/Applications/Safari.app` (a link into a cryptex since macOS 13) that
+  skips the rest of the parent directory, so which apps were listed depended on the directory order. On the hosted images `ashdash query
+  saf` listed no Safari and `/Applications` contributed one Xcode and nothing else. It reproduces on any Mac with a regression test
+  (`a_symlinked_bundle_does_not_hide_the_apps_after_it`).
+* **Timing test (fixed on the same branch).** `bookmarks::cache::tests::backoff_grows_exponentially_up_to_the_cap` slept 30 ms and
+  required the clock not to pass 80 ms; it failed on every arm64 runner (it passes on the Intel image and on a developer Mac). The waits are
+  now 200/400 ms.
+* **Checklist row 3.2.8c never ran in the lab** (Spotlight is off there). On a runner it exposed that the script created its fixture outside
+  the home folder the launcher searches; the fixture is now created there and the script waits for Spotlight to index it.
+* **`advisories.yml` is red:** `cargo deny check advisories` reports the yanked crate `inout 0.2.3` (dependency path `ashdash-core` -> `zip 9.0.3`
+  -> `aes 0.9.3` -> `cipher 0.5.2` -> `inout`). Fixing it means changing `Cargo.lock` (or pinning a different `zip`), which this work does not do.
+* **`macos-14` is retired on 2026-11-02**; `release.yml` built on it and now uses `macos-15` (the app is still built for macOS 12.0 and later).
 
 ## Reproducing a CI failure locally
 
