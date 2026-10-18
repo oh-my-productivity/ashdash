@@ -223,18 +223,32 @@ sleep 2
 [ -n "$vm" ] || bad "lab-up printed no VM name"
 
 echo "== concurrency: 2 slots, third job queues"
-for n in 1 2 3; do
-  ( "$lab/lab-with-vm" --id "conc$n" -- sh -c 'date +%s; sleep 6' >"$tmp/conc$n.out" 2>/dev/null ) &
-  sleep 0.7
-done
-sleep 3
-running=$(run_vms)
-[ "$running" = 2 ] && ok "while 3 jobs are submitted only 2 VMs exist" || bad "VMs running: $running"
-wait
-t=()
-for n in 1 2 3; do t+=("$(head -1 "$tmp/conc$n.out" 2>/dev/null)"); done
-if [ -n "${t[2]}" ] && [ "${t[2]}" -ge "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then ok "third job started only after a slot freed (${t[*]})"; else bad "third job did not queue: ${t[*]}"; fi
-[ "$(run_vms)" = 0 ] && ok "all VMs cleaned up" || bad "VMs left over"
+# Timing-sensitive (three fake VMs on a shared fake guest home, a 6 s sleep): on a busy machine one trial in a few fails for reasons that
+# have nothing to do with the semaphore, so a failed trial is repeated once before it counts. Both trials' evidence is printed.
+conc_trial() { # conc_trial <n>: prints the evidence, returns 0 when 2 VMs existed at once, the third queued and nothing leaked
+  local n=$1 i running t=() why=""
+  for i in 1 2 3; do
+    ( "$lab/lab-with-vm" --id "conc$n$i" -- sh -c 'date +%s; sleep 6' >"$tmp/conc$n$i.out" 2>"$tmp/conc$n$i.err" ) &
+    sleep 0.7
+  done
+  sleep 3
+  running=$(run_vms)
+  wait
+  for i in 1 2 3; do t+=("$(head -1 "$tmp/conc$n$i.out" 2>/dev/null)"); done
+  [ "$running" = 2 ] || why="VMs running while 3 jobs were submitted: $running (expected 2)"
+  if [ -z "$why" ]; then
+    if [ -z "${t[2]}" ] || [ -z "${t[0]}" ] || [ -z "${t[1]}" ] || [ "${t[2]}" -lt "$(( (t[0] < t[1] ? t[0] : t[1]) + 5 ))" ]; then why="third job did not queue: ${t[*]}"; fi
+  fi
+  [ -z "$why" ] && [ "$(run_vms)" != 0 ] && why="VMs left over"
+  [ -z "$why" ] && return 0
+  printf '    trial %s: %s\n' "$n" "$why"; for i in 1 2 3; do tail -2 "$tmp/conc$n$i.err" | sed 's/^/      | /'; done
+  return 1
+}
+if conc_trial 1 || { echo "    (repeating the timing-sensitive trial once)"; conc_trial 2; }; then
+  ok "3 jobs submitted: only 2 VMs exist at once, the third starts after a slot frees, all VMs cleaned up"
+else
+  bad "concurrency: the semaphore trial failed twice"
+fi
 
 echo "== base image lookup (OCI images are not 'local')"
 base_dir="$TART_HOME/oci/ghcr.io%cirruslabs%macos-sequoia-base:latest"

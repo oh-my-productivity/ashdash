@@ -131,7 +131,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests and a native build on x86-64.
+  # The last Intel image: GitHub retires macos-15-intel in August 2027 (docs/CI.md). Tests, a native build and the GUI smoke test on x86-64.
   x86-64:
     if: github.event_name != 'pull_request'
     runs-on: macos-15-intel
@@ -147,8 +147,18 @@ jobs:
       - run: uname -m
       - run: cargo test --workspace
       - run: cargo build -p ashdash
-      - name: Native x86-64 bundle
-        run: ARCHS=native SKIP_ICON=1 OUT_DIR="$RUNNER_TEMP/x86-dist" packaging/build-app.sh
+      # Builds the native x86-64 bundle too, and launches it: the only place where the Intel slice is executed. tcc-grant.sh refuses on
+      # this image (the model is not VirtualMac*); the permissions the smoke test needs are already granted there.
+      - name: GUI smoke test on Intel
+        run: bash tests/lab/ci/run-smoke.sh
+      - name: Upload logs and screenshots (failures only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-smoke-macos-15-intel
+          path: ${{ runner.temp }}/ashdash-ci/smoke
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Universal .app and DMG as a release would produce them (ad-hoc signed), verified, kept for 7 days as a workflow artifact.
   bundle:

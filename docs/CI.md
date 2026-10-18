@@ -27,7 +27,7 @@ Required status checks on `main`: `check` and `deny`.
   `Ashdash.app` with `packaging/build-app.sh`, launch in the GUI session, `ashdash show/search/query`, the `ashdash://` scheme, the global
   hotkey Option+Shift+Space through System Events (the window must toggle), window state read back as text, a screenshot, login item
   enable/status/disable, `quit`. `scripts/check.sh` is not repeated (the `check` job does it).
-* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash` and a native x86-64 bundle. **GitHub retires the
+* **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash`, and the same GUI smoke test as above with the native x86-64 bundle. **GitHub retires the
   `macos-15-intel` image in August 2027**; it is the last Intel hosted runner. After that, x86-64 is only built (the `bundle` job
   cross-compiles the x86-64 slice on arm64) and never executed in CI; its tests need a physical Intel Mac. Delete this job when the label
   stops working.
@@ -57,7 +57,7 @@ Third-party actions are pinned by commit SHA; the comment on each line names the
 | `actions/download-artifact` | v8.0.2 | `9000827ccba6bdab643e8b6fd33ac0654aef8333` |
 | `Swatinem/rust-cache` | v2.9.2 | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` |
 | `EmbarkStudios/cargo-deny-action` | v2.1.1 | `3c6349835b2b7b196a839186cb8b78e02f7b5f25` |
-| `dtolnay/rust-toolchain` | branch `stable` | `b725eda525362e7cf34af9a7243cac1e3f01a7ec` (the project publishes no release tags for it; Dependabot moves the SHA) |
+| `dtolnay/rust-toolchain` | branch `stable` | `b725eda525362e7cf34af9a7243cac1e3f01a7ec` (the head of the action's `stable` branch on 2026-10-16: it tracks the toolchain by branch, its only release tag is from 2022) |
 | shellcheck (downloaded) | v0.11.0 | tarball SHA-256 in `ci.yml` |
 | actionlint (downloaded) | v1.7.12 | tarball SHA-256 in `ci.yml` |
 

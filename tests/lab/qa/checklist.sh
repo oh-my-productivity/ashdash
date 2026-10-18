@@ -248,7 +248,9 @@ s33() {
   ask 'pk ' 1.2 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
   local big; big=$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700 {print $6"x"$7}' | head -1)
   [ -n "$big" ] && result 3.3.6a PASS "Cmd+L opens Large Type (window $big)" || result 3.3.6a FAIL "no Large Type window: $(win_tool Ashdash ashdash | tr '\n' ';')"
-  key_code $KC_ESC; sleep 0.8; [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && result 3.3.6b PASS "Esc dismisses Large Type" || result 3.3.6b FAIL "Large Type still up after Esc"
+  # the window may fade out for a moment, longer on a loaded machine: look for up to 5 s
+  key_code $KC_ESC; local lti; for lti in 1 2 3 4 5 6 7 8 9 10; do sleep 0.5; [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && break; done
+  [ -z "$(win_tool Ashdash ashdash | awk '$6>=1000 && $7>=700')" ] && result 3.3.6b PASS "Esc dismisses Large Type" || result 3.3.6b FAIL "Large Type still up 5 s after Esc: $(win_tool Ashdash ashdash | tr '\n' ';')"
   hide_
   # Large Type with text longer than the screen scrolls (numbered words: the first word on screen must change)
   ask 'lt ' 1.5 >/dev/null; se 'keystroke "l" using {command down}' >/dev/null; sleep 1.5
