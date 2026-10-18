@@ -1,7 +1,7 @@
 name: ci
 
 # What runs where is explained in docs/CI.md. In short:
-#   every pull request and push to main: check, deny, lab-scripts, packaging (all cheap; `check` and `deny` are required status checks);
+#   every pull request and push to main: check, deny, lab-scripts, packaging, perf (all cheap; `check` and `deny` are required status checks);
 #   pushes to main and manual runs also: gui-smoke (macos-15, macos-26), x86-64 (macos-15-intel), bundle (universal .app + DMG).
 # The nightly checklist and the soak are in nightly.yml, the RustSec advisories in advisories.yml.
 #
@@ -99,6 +99,23 @@ jobs:
           echo "$tools" >> "$GITHUB_PATH"
       - name: shellcheck and actionlint
         run: tests/lab/ci/lint.sh
+
+  # Absolute latency ceilings. A wall-clock ceiling only means something for an optimised build, so these `perf_*` tests are
+  # `#[ignore]`d in the debug test run of `check` (which guards the same code paths with machine-independent checks: counted
+  # allocations and scaling ratios) and run here in release mode, one at a time. Not a required status check. See docs/CI.md.
+  perf:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # branch "stable" at the time of pinning
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Release-mode latency guards
+        run: cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1
 
   # ---- only on pushes to main and manual runs (they use more runner minutes than a pull request needs) -------------------------------
   # The lab smoke job on the hosted runner: bundle, launch in the GUI session, show/search, ashdash://, global hotkey, login item, quit.

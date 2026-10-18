@@ -5,7 +5,7 @@ are free for public repositories, macOS included). The rest is listed in [What n
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request and push to `main`; `workflow_dispatch` | `check`, `deny`, `lab-scripts`, `packaging` |
+| `ci.yml` | every pull request and push to `main`; `workflow_dispatch` | `check`, `deny`, `lab-scripts`, `packaging`, `perf` |
 | `ci.yml` | pushes to `main` and manual runs only | `gui-smoke` (macOS 15 and 26), `x86-64` (macOS 15 Intel), `bundle` |
 | `commit-lint.yml` | every pull request (opened, edited, synchronize, reopened) | `commit-lint`, `hooks-tests` |
 | `nightly.yml` | every night 02:41 UTC; `workflow_dispatch` | `checklist` (macOS 15 and 26), `soak` (macOS 15) |
@@ -17,6 +17,8 @@ Required status checks on `main`: `check` and `deny`.
 ## What each job does
 
 * **check** (macos-15): `scripts/check.sh` = `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`.
+* **perf** (macos-15): `cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1`, the absolute latency ceilings. See
+  [Timing-sensitive tests](#timing-sensitive-tests). Not a required status check.
 * **deny** (ubuntu): `cargo deny check licenses bans sources` (`deny.toml`). Advisories are deliberately not part of pull requests: a new
   RustSec entry for a crate a change does not touch would turn every pull request red. They run weekly in `advisories.yml`.
 * **lab-scripts** (macos-15): `tests/lab/test/run-tests.sh`, the host tests of the lab scripts against a fake `tart` and `ssh`: slot
@@ -114,7 +116,8 @@ Differences from the lab VM (macOS 15 on Tart) that matter for results:
 * **Smaller display** (1024 x 768 on arm64). Any check that looks for a window of at least a given size sees the launcher's hidden full-size window
   as well. See the two open rows below.
 * **Three cores, 7 GB**, shared hardware: timings are noisier than on the lab host. A unit test that slept for 30 ms and required the clock
-  not to pass 80 ms failed on every arm64 runner; it was loosened (see "Findings while bringing CI up").
+  not to pass 80 ms failed on every arm64 runner; it was loosened (see "Findings while bringing CI up"), and later rewritten so that no
+  test depends on the speed of the machine (see [Timing-sensitive tests](#timing-sensitive-tests)).
 * **Pre-granted privacy permissions.** The hosted image grants Accessibility, Automation and Screen Recording to the tools the scripts use, so
   the first-use consent dialogs the lab sees do not appear. `tcc-grant.sh` still runs (it adds the Terminal and `osascript` rows the
   scripts rely on), and the "no TCC rows for the app" paths are as exercised as in the lab: nothing is granted to Ashdash itself.
@@ -125,6 +128,30 @@ Differences from the lab VM (macOS 15 on Tart) that matter for results:
 The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`) refuse to run unless
 `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, the account is `runner` and it owns the console. `tcc-grant.sh` additionally
 requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/lab/test/run-tests.sh`).
+
+## Timing-sensitive tests
+
+A hosted runner has 3 or 4 shared CPUs and the tests are built in debug mode, which is 4 to 60 times slower than release. A test that
+compares a wall-clock time with a constant therefore fails on a slow runner and says nothing about the code (the `x86-64` job failed twice
+this way: 166 ms against a 150 ms ceiling, and a 25 ms ceiling at 5,000 apps). The rules for tests of this repository:
+
+* **Never compare a time with a constant to guard performance.** Count work (`crate::testperf::allocations_in`: allocations are exact and
+  identical on every machine) or compare the code with itself on a small and a large input in the same test (`testperf::best_of_pair`:
+  interleaved rounds, the best of each; a linear algorithm costs about 10x for 10x the input, a quadratic one 100x).
+* **Absolute ceilings live in `perf_*` tests** that are `#[ignore]`d in the normal run and start with `testperf::require_release()`. The
+  `perf` job runs them in release mode: `cargo test --release -p ashdash-core -- --ignored perf_ --test-threads=1`. Run the same command
+  locally before changing a hot path. The ceilings keep a 5x or larger margin over the numbers in [PERF.md](PERF.md).
+* **Never sleep for a duration the test then depends on.** Wait for the condition: poll with short steps and a generous overall limit that
+  only bounds a real failure (30 to 60 s). Where the code under test reads a clock (the bookmark back-off), the test passes a fake clock
+  and advances it by hand. Where a handler must be "slow", block it on a gate that the test opens, and read what the handler did, not how
+  long it took. The OS file watcher cannot be asked whether it is armed: repeat the edit until the report arrives.
+* **A bound on a hang is fine** (a script that sleeps 40 s must come back before 25 s; a parse that would run for hours must end within
+  30 s) as long as the limit sits at least 3x from both what the code normally takes and what a broken run would take.
+* **A wait for something that must not happen** (`recv_timeout(..).is_err()`) can only make a test pass too easily, never fail; keep it
+  short, and make sure the positive case before it proves the machinery is running.
+
+To see how a test behaves on a slow runner, run it under CPU oversubscription, for example 8 times as many busy loops as cores:
+`for i in $(seq 96); do yes > /dev/null & done; cargo test ...; kill $(jobs -p)`.
 
 ## Rows that differ or cannot run: `tests/lab/ci/blocked.tsv`
 
@@ -151,8 +178,11 @@ runner cannot give.
   saf` listed no Safari and `/Applications` contributed one Xcode and nothing else. It reproduces on any Mac with a regression test
   (`a_symlinked_bundle_does_not_hide_the_apps_after_it`).
 * **Timing test (fixed on the same branch).** `bookmarks::cache::tests::backoff_grows_exponentially_up_to_the_cap` slept 30 ms and
-  required the clock not to pass 80 ms; it failed on every arm64 runner (it passes on the Intel image and on a developer Mac). The waits are
-  now 200/400 ms.
+  required the clock not to pass 80 ms; it failed on every arm64 runner (it passes on the Intel image and on a developer Mac). The waits were
+  loosened to 200/400 ms, and it still failed once on a loaded machine; it now uses a fake clock and does not sleep at all.
+* **Latency tests on the Intel runner.** `scoring_thousands_of_bookmarks_per_keystroke_stays_cheap` (p95 166 ms against 150 ms) and
+  `query_latency_p95_at_5000_apps_stays_under_the_ceiling` failed in the `x86-64` job. Both are now machine-independent (allocation counts
+  and scaling ratios), with the absolute ceilings as release-mode `perf_*` tests; see [Timing-sensitive tests](#timing-sensitive-tests).
 * **Checklist row 3.2.8c never ran in the lab** (Spotlight is off there). On a runner it exposed that the script created its fixture outside
   the home folder the launcher searches; the fixture is now created there and the script waits for Spotlight to index it.
 * **`advisories.yml` is red:** `cargo deny check advisories` reports the yanked crate `inout 0.2.3` (dependency path `ashdash-core` -> `zip 9.0.3`
