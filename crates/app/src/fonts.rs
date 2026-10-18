@@ -34,40 +34,47 @@ impl Group {
         }
     }
 
-    /// The name of the font in egui's `font_data`.
-    fn font_name(self) -> &'static str {
-        match self {
-            Group::Cjk => "system-cjk",
-            Group::Hangul => "system-hangul",
-        }
-    }
-
-    /// System font files to try, in order of preference; the first that can be read wins.
-    /// Hiragino Sans has kana and the Japanese shapes of the ideographs, PingFang the Chinese
-    /// ones; the older Hiragino Sans GB and STHeiti are what a system without either still ships.
-    fn files(self) -> &'static [&'static str] {
+    /// The fonts to look for, in the order they are added to the fallback chain. Each slot takes the
+    /// first of its files that can be read. A group has several slots when no single system font has
+    /// every glyph: Hiragino Sans has kana and the Japanese shapes but none of the simplified-only
+    /// Chinese characters, which PingFang (or the older Hiragino Sans GB / STHeiti) has.
+    fn slots(self) -> &'static [Slot] {
         match self {
             Group::Cjk => &[
-                "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
-                "/System/Library/Fonts/PingFang.ttc",
-                "/System/Library/Fonts/Hiragino Sans GB.ttc",
-                "/System/Library/Fonts/STHeiti Light.ttc",
+                Slot {
+                    name: "system-cjk-ja",
+                    files: &["/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"],
+                    asset_names: &[],
+                },
+                Slot {
+                    name: "system-cjk-zh",
+                    files: &[
+                        "/System/Library/Fonts/PingFang.ttc",
+                        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                        "/System/Library/Fonts/STHeiti Light.ttc",
+                    ],
+                    // macOS 13 and newer keep PingFang in the downloadable font assets
+                    asset_names: &["PingFang.ttc"],
+                },
             ],
-            Group::Hangul => &[
-                "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-                "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
-            ],
+            Group::Hangul => &[Slot {
+                name: "system-hangul",
+                files: &[
+                    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                    "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+                ],
+                asset_names: &[],
+            }],
         }
     }
+}
 
-    /// File names to look for inside the downloadable font assets (macOS 13 and newer keep
-    /// PingFang there instead of in `/System/Library/Fonts`).
-    fn asset_names(self) -> &'static [&'static str] {
-        match self {
-            Group::Cjk => &["PingFang.ttc", "Hiragino Sans GB.ttc"],
-            Group::Hangul => &[],
-        }
-    }
+/// One font to find: egui name, fixed locations, and file names to look for inside the font assets
+/// (`<asset>.asset/AssetData/<name>`, tried right after the first fixed location).
+struct Slot {
+    name: &'static str,
+    files: &'static [&'static str],
+    asset_names: &'static [&'static str],
 }
 
 /// Folders that hold `<asset>.asset/AssetData/<font file>`.
@@ -183,34 +190,34 @@ pub struct Found {
     pub data: FontData,
 }
 
-/// Find the system font for `group`: the fixed locations first, then the font assets.
-pub fn find(source: &dyn FontSource, group: Group) -> Option<Found> {
-    let from_assets = || {
-        ASSET_ROOTS.iter().flat_map(|root| {
+/// Find the system fonts for `group`: one per slot that has a readable file.
+pub fn find(source: &dyn FontSource, group: Group) -> Vec<Found> {
+    group
+        .slots()
+        .iter()
+        .filter_map(|slot| find_slot(source, slot))
+        .collect()
+}
+
+fn find_slot(source: &dyn FontSource, slot: &Slot) -> Option<Found> {
+    let mut candidates: Vec<PathBuf> = slot.files.iter().map(PathBuf::from).collect();
+    // The assets come right after the first fixed path (PingFang), before the legacy fonts.
+    let mut assets = Vec::new();
+    if !slot.asset_names.is_empty() {
+        for root in ASSET_ROOTS {
             let mut dirs = source.list(Path::new(root));
             dirs.sort();
-            dirs.into_iter().flat_map(|d| {
-                group
-                    .asset_names()
-                    .iter()
-                    .map(move |n| d.join("AssetData").join(n))
-                    .collect::<Vec<_>>()
-            })
-        })
-    };
-    let mut candidates: Vec<PathBuf> = group.files().iter().map(PathBuf::from).collect();
-    // The font assets come right after the fixed PingFang path: PingFang in the assets is preferred
-    // over the legacy Chinese fonts, but not over Hiragino Sans.
-    let at = candidates
-        .iter()
-        .position(|p| p.ends_with("PingFang.ttc"))
-        .map_or(candidates.len(), |i| i + 1);
-    let assets: Vec<PathBuf> = from_assets().collect();
+            for d in dirs {
+                assets.extend(slot.asset_names.iter().map(|n| d.join("AssetData").join(n)));
+            }
+        }
+    }
+    let at = 1.min(candidates.len());
     candidates.splice(at..at, assets);
     candidates.into_iter().find_map(|path| {
         let bytes = source.load(&path)?;
         Some(Found {
-            name: group.font_name(),
+            name: slot.name,
             data: FontData {
                 font: bytes,
                 index: 0,
@@ -236,9 +243,7 @@ impl Fallbacks {
         for g in Group::ALL {
             if fresh.contains(g) {
                 self.tried.insert(g);
-                if let Some(f) = find(source, g) {
-                    out.push(f);
-                }
+                out.extend(find(source, g));
             }
         }
         out
@@ -458,33 +463,49 @@ mod tests {
         assert!(!fb.done());
     }
 
+    const HIRAGINO: &str = "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc";
+
+    fn names(found: &[Found]) -> Vec<&'static str> {
+        found.iter().map(|f| f.name).collect()
+    }
+
     #[test]
-    fn the_first_readable_candidate_wins_and_loads_once() {
+    fn the_first_readable_candidate_of_each_slot_wins_and_loads_once() {
         let src = FakeFonts::default()
             .with("/System/Library/Fonts/PingFang.ttc", b"pingfang")
             .with("/System/Library/Fonts/STHeiti Light.ttc", b"heiti");
         let mut fb = Fallbacks::default();
         let got = fb.take(Scripts::of("日本語"), &src);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].name, "system-cjk");
+        // no Hiragino Sans here: the Chinese slot alone, PingFang before the legacy font
+        assert_eq!(names(&got), ["system-cjk-zh"]);
         assert_eq!(got[0].data.font.as_ref(), b"pingfang");
-        // Hiragino Sans is tried first, then PingFang; the legacy fonts are not touched
-        let asked = src.asked.borrow().clone();
-        assert_eq!(asked.len(), 2, "{asked:?}");
-        assert!(asked[0].to_string_lossy().contains("ヒラギノ"));
-        // asking again, with the same or other CJK text, loads nothing
-        let before = asked.len();
+        let asked = src.asked.borrow().len();
         assert!(fb.take(Scripts::of("中文"), &src).is_empty());
-        assert_eq!(src.asked.borrow().len(), before);
+        assert_eq!(src.asked.borrow().len(), asked, "nothing is read twice");
     }
 
     #[test]
-    fn hiragino_sans_is_preferred_for_ideographs_and_kana() {
+    fn japanese_and_chinese_fonts_are_both_chained_japanese_first() {
+        // Hiragino Sans has kana and Japanese shapes but not simplified-only characters (a screenshot
+        // of the lab VM showed tofu for 测试记), so a Chinese font follows it.
         let src = FakeFonts::default()
-            .with("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", b"hiragino")
-            .with("/System/Library/Fonts/PingFang.ttc", b"pingfang");
+            .with(HIRAGINO, b"hiragino")
+            .with("/System/Library/Fonts/PingFang.ttc", b"pingfang")
+            .with("/System/Library/Fonts/Hiragino Sans GB.ttc", b"gb");
         let got = Fallbacks::default().take(Scripts::of("かな"), &src);
+        assert_eq!(names(&got), ["system-cjk-ja", "system-cjk-zh"]);
         assert_eq!(got[0].data.font.as_ref(), b"hiragino");
+        assert_eq!(got[1].data.font.as_ref(), b"pingfang");
+    }
+
+    #[test]
+    fn hiragino_sans_gb_serves_chinese_when_pingfang_is_missing() {
+        let src = FakeFonts::default()
+            .with(HIRAGINO, b"hiragino")
+            .with("/System/Library/Fonts/Hiragino Sans GB.ttc", b"gb");
+        let got = find(&src, Group::Cjk);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].data.font.as_ref(), b"gb");
     }
 
     #[test]
@@ -493,9 +514,10 @@ mod tests {
         let asset = format!("{root}/abc123.asset");
         let mut src = FakeFonts::default().with(&format!("{asset}/AssetData/PingFang.ttc"), b"asset-pingfang");
         src.dirs.insert(PathBuf::from(root), vec![PathBuf::from(&asset)]);
-        let got = find(&src, Group::Cjk).expect("found in assets");
-        assert_eq!(got.data.font.as_ref(), b"asset-pingfang");
-        assert!(got.path.starts_with(root));
+        let got = find(&src, Group::Cjk);
+        assert_eq!(names(&got), ["system-cjk-zh"]);
+        assert_eq!(got[0].data.font.as_ref(), b"asset-pingfang");
+        assert!(got[0].path.starts_with(root));
     }
 
     #[test]
@@ -506,7 +528,7 @@ mod tests {
             .with(&format!("{asset}/AssetData/PingFang.ttc"), b"asset-pingfang")
             .with("/System/Library/Fonts/Hiragino Sans GB.ttc", b"gb");
         src.dirs.insert(PathBuf::from(root), vec![PathBuf::from(&asset)]);
-        assert_eq!(find(&src, Group::Cjk).unwrap().data.font.as_ref(), b"asset-pingfang");
+        assert_eq!(find(&src, Group::Cjk)[0].data.font.as_ref(), b"asset-pingfang");
     }
 
     #[test]
@@ -516,12 +538,10 @@ mod tests {
             .with("/System/Library/Fonts/AppleSDGothicNeo.ttc", b"sd");
         let mut fb = Fallbacks::default();
         let first = fb.take(Scripts::of("한국어"), &src);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].name, "system-hangul");
+        assert_eq!(names(&first), ["system-hangul"]);
         assert!(!fb.done());
         let second = fb.take(Scripts::of("한국어 日本語"), &src);
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].name, "system-cjk");
+        assert_eq!(names(&second), ["system-cjk-zh"]);
         assert!(fb.done());
     }
 
