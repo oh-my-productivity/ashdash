@@ -182,6 +182,7 @@ mod tests {
     use crate::bookmarks::{BookmarkSource, SourceError};
     use crate::config::{Config, Paths};
     use crate::providers::{EngineState, testutil};
+    use crate::testperf::{allocations_in, best_of_pair};
 
     fn provider(sources: Vec<Box<dyn BookmarkSource>>, settings: BookmarkSettings) -> BookmarksProvider {
         let cache = BookmarkCache::new(sources);
@@ -369,9 +370,9 @@ mod tests {
         assert_eq!(run(&p, "bm").items.len(), 1);
     }
 
-    #[test]
-    fn scoring_thousands_of_bookmarks_per_keystroke_stays_cheap() {
-        let many: Vec<_> = (0..5000)
+    /// A loaded snapshot of `n` synthetic bookmarks.
+    fn snapshot_of(n: usize) -> std::sync::Arc<Snapshot> {
+        let many: Vec<_> = (0..n)
             .map(|i| {
                 bm(
                     &format!("Some Reasonably Long Bookmark Title Number {i} About Topic {}", i % 97),
@@ -382,13 +383,57 @@ mod tests {
             .collect();
         let cache = BookmarkCache::new(fake("a", Ok(many)));
         cache.refresh_blocking();
-        let snap = cache.snapshot();
+        cache.snapshot()
+    }
+
+    const KEYSTROKES: [&str; 8] = ["so", "som", "bookmark", "topic 4", "srbt", "zzzz", "number 12", "about"];
+
+    /// Per-keystroke scoring must not allocate per bookmark and must scale linearly. Neither check compares a time with a
+    /// constant, so they hold on a slow, shared or unoptimised machine alike; the absolute ceiling is `perf_scoring_...` below.
+    #[test]
+    fn scoring_thousands_of_bookmarks_per_keystroke_stays_cheap() {
+        let (small, large) = (snapshot_of(500), snapshot_of(5000));
+        assert_eq!(large.bookmarks.len(), 5000);
+
+        // Work counting: a query that matches nothing builds no item, so its allocations (the query's own normalisation)
+        // are the same for 500 and 5 000 bookmarks. One allocation per bookmark would show here as 4 500 more.
+        for q in ["zzzz", "qjxk"] {
+            let (none, in_small) = allocations_in(|| general_items(&small, q));
+            let (_, in_large) = allocations_in(|| general_items(&large, q));
+            assert!(none.is_empty(), "{q}");
+            assert_eq!(
+                in_small, in_large,
+                "{q}: allocations must not grow with the number of bookmarks"
+            );
+        }
+
+        // Scaling: ten times the bookmarks must cost about ten times as much (an O(n^2) or O(n log^2 n) regression is far
+        // above this); both sides are measured here, interleaved, so the machine's speed cancels out.
+        let run = |snap: &Snapshot| {
+            for q in KEYSTROKES {
+                let items = general_items(snap, q);
+                assert!(items.len() <= GENERAL_LIMIT);
+                std::hint::black_box(items);
+            }
+        };
+        let (t_small, t_large) = best_of_pair(9, || run(&small), || run(&large));
+        let ratio = t_large.as_secs_f64() / t_small.as_secs_f64();
+        eprintln!("500 bookmarks {t_small:?}, 5000 bookmarks {t_large:?}: x{ratio:.1} for x10 the data");
+        assert!(
+            ratio < 50.0,
+            "10x the bookmarks cost {ratio:.1}x ({t_small:?} -> {t_large:?}); expected about 10x"
+        );
+    }
+
+    /// Absolute latency guard, release builds only (docs/CI.md, job `perf`):
+    /// `cargo test --release -p ashdash-core -- --ignored perf_`. Measured on an M3 Pro: 4.5 ms p95 with 5 000 bookmarks.
+    #[test]
+    #[ignore = "absolute time ceiling, meaningful in release builds only: cargo test --release -p ashdash-core -- --ignored perf_"]
+    fn perf_scoring_5000_bookmarks_per_keystroke_p95() {
+        crate::testperf::require_release();
+        let snap = snapshot_of(5000);
         let mut times: Vec<std::time::Duration> = Vec::new();
-        for q in ["so", "som", "bookmark", "topic 4", "srbt", "zzzz", "number 12", "about"]
-            .iter()
-            .cycle()
-            .take(40)
-        {
+        for q in KEYSTROKES.iter().cycle().take(80) {
             let t = std::time::Instant::now();
             let items = general_items(&snap, q);
             times.push(t.elapsed());
@@ -396,8 +441,7 @@ mod tests {
         }
         times.sort();
         let p95 = times[times.len() * 95 / 100];
-        // generous: an unoptimised build on a loaded machine (measured here with 5 000 bookmarks: about 17 ms debug, 4.5 ms release)
-        assert!(p95 < std::time::Duration::from_millis(150), "p95 {p95:?}");
+        assert!(p95 < std::time::Duration::from_millis(30), "p95 {p95:?}");
     }
 
     #[test]

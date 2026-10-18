@@ -23,6 +23,9 @@ pub mod usage;
 pub mod websearch;
 pub mod workflow;
 
+#[cfg(test)]
+mod testperf;
+
 pub use config::{Config, Paths};
 pub use engine::{Engine, Outcome};
 pub use item::{Action, Icon, Item, Mods};

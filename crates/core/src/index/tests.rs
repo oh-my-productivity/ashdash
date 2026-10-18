@@ -461,12 +461,10 @@ fn scan_entries_matches_the_index_view() {
     assert_eq!(one, ["A", "b"]);
 }
 
-/// Generous ceiling for the whole engine query path at 5,000 apps (release target is 10 ms;
-/// this guards against accidental O(n^2) or per-candidate allocation, in debug builds too).
-#[test]
-fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
-    let env = Env::new("latency");
-    synth::make_fake_apps(&env.apps, 5_000, false).unwrap();
+/// An engine over `n` synthetic apps (plus Safari and Visual Studio Code), warmed up: the first calls pay for page faults and
+/// lazy initialisation.
+fn warm_engine(env: &Env, n: usize) -> crate::Engine {
+    synth::make_fake_apps(&env.apps, n, false).unwrap();
     let e = crate::Engine::new(
         env.paths.clone(),
         crate::Config {
@@ -474,13 +472,8 @@ fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
             ..crate::Config::default()
         },
     );
-    assert!(e.app_count() >= 5_000);
-    // Warm up (first calls pay for page faults and lazy init), then measure in independent
-    // rounds. Parallel tests and a debug build make any single p95 noisy: a descheduled
-    // thread adds tens of milliseconds to a handful of samples. A real regression (O(n^2),
-    // per-candidate allocation) slows EVERY round, so the best round's p95 is the figure that
-    // is compared with the ceiling; every round is printed for diagnosis.
-    for q in ["saf", "vsc", "visual studio", "x"] {
+    assert!(e.app_count() >= n);
+    for q in LATENCY_QUERIES {
         assert!(!e.query(q).is_empty(), "{q}");
         for _ in 0..3 {
             std::hint::black_box(e.query(q));
@@ -488,14 +481,77 @@ fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
     }
     assert_eq!(e.query("saf")[0].title, "Safari");
     assert_eq!(e.query("vsc")[0].title, "Visual Studio Code");
+    e
+}
+
+const LATENCY_QUERIES: [&str; 4] = ["saf", "vsc", "visual studio", "x"];
+
+/// Guards the whole engine query path against accidental O(n^2) work and per-candidate allocation, without comparing a time
+/// with a constant (this test used to fail on shared CI runners and under load, where a debug build ran 3 to 6 times slower
+/// than on a developer machine). Both checks compare the engine with itself on a small and a large app list, so the speed of
+/// the machine cancels out. The absolute release-mode ceiling is `perf_query_latency_p95_at_5000_apps`.
+#[test]
+fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
+    let (small_env, large_env) = (Env::new("latency-500"), Env::new("latency-5000"));
+    let small = warm_engine(&small_env, 500);
+    let large = warm_engine(&large_env, 5_000);
+
+    // Work counting (exact on every machine): a query allocates for the hits it builds, and nothing else may allocate per
+    // candidate. Measured at 5 000 apps: 127 to 6 944 allocations per query, 10 482 for the four, about 0.5 per app; a
+    // regression that allocates once per candidate adds 5 000 to every query.
+    let n_apps = large.app_count();
+    let mut total = 0;
+    for q in LATENCY_QUERIES {
+        let (_, in_small) = crate::testperf::allocations_in(|| small.query(q));
+        let (_, in_large) = crate::testperf::allocations_in(|| large.query(q));
+        eprintln!("{q:?}: {in_small} allocations at 500 apps, {in_large} at 5000");
+        assert!(
+            in_large <= 2 * n_apps as u64 + 300,
+            "{q:?}: {in_large} allocations for {n_apps} apps (was {in_small} for 500): the scan allocates per candidate"
+        );
+        total += in_large;
+    }
+    assert!(
+        total <= 4 * n_apps as u64,
+        "{total} allocations for four queries over {n_apps} apps: more than one per candidate and query"
+    );
+
+    // Scaling: 10x the apps must cost well under 100x (linear is about 10x or less, because of the fixed cost of the other
+    // providers; quadratic is 100x). Interleaved rounds, best of each.
+    let run = |e: &crate::Engine| {
+        for q in LATENCY_QUERIES {
+            for _ in 0..5 {
+                std::hint::black_box(e.query(q));
+            }
+        }
+    };
+    let (t_small, t_large) = crate::testperf::best_of_pair(9, || run(&small), || run(&large));
+    let ratio = t_large.as_secs_f64() / t_small.as_secs_f64();
+    eprintln!("20 queries: {t_small:?} at 500 apps, {t_large:?} at 5000: x{ratio:.1} for x10 the apps");
+    assert!(
+        ratio < 40.0,
+        "10x the apps cost {ratio:.1}x ({t_small:?} -> {t_large:?}); a linear scan costs at most about 10x"
+    );
+}
+
+/// Absolute latency guard, release builds only (docs/CI.md, job `perf`): `cargo test --release -p ashdash-core -- --ignored perf_`.
+/// The release target is 10 ms p95 at 5 000 apps; measured on an M3 Pro: 0.4 ms.
+#[test]
+#[ignore = "absolute time ceiling, meaningful in release builds only: cargo test --release -p ashdash-core -- --ignored perf_"]
+fn perf_query_latency_p95_at_5000_apps() {
+    crate::testperf::require_release();
+    let env = Env::new("perf-latency");
+    let e = warm_engine(&env, 5_000);
     let p95_of = |mut v: Vec<Duration>| {
         v.sort();
         v[(v.len() * 95 / 100).min(v.len() - 1)]
     };
+    // Independent rounds; a descheduled thread adds milliseconds to a handful of samples, a real regression slows every
+    // round, so the best round's p95 is compared with the ceiling. Every round is printed for diagnosis.
     let rounds: Vec<Duration> = (0..5)
         .map(|_| {
             let mut samples = Vec::new();
-            for q in ["saf", "vsc", "visual studio", "x"] {
+            for q in LATENCY_QUERIES {
                 for _ in 0..20 {
                     let t = Instant::now();
                     std::hint::black_box(e.query(q));
@@ -508,7 +564,7 @@ fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
     let best = *rounds.iter().min().unwrap();
     eprintln!("p95 per round at 5,000 apps: {rounds:?}; best {best:?}");
     assert!(
-        best < Duration::from_millis(25),
+        best < Duration::from_millis(10),
         "best-round p95 = {best:?} (all rounds: {rounds:?})"
     );
 }
