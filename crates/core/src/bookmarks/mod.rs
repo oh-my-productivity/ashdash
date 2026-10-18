@@ -248,7 +248,7 @@ mod tests {
     /// and error kinds, never titles or URLs:
     /// `cargo test -p ashdash-core real_home_smoke -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "ci: reads the real browser bookmark files of this machine"]
     fn real_home_smoke() {
         let home = dirs::home_dir().unwrap();
         let ids: Vec<String> = ALL_SOURCE_IDS.iter().map(|s| s.to_string()).collect();

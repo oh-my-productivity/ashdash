@@ -177,6 +177,7 @@ fn drain(rx: &mpsc::Receiver<BTreeSet<Change>>) {
 }
 
 #[test]
+#[ignore = "ci: waits for the OS file watcher, about 4 s (watcher_follows_extra_workflow_folders keeps the watcher covered locally)"]
 fn watcher_reports_config_and_workflow_edits_but_not_noise() {
     let env = Env::new("watch", &[]);
     let (tx, rx) = mpsc::channel();

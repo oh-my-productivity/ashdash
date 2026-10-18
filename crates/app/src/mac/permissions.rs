@@ -411,7 +411,7 @@ mod tests {
     /// `cargo test -p ashdash real_probes -- --ignored --nocapture` prints what this process is
     /// really granted and how long the silent probes took (no prompt may appear, nothing may block).
     #[test]
-    #[ignore = "prints the real answers of this machine"]
+    #[ignore = "ci: prints the real answers of this machine"]
     fn real_probes_print_their_answers() {
         let t = std::time::Instant::now();
         let snap = check(&SystemProbes);

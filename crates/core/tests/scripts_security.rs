@@ -330,6 +330,7 @@ fn backgrounded_grandchild_does_not_stall_the_script_filter() {
 
 /// On timeout the whole process group should die, not just the interpreter.
 #[test]
+#[ignore = "ci: waits for the 10 s script timeout to fire (timeout_kills_the_whole_process_group_quickly in the unit tests keeps it covered locally)"]
 fn timeout_kills_grandchildren() {
     let fx = Fx::new("timeout");
     let pidfile = fx.root.join("pid");
@@ -453,6 +454,7 @@ fn long_chain_is_cut_off_with_a_warning_and_finishes_fast() {
 fn wide_fanout_and_self_loops_are_bounded() {
     let fx = Fx::new("fanout");
     let mut conns = serde_json::Map::new();
+    // policy-allow: loop -- the engine's fan-out cap is under test and 5,000 connections is the size that exceeds it; it takes milliseconds
     let dests: Vec<Value> = (0..5000)
         .map(|_| json!({"destinationuid": "A", "modifiers": 0}))
         .collect();
@@ -527,6 +529,7 @@ fn reveal_refuses_option_like_paths() {
 /// so notification text controlled by an attacker runs a shell command.
 /// (The test shows a harmless `touch` of a temp file; on a fixed build the text is just displayed.)
 #[test]
+#[ignore = "ci: runs the real osascript (shows a notification) and sleeps 300 ms"]
 fn notification_text_cannot_inject_applescript() {
     let t = TempDir::new("osa-inject");
     let marker = t.join("pwned");
@@ -540,6 +543,7 @@ fn notification_text_cannot_inject_applescript() {
 /// starts. A script that never reads stdin and a query larger than the pipe buffer therefore
 /// blocks the caller for as long as the script lives, defeating the timeout.
 #[test]
+#[ignore = "ci: the script sleeps and the 10 s timeout must fire (about 10 s)"]
 fn unread_stdin_cannot_defeat_the_timeout() {
     let fx = Fx::new("stdin-block");
     let mut doc = script_filter_workflow("sf", "sleep 40");

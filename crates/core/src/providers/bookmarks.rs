@@ -428,7 +428,7 @@ mod tests {
     /// Absolute latency guard, release builds only (docs/CI.md, job `perf`):
     /// `cargo test --release -p ashdash-core -- --ignored perf_`. Measured on an M3 Pro: 4.5 ms p95 with 5 000 bookmarks.
     #[test]
-    #[ignore = "absolute time ceiling, meaningful in release builds only: cargo test --release -p ashdash-core -- --ignored perf_"]
+    #[ignore = "ci: absolute time ceiling, meaningful in release builds only (cargo test --release -- --ignored perf_)"]
     fn perf_scoring_5000_bookmarks_per_keystroke_p95() {
         crate::testperf::require_release();
         let snap = snapshot_of(5000);

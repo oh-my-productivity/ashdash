@@ -175,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "ci: saves the usage file once per record (MAX_QUERIES + 60 writes), about 4 s"]
     fn tables_are_bounded_and_clear_wipes_the_file() {
         let root = std::env::temp_dir().join(format!("oa-usage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

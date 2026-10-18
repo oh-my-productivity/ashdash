@@ -491,6 +491,7 @@ fn preplanted_staging_symlink_is_not_followed() {
 
 /// Decompression bombs: an archive that expands to hundreds of MB is accepted without limits.
 #[test]
+#[ignore = "ci: builds and unpacks 300 MB of zeros, about 7 s (the ratio test below keeps the guard local)"]
 fn zip_bomb_is_rejected() {
     let sb = Sandbox::new("bomb");
     let zeros = vec![0u8; 100 * 1024 * 1024];
@@ -573,6 +574,7 @@ fn leftovers(dest_root: &Path) -> Vec<String> {
 fn too_many_entries_are_rejected_without_leftovers() {
     let sb = Sandbox::new("many");
     let mut entries = vec![Entry::File("info.plist", sb.plist())];
+    // policy-allow: loop -- the entry-count cap is under test and 2,100 entries is the size that exceeds it; it takes milliseconds
     let names: Vec<String> = (0..2100).map(|i| format!("f{i}.txt")).collect();
     for n in &names {
         entries.push(Entry::File(n, b"x".to_vec()));

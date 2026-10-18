@@ -1911,7 +1911,7 @@ mod tests {
     // They only touch temp directories (and read /Applications through Spotlight).
 
     #[test]
-    #[ignore = "needs macOS tools (ditto, tar, unzip)"]
+    #[ignore = "ci: needs macOS tools (ditto, tar, unzip)"]
     fn manual_real_compress_creates_valid_zips() {
         let t = Tree::new("real-zip");
         std::fs::write(t.p("-odd.txt"), b"odd").unwrap();
@@ -1940,7 +1940,7 @@ mod tests {
     /// `... as alias` coercion would name the target and Finder would delete
     /// that.) Nothing is deleted. Needs Finder automation permission.
     #[test]
-    #[ignore = "needs macOS Finder (Automation permission); read-only"]
+    #[ignore = "ci: needs macOS Finder (Automation permission); read-only"]
     fn manual_trash_specifier_keeps_symlinks_as_links() {
         let t = Tree::new("trash-contract");
         let target = t.p("docs/notes.txt");
@@ -1969,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs macOS osacompile"]
+    #[ignore = "ci: needs macOS osacompile"]
     fn manual_applescripts_compile() {
         let dir = std::env::temp_dir().join(format!("oa-osac-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1985,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs macOS Spotlight"]
+    #[ignore = "ci: needs macOS Spotlight"]
     fn manual_real_open_with_lists_installed_apps() {
         let dirs = vec![PathBuf::from("/Applications"), PathBuf::from("/System/Applications")];
         let v = open_with_items(&RealOs, &dirs, Path::new("/tmp/x.txt"), "", 500);

@@ -127,8 +127,8 @@ pub fn spawn(engine: Arc<Engine>) {
 }
 
 /// Live checks against the real pasteboard. They overwrite the clipboard with
-/// synthetic values, so they are `#[ignore]`d; run them on purpose with
-/// `cargo test -p ashdash clipboard_watch -- --ignored --test-threads=1`.
+/// synthetic values, so they are `#[ignore = "ci: ..."]`d and run on CI only
+/// (`cargo test -p ashdash clipboard_watch -- --ignored --test-threads=1`, docs/TESTING.md).
 /// The current clipboard is restored afterwards (all flavours of the first
 /// item are saved in memory and written back).
 #[cfg(test)]
@@ -208,7 +208,7 @@ mod live {
     }
 
     #[test]
-    #[ignore = "overwrites the real clipboard with synthetic values"]
+    #[ignore = "ci: overwrites the real clipboard with synthetic values"]
     fn text_concealed_image_tiff_files_and_restore() {
         let src = SystemPasteboard::new();
         let _restore_clipboard = guard(&src);
@@ -301,7 +301,7 @@ mod live {
     }
 
     #[test]
-    #[ignore = "overwrites the real clipboard with synthetic values"]
+    #[ignore = "ci: overwrites the real clipboard with synthetic values"]
     fn change_count_increments_on_copy() {
         let src = SystemPasteboard::new();
         let _g = guard(&src);
@@ -311,7 +311,7 @@ mod live {
     }
 
     #[test]
-    #[ignore = "overwrites the real clipboard with synthetic values"]
+    #[ignore = "ci: overwrites the real clipboard with synthetic values"]
     fn spawned_watcher_records_into_the_engine_history() {
         use ashdash_core::{Config, Paths};
         let src = SystemPasteboard::new();
@@ -341,7 +341,7 @@ mod live {
     /// Automation permission for TextEdit; without Accessibility it checks the
     /// error message instead.
     #[test]
-    #[ignore = "drives TextEdit and posts real key events"]
+    #[ignore = "ci: drives TextEdit and posts real key events"]
     fn paste_into_scratch_textedit_document() {
         use ashdash_core::clipboard::paste;
         let osa = |script: &str| {

@@ -8,8 +8,8 @@
 //!   the two times with each other. A linear algorithm gives about the size ratio, a quadratic one the square of it, whatever
 //!   the machine does. The times are CPU times of the thread, so a busy machine does not distort them, and the best of several
 //!   rounds is compared, because noise only ever adds time.
-//! * **Absolute ceilings in release builds only**: `perf_*` tests, `#[ignore]`d in the normal run and executed by the `perf`
-//!   CI job with `cargo test --release -p ashdash-core -- --ignored perf_` (see docs/CI.md). They start with
+//! * **Absolute ceilings in release builds only**: `perf_*` tests, `#[ignore = "ci: ..."]`d in the normal run and executed by the
+//!   `stress.yml` workflow with `cargo test --release -- --ignored` (see docs/TESTING.md). They start with
 //!   [`require_release`].
 
 use std::alloc::{GlobalAlloc, Layout, System};

@@ -1183,6 +1183,7 @@ mod tests {
         // 6 000 noise hits come first in Spotlight order (more than the old 5 000 cut),
         // then the three the user actually wants.
         let t = Tree::new("scope-first");
+        // policy-allow: loop -- the 5,000-hit cap is under test and 6,000 hits is the size that exceeds it; it takes milliseconds
         let noise = (0..6000).map(|i| t.p(&format!("node_modules/m{i}/report.pdf")).display().to_string());
         let wanted = ["docs/Annual Report.pdf", "docs/report-draft.txt", "pics/report.png"]
             .iter()
@@ -1402,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs macOS Spotlight"]
+    #[ignore = "ci: needs macOS Spotlight"]
     fn manual_real_spotlight_finds_apps_and_parses_output() {
         use crate::actions::RealOs;
         let scope = FileSearchScope::new(

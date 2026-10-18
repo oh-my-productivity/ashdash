@@ -1,6 +1,8 @@
 //! Property / fuzz tests on the public API. Inputs are random; the properties are
-//! "never panics, never hangs, output stays sane". Case counts are kept small enough for
-//! the whole file to run in a few seconds (override with `PROPTEST_CASES`).
+//! "never panics, never hangs, output stays sane". On a developer's machine every property runs a
+//! smoke tenth of its case count (at least 8 cases), so the file takes a couple of seconds; CI runs the
+//! full counts (`ASHDASH_FUZZ_FULL=1`, job `ignored-tests` of stress.yml). `PROPTEST_CASES=N` sets the
+//! count of every property to N.
 
 mod common;
 
@@ -17,6 +19,12 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 
 fn cfg(cases: u32) -> ProptestConfig {
+    let smoke = (cases / 10).max(8);
+    let cases = match std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()) {
+        Some(n) => n,
+        None if std::env::var_os("ASHDASH_FUZZ_FULL").is_some() => cases,
+        None => smoke,
+    };
     ProptestConfig {
         cases,
         // Do not write *.proptest-regressions files into the source tree.
@@ -174,6 +182,7 @@ fn calc_pathological_numbers_are_bounded_in_time() {
     ] {
         let _ = calc::eval(e);
     }
+    // policy-allow: clock -- a hang guard: these inputs take microseconds, an unbounded evaluation would never return
     assert!(start.elapsed() < Duration::from_secs(2));
 }
 

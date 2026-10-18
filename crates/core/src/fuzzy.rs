@@ -265,6 +265,7 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(score(&format!("{}b", "a".repeat(100)), &title), None);
         assert!(score("aaaa", &title).is_some());
+        // policy-allow: clock -- a hang guard: the linear version takes milliseconds, the old exponential one would never return
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
@@ -409,9 +410,19 @@ mod tests {
     /// word prefix, initials, substring, no match) is hit often.
     #[test]
     fn candidate_scoring_equals_string_scoring_on_random_input() {
+        check_candidate_scoring(900);
+    }
+
+    #[test]
+    #[ignore = "ci: 40,000 random cases (the 900-case variant above runs locally)"]
+    fn candidate_scoring_equals_string_scoring_on_many_random_inputs() {
+        check_candidate_scoring(40_000);
+    }
+
+    fn check_candidate_scoring(cases: u32) {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         let mut branches = std::collections::BTreeSet::new();
-        for _ in 0..40_000 {
+        for _ in 0..cases {
             let text = rng.string(ALPHABET, 14);
             let query = if rng.next().is_multiple_of(3) {
                 // a query derived from the text makes matches likely

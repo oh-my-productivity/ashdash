@@ -357,6 +357,7 @@ fn watcher_adds_and_removes_apps_incrementally() {
 }
 
 #[test]
+#[ignore = "ci: sleeps 600 ms to prove that nothing happens"]
 fn nothing_is_published_while_the_file_system_is_quiet() {
     let env = Env::new("quiet");
     fake_app(&env.apps, "A");
@@ -537,7 +538,7 @@ fn query_latency_p95_at_5000_apps_stays_under_the_ceiling() {
 /// Absolute latency guard, release builds only (docs/CI.md, job `perf`): `cargo test --release -p ashdash-core -- --ignored perf_`.
 /// The release target is 10 ms p95 at 5 000 apps; measured on an M3 Pro: 0.4 ms.
 #[test]
-#[ignore = "absolute time ceiling, meaningful in release builds only: cargo test --release -p ashdash-core -- --ignored perf_"]
+#[ignore = "ci: absolute time ceiling, meaningful in release builds only (cargo test --release -- --ignored perf_)"]
 fn perf_query_latency_p95_at_5000_apps() {
     crate::testperf::require_release();
     let env = Env::new("perf-latency");

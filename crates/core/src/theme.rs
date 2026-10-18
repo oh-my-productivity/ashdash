@@ -462,9 +462,19 @@ mod tests {
     }
 
     #[test]
+    fn a_plist_with_ordinary_values_still_parses() {
+        plist_with_values_parses(900);
+    }
+
+    #[test]
+    #[ignore = "ci: 100,000 values (the 900-value variant above runs locally)"]
     fn a_plist_with_a_lot_of_ordinary_values_still_parses() {
-        // 100 000 small values, flat: well inside the bound, in both encodings
-        let v = plist::Value::Array((0..100_000i64).map(plist::Value::from).collect());
+        plist_with_values_parses(100_000);
+    }
+
+    fn plist_with_values_parses(n: i64) {
+        // n small values, flat: well inside the bound, in both encodings
+        let v = plist::Value::Array((0..n).map(plist::Value::from).collect());
         let mut xml = Vec::new();
         v.to_writer_xml(&mut xml).unwrap();
         assert_eq!(parse_plist(&xml).unwrap(), v);
