@@ -92,6 +92,16 @@ Run: `tests/lab/lab-up --id qa --max-age 14400`, then `tests/lab/lab-run "$vm" -
 display sleep locks the session, no second display, no physical keyboard) is listed in `docs/LAB.md` and shows up as BLOCKED or NEEDS-OWNER rows in a run report; the NEEDS-OWNER steps are in [section 4](#4-checks-that-need-a-physical-mac).
 The release-candidate run in the lab covered the whole checklist below except those rows: 144 of 166 items passed, 1 failed (CJK glyphs, since open), 12 were blocked by the VM and 9 need a physical Mac; a 2 h soak (240 show/type/hide cycles) had no missed hotkey and no crash.
 
+### 2.2 The same scripts in CI
+
+`tests/lab/ci/run-smoke.sh`, `run-checklist.sh` and `run-soak.sh` run `smoke.sh`, `qa/checklist.sh` and `qa/soak.sh` directly on a
+GitHub-hosted macOS runner (no `tart`, no `ssh`): the runner is an Apple virtual machine with a logged-in GUI session, SIP off and
+passwordless sudo, i.e. the same kind of machine as a lab clone. They refuse to run anywhere else (they take over the keyboard, screen and
+global hotkey). Checklist rows that cannot work on a hosted runner are listed with the reason in `tests/lab/ci/blocked.tsv` and are
+reported as BLOCKED, never as PASS; any other FAIL fails the job. The smoke test runs on every push to `main`, the checklist and the soak
+every night (`.github/workflows/nightly.yml`). Differences from the lab VM, how to reproduce a failure and what still needs a physical Mac:
+[CI.md](CI.md).
+
 ## 3. Manual checklist
 
 Run on a debug build (`cargo run -p ashdash`) with a clean profile

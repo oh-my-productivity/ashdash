@@ -62,8 +62,12 @@ shared with other people or agents. See [docs/QA.md](docs/QA.md) for the manual 
   Plain clones and forks work equally well; open a pull request from your branch.
 * Commit small steps with a message that says why. Do not `git push --force` to shared branches and do not rewrite history that
   others have fetched.
-* **Gate for every change:** `scripts/check.sh` must print `check.sh: OK`. CI (`.github/workflows/ci.yml`) runs it on macOS,
-  and a second job runs `cargo deny` ([below](#dependencies-and-licences)).
+* **Gate for every change:** `scripts/check.sh` must print `check.sh: OK`. CI (`.github/workflows/ci.yml`) runs it on macOS
+  (job `check`), `cargo deny` runs in the job `deny` ([below](#dependencies-and-licences)), and two more jobs test the lab scripts and
+  the packaging inputs and lint every shell script and workflow. Pushes to `main` also run the GUI smoke test on macOS 15 and 26, the
+  tests on Intel and a universal build; a nightly workflow runs the scripted QA checklist and a soak. What runs where, and how to
+  reproduce a CI failure locally, is in [docs/CI.md](docs/CI.md). Workflows pin every action by commit SHA; use
+  `tests/lab/ci/lint.sh` (shellcheck and actionlint) after changing a script or a workflow.
 * Risky areas (workflow execution, import, anything that runs processes or touches the clipboard) get a behavioural code review
   before merging; say in the pull request what could go wrong.
 * Merge hot spots where concurrent branches collide: `crates/core/src/engine.rs` (its test module in particular),
