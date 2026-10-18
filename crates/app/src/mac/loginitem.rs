@@ -39,7 +39,7 @@ impl Status {
 
     pub fn describe(self) -> &'static str {
         match self {
-            Status::NotRegistered => "disabled",
+            Status::NotRegistered => "off",
             Status::Enabled => "enabled",
             Status::RequiresApproval => {
                 "waiting for approval: open System Settings > General > Login Items and allow Ashdash"
@@ -126,6 +126,11 @@ pub trait Backend {
     fn status(&self) -> Result<Status, Error>;
     fn register(&self) -> Result<(), Error>;
     fn unregister(&self) -> Result<(), Error>;
+    /// Did this app ever register itself (a marker in the data folder written by `enable`, removed
+    /// by `disable`)? `SMAppService` reports `notFound` both for "never registered" and for
+    /// "registered, but the bundle is gone", and this is the only way to tell them apart.
+    fn ever_registered(&self) -> bool;
+    fn remember_registration(&self, registered: bool);
 }
 
 /// The single system call (if any) a command needs given the current status.
@@ -178,6 +183,15 @@ impl Outcome {
     }
 }
 
+/// What the user should be told: `notFound` from a service that this app never registered is just
+/// "off" (a fresh install); only a registration that has lost its bundle is a warning.
+pub fn effective_status(raw: Status, ever_registered: bool) -> Status {
+    match raw {
+        Status::NotFound if !ever_registered => Status::NotRegistered,
+        other => other,
+    }
+}
+
 /// Run one command. `status` reports unavailability as data; `enable`/`disable` fail with it.
 pub fn run(cmd: Command, backend: &dyn Backend) -> Result<Outcome, Error> {
     if let Err(why) = backend.availability() {
@@ -186,17 +200,23 @@ pub fn run(cmd: Command, backend: &dyn Backend) -> Result<Outcome, Error> {
             _ => Err(Error::Unavailable(why)),
         };
     }
-    let current = backend.status()?;
+    let current = effective_status(backend.status()?, backend.ever_registered());
     let step = plan(cmd, current);
     match step {
         Step::Nothing => {}
-        Step::Register => backend.register()?,
-        Step::Unregister => backend.unregister()?,
+        Step::Register => {
+            backend.register()?;
+            backend.remember_registration(true);
+        }
+        Step::Unregister => {
+            backend.unregister()?;
+            backend.remember_registration(false);
+        }
     }
     let after = if step == Step::Nothing {
         current
     } else {
-        backend.status()?
+        effective_status(backend.status()?, backend.ever_registered())
     };
     if !satisfied(cmd, after) {
         let wanted = if cmd == Command::Enable { "enable" } else { "disable" };
@@ -304,6 +324,27 @@ impl Backend for SystemBackend {
     fn unregister(&self) -> Result<(), Error> {
         ffi::unregister(&*self.service()?)
     }
+
+    fn ever_registered(&self) -> bool {
+        marker_path().is_some_and(|p| p.exists())
+    }
+
+    fn remember_registration(&self, registered: bool) {
+        let Some(path) = marker_path() else { return };
+        if registered {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, b"registered by `ashdash login-item enable`\n");
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// `<data folder>/login-item-registered`.
+fn marker_path() -> Option<std::path::PathBuf> {
+    Some(ashdash_core::Paths::system().data.join("login-item-registered"))
 }
 
 #[cfg(test)]
@@ -322,6 +363,8 @@ mod tests {
         stubborn: bool,
         fail: Option<&'static str>,
         needs_approval: bool,
+        /// The "this app registered itself once" marker.
+        marker: Cell<bool>,
     }
 
     impl Fake {
@@ -333,6 +376,7 @@ mod tests {
                 stubborn: false,
                 fail: None,
                 needs_approval: false,
+                marker: Cell::new(false),
             }
         }
         fn calls(&self) -> Vec<&'static str> {
@@ -341,6 +385,12 @@ mod tests {
     }
 
     impl Backend for Fake {
+        fn ever_registered(&self) -> bool {
+            self.marker.get()
+        }
+        fn remember_registration(&self, registered: bool) {
+            self.marker.set(registered);
+        }
         fn availability(&self) -> Result<(), Unavailable> {
             self.available.clone()
         }
@@ -370,6 +420,77 @@ mod tests {
                 self.status.set(Status::NotRegistered);
             }
             Ok(())
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_reports_off_not_a_warning() {
+        // SMAppService says notFound before the first registration (PKG-17).
+        let f = Fake::new(Status::NotFound);
+        let out = run(Command::Status, &f).unwrap();
+        assert_eq!(
+            out,
+            Outcome::State {
+                status: Status::NotRegistered,
+                changed: false
+            }
+        );
+        let msg = out.message();
+        assert!(msg.contains("off"), "{msg}");
+        assert!(!msg.contains("not found") && !msg.contains("moved or deleted"), "{msg}");
+        assert!(f.calls().is_empty());
+    }
+
+    #[test]
+    fn a_registration_whose_bundle_is_gone_keeps_the_warning() {
+        let f = Fake::new(Status::NotFound);
+        f.marker.set(true);
+        let out = run(Command::Status, &f).unwrap();
+        assert_eq!(
+            out,
+            Outcome::State {
+                status: Status::NotFound,
+                changed: false
+            }
+        );
+        assert!(out.message().contains("moved or deleted"));
+    }
+
+    #[test]
+    fn enable_then_disable_walks_off_on_off_and_clears_the_marker() {
+        let f = Fake::new(Status::NotFound); // fresh install
+        let on = run(Command::Enable, &f).unwrap();
+        assert_eq!(
+            on,
+            Outcome::State {
+                status: Status::Enabled,
+                changed: true
+            }
+        );
+        assert!(f.marker.get());
+        // the bundle disappears later: now it is a real problem
+        f.status.set(Status::NotFound);
+        assert!(run(Command::Status, &f).unwrap().message().contains("moved or deleted"));
+        f.status.set(Status::Enabled);
+        let off = run(Command::Disable, &f).unwrap();
+        assert!(off.message().contains("off"));
+        assert!(!f.marker.get());
+        // after a disable the OS may say notFound again; still just "off"
+        f.status.set(Status::NotFound);
+        assert!(run(Command::Status, &f).unwrap().message().contains("launch at login: off"));
+    }
+
+    #[test]
+    fn effective_status_only_rewrites_notfound_without_a_marker() {
+        for (raw, ever, want) in [
+            (Status::NotFound, false, Status::NotRegistered),
+            (Status::NotFound, true, Status::NotFound),
+            (Status::Enabled, false, Status::Enabled),
+            (Status::Enabled, true, Status::Enabled),
+            (Status::NotRegistered, false, Status::NotRegistered),
+            (Status::RequiresApproval, false, Status::RequiresApproval),
+        ] {
+            assert_eq!(effective_status(raw, ever), want, "{raw:?} ever={ever}");
         }
     }
 
@@ -480,6 +601,7 @@ mod tests {
             Status::NotFound,
         ] {
             let f = Fake::new(st);
+            f.marker.set(true); // a NotFound with a marker stays NotFound
             assert_eq!(
                 run(Command::Status, &f).unwrap(),
                 Outcome::State {
