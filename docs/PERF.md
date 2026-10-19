@@ -334,6 +334,10 @@ comparison on the same kind of machine is what counts). Nothing was run locally.
 | after ([39215068429](https://github.com/oh-my-productivity/ashdash/actions/runs/39215068429)) | heavy | 110 | 9.5 / 21.4 | 25.2 / 35.6 | 0 |
 | before ([39216043093](https://github.com/oh-my-productivity/ashdash/actions/runs/39216043093)) | heavy | 50 | 8.7 / 19.2 | 21.8 / 33.9 | 0 |
 | after ([39216064416](https://github.com/oh-my-productivity/ashdash/actions/runs/39216064416)) | heavy | 50 | 8.8 / 20.9 | 21.2 / 34.6 | 0 |
+| before ([39217512588](https://github.com/oh-my-productivity/ashdash/actions/runs/39217512588), same harness incl. limits: run **failed**: results p95 587 > 450) | heavy-slow | 110 | 2.1 / 4.6 | 575.5 / 587.4 (last key only) | 0 |
+| after ([39217371519](https://github.com/oh-my-productivity/ashdash/actions/runs/39217371519), limits met: run green) | heavy-slow | 110 | 2.6 / 4.0 | 318.9 / 324.2 (last key only) | 0 |
+| after (39217371519) | heavy | 110 | 9.2 / 22.5 | 27.6 / 38.7 | 0 |
+| before (39217512588) | heavy | 110 | 8.6 / 24.1 | 25.3 / 35.0 | 0 |
 | before (39215040845) | heavy-slow | 110 | 2.7 / 5.2 | 580.5 / 616.2 (last key only) | 0 |
 | after (39215068429) | heavy-slow | 110 | 1.8 / 4.5 | 313.9 / 326.2 (last key only) | 0 |
 | before (39216043093) | heavy-slow | 50 | 1.9 / 3.8 (max 203) | 696.6 / 727.4 | n/a |
