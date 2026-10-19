@@ -39,6 +39,7 @@ QUERY = os.environ.get("PERF_QUERY", "saf")
 TYPE_TEXT = os.environ.get("PERF_TYPE_TEXT") or "pup"      # typing mode: what is typed, key by key
 TYPE_GAP_MS = int(os.environ.get("PERF_TYPE_GAP_MS") or "110")   # typing mode: time between two keys (a quick typist)
 TYPE_RUNS = int(os.environ.get("PERF_TYPE_RUNS") or "15")   # typing mode: show/type/hide rounds per repetition
+TYPE_VARY = os.environ.get("PERF_TYPE_VARY", "1")   # typing mode: "1" = every round ends in another letter (new result rows, so new icons), "0" = the same text every round
 TYPE_WARMUP = os.environ.get("PERF_TYPE_WARMUP", "1")   # typing mode: "1" = send an ignored key first (see _JXA_TYPE), "0" = type cold
 SLOW_FILTER_S = float(os.environ.get("PERF_SLOW_FILTER_S", "0.25"))   # heavy-slow: how long its Script Filters take
 HOTKEY = ("ctrl+alt+shift+j", "38", "alt,shift,ctrl")   # config string, key code, flags
@@ -524,6 +525,21 @@ def type_timed(text):
     return keys, how
 
 
+def round_text(n):
+    """The text typed in round `n` (0 = warm-up). With PERF_TYPE_VARY the last letter changes from round to round: the rows of the last key
+    are then new ones, whose icons have to be converted and loaded while the user types, as with a real, varied use. The warm-up round
+    and every tenth round type PERF_TYPE_TEXT itself."""
+    if TYPE_VARY != "1" or n % 10 == 0 or len(TYPE_TEXT) < 2:
+        return TYPE_TEXT
+    letters = "dlmnorstvkgbfh"
+    return TYPE_TEXT[:-1] + letters[n % len(letters)]
+
+
+def icons_cached(home):
+    d = os.path.join(home, "Library/Caches/ashdash/icons")
+    return len([x for x in os.listdir(d) if x.endswith(".png")]) if os.path.isdir(d) else 0
+
+
 def typing_round(inst, text):
     """Show the launcher, type `text` key by key, wait for the answers, hide. Returns the per-key latencies and the slow frames."""
     t_show = time.time()
@@ -536,7 +552,7 @@ def typing_round(inst, text):
     events = typing_stats.parse_trace(l for t, l in list(inst.lines) if t * 1000 >= t_start - 50)
     rows = typing_stats.key_latencies(keys, events, text)
     slow = typing_stats.slow_frames([e for e in events if e["t"] >= t_start], limit=3)
-    diag = {"how": how, "requests": sum(e["type"] == "request" for e in events), "frames": sum(e["type"] == "frame" for e in events),
+    diag = {"how": how, "text": text, "icons_cached": icons_cached(inst.home), "requests": sum(e["type"] == "request" for e in events), "frames": sum(e["type"] == "frame" for e in events),
             "results": sum(e["type"] == "results" for e in events)}
     if not diag["requests"]:   # the keys did not arrive: keep what the app said instead
         diag["stderr_tail"] = [l for t, l in list(inst.lines)[-8:]]
@@ -564,7 +580,7 @@ def typing_mode():
                 hide(inst)
                 time.sleep(5)   # the index and the bookmark cache finish loading
                 for n in range(TYPE_RUNS + 1):
-                    got = typing_round(inst, TYPE_TEXT)
+                    got = typing_round(inst, round_text(n))
                     if got is None:
                         log(kind="typing", variant=variant, rep=rep, round=n, error="launcher did not show or take focus")
                         continue

@@ -59,9 +59,24 @@ INFO = ('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple/
         '<plist version="1.0"><dict><key>CFBundleName</key><string>X</string><key>CFBundleIdentifier</key><string>com.example.x</string>'
         '<key>CFBundleIconFile</key><string>icon</string></dict></plist>')
 names = ["Safari", "Visual Studio Code"] + [" ".join(random.choice(words) for _ in range(random.randint(1, 3))) + f" {i}" for i in range(5000)]
+# The busy-laptop variants (typing lag) give every app a real icon file, as a laptop's apps have: the launcher then converts it with
+# `sips` and loads the PNG for each new result row, which is work that happens on every keystroke. All apps share one file (hard links).
+icon = None
+if "heavy" in os.environ.get("PERF_VARIANTS", ""):
+    import struct, zlib
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    raw = b"".join(b"\0" + bytes(((x * 2 + y) % 256, (x + y * 2) % 256, (x * y) % 256, 255)[i] for x in range(128) for i in range(4)) for y in range(128))
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 128, 128, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    icon = d + ".icon.icns"
+    with open(icon, "wb") as f:
+        f.write(b"icns" + struct.pack(">I", 16 + len(png)) + b"ic07" + struct.pack(">I", 8 + len(png)) + png)
 for n in names:
     os.makedirs(f"{d}/{n}.app/Contents")
     open(f"{d}/{n}.app/Contents/Info.plist", "w").write(INFO)
+    if icon:
+        os.makedirs(f"{d}/{n}.app/Contents/Resources")
+        os.link(icon, f"{d}/{n}.app/Contents/Resources/icon.icns")
 PY
 fi
 
