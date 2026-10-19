@@ -9,6 +9,7 @@ pub(crate) mod importprompt;
 mod keynames;
 mod keys;
 mod largetype;
+mod looptrace;
 mod mac;
 mod panel;
 pub mod prefs;
@@ -176,6 +177,7 @@ fn query_id() -> egui::Id {
 
 impl LauncherApp {
     fn new(ctx: egui::Context, engine: Arc<Engine>, theme: Theme, mut automation: crate::events::Automation) -> Self {
+        looptrace::install();
         let (req_tx, req_rx) = channel::<(u64, String)>();
         let (res_tx, res_rx) = channel::<workers::QueryResult>();
         workers::spawn_query_worker(Arc::clone(&engine), ctx.clone(), req_rx, res_tx);
