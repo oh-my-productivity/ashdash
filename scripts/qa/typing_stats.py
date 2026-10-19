@@ -7,16 +7,22 @@ The trace lines come from `ASHDASH_FRAME_TRACE=1` (crates/app/src/gui/frametrace
     [ft] t=1760870000123.4 request gen=3 q="pu"
     [ft] t=1760870000131.9 results gen=3 kind=Final rows=9
     [ft] t=1760870000125.0 frame dur=2.10 gap=16.7 text=1 q="pu" gen=3 rows=9 SLOW logic{poll_background=0.10} ui{keys=0.20 results=1.10}
+    [ft] t=1760870000124.9 event key down code=35 age=1.8 slept_before=412.0 awake_for=0.1 prev_busy=0.4
+    [ft] t=1760870001125.0 loop busy=1003.1
+
+`event` lines (a key reached the app, `age` = ms since the window server made the event) and `loop busy` lines (the main thread stayed out
+of its run loop that long) come from crates/app/src/gui/looptrace.rs; they separate "the OS delivered the key late" from "the app was blocked".
 
 `t` is the wall clock in Unix milliseconds. A frame line is written at the end of `ui()`, before the frame is rendered and presented, so
 "key to glyph" is "key to the end of the frame that drew the glyph" and misses at most one display refresh (about 16 ms) of presentation.
 """
 import re
 
-_LINE = re.compile(r"\[ft\] t=(?P<t>[\d.]+) (?P<kind>request|results|frame)\b(?P<rest>.*)")
+_LINE = re.compile(r"\[ft\] t=(?P<t>[\d.]+) (?P<kind>request|results|frame|event|loop|stall-sample)\b(?P<rest>.*)")
 _Q = re.compile(r'\bq="((?:[^"\\]|\\.)*)"')
-_FIELD = re.compile(r"\b(?P<k>dur|gap|text|gen|rows)=(?P<v>[\d.]+)")
+_FIELD = re.compile(r"\b(?P<k>dur|gap|text|gen|rows|age|code|busy|slept_before|awake_for|prev_busy)=(?P<v>[\d.]+)")
 _KIND = re.compile(r"\bkind=(\w+)")
+_KEY = re.compile(r"^\s*key (\w+)")
 
 
 def _unescape(s):
@@ -42,9 +48,16 @@ def parse_trace(lines):
         k = _KIND.search(rest)
         if k:
             ev["kind"] = k.group(1)
+        kk = _KEY.search(rest)
+        if kk:
+            ev["key"] = kk.group(1)
         ev["slow"] = " SLOW" in rest
         out.append(ev)
     return out
+
+
+# a `loop busy` stretch shorter than this is ordinary frame work
+BUSY_MIN_MS = 100.0
 
 
 def percentile(values, p):
@@ -125,6 +138,45 @@ def summarize(rows):
     return out
 
 
+def event_delays(events):
+    """For each key-down `event` line (a key reached the app, see looptrace.rs): `age` (ms from the window server's own timestamp to the
+    app's first look at it) and `to_frame` (ms from that look to the end of the first frame that drew typed text, None when none followed).
+    `age` large = the key waited before the app saw it (OS queue or a blocked main thread); `to_frame` large = the app saw it and drew late."""
+    frames = [e for e in events if e["type"] == "frame" and e.get("text", 0) > 0]
+    out = []
+    for e in events:
+        if e["type"] != "event" or e.get("key") != "down":
+            continue
+        f = next((f for f in frames if f["t"] >= e["t"]), None)
+        out.append({"t": e["t"], "age": e.get("age"), "slept_before": e.get("slept_before"), "prev_busy": e.get("prev_busy"),
+                    "to_frame": None if f is None else _r(f["t"] - e["t"])})
+    return out
+
+
+def busy_stretches(events, min_ms=BUSY_MIN_MS):
+    """The `loop busy` lines of at least `min_ms`: stretches in which the main thread did not return to its run loop."""
+    return [e for e in events if e["type"] == "loop" and e.get("busy", 0.0) >= min_ms]
+
+
+def verdict(events, late_ms=200.0):
+    """One sentence on what the trace shows about late keys, for the report. A key is late when the app saw it `late_ms` or more after the
+    window server made it (`age`). If a `loop busy` stretch of about that length ended right before, the main thread was blocked (the paint of
+    a frame runs inside such a stretch); if the loop slept through it, the key or its wake-up reached the app late from outside."""
+    delays = event_delays(events)
+    if not delays:
+        return "no key events were traced: this trace comes from a build without `event` lines, or no key was typed"
+    late = [d for d in delays if (d["age"] or 0.0) >= late_ms]
+    if not late:
+        return f"{len(delays)} keys, none reached the app later than {late_ms:.0f} ms after the window server made it: no late key in this trace"
+    busy = busy_stretches(events, late_ms)
+    if busy:
+        return (f"{len(late)} of {len(delays)} keys waited {late_ms:.0f} ms or more before the app saw them, and the main thread was blocked "
+                f"for {len(busy)} stretches of {min(b['busy'] for b in busy):.0f}-{max(b['busy'] for b in busy):.0f} ms: the app was not "
+                "looking at its events, the keys were not delayed on the way")
+    return (f"{len(late)} of {len(delays)} keys waited {late_ms:.0f} ms or more before the app saw them while the main thread was not busy: "
+            "the loop slept and was woken late (App Nap / timer coalescing / the OS)")
+
+
 def slow_frames(events, since_ms=0.0, limit=5):
     """The `limit` slowest frames (by `dur`) at or after `since_ms`, as their raw trace lines."""
     frames = [e for e in events if e["type"] == "frame" and e["t"] >= since_ms]
@@ -158,6 +210,21 @@ def report(events, stall_ms=30.0):
     lines.append(f"{len(slow)} slow frames (over 16 ms of the app's own work):")
     for e in sorted(slow, key=lambda e: -e.get("dur", 0.0))[:10]:
         lines.append("  " + e["line"].split("] ", 1)[-1])
+    delays = event_delays(events)
+    if delays:
+        lines.append("")
+        lines.append("key events: age = window server -> app saw it | to_frame = app saw it -> frame that drew it ended")
+        for d in delays:
+            mark = "  <-- late" if (d["age"] or 0.0) >= stall_ms or (d["to_frame"] or 0.0) >= stall_ms else ""
+            lines.append(f"  age {d['age']!s:>7} ms   to_frame {d['to_frame']!s:>7} ms   slept_before {d['slept_before']!s:>8}{mark}")
+    busy = busy_stretches(events, 50.0)
+    if busy:
+        lines.append("")
+        lines.append(f"{len(busy)} stretches of 50 ms or more in which the main thread did not return to its run loop (`loop busy`):")
+        for b in busy[:20]:
+            lines.append(f"  t={b['t']:.1f}  busy {b['busy']:.1f} ms")
+    lines.append("")
+    lines.append("verdict: " + verdict(events))
     return "\n".join(lines)
 
 

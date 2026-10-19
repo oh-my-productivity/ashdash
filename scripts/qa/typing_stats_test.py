@@ -152,3 +152,46 @@ class TaintedKeysTest(unittest.TestCase):
         out = ts.check_limits(ts.summarize(rows), "heavy")
         self.assertEqual(len(out), 1, out)
         self.assertIn("stalled on 5 of 6 keys", out[0])
+
+
+EVENT_TRACE = [
+    '[ft] t=1000.0 event key down code=35 age=2.0 slept_before=400.0 awake_for=0.1 prev_busy=0.4',
+    '[ft] t=1003.0 frame dur=0.2 gap=400.0 text=1 q="p" gen=1 rows=0 logic{} ui{}',
+    '[ft] t=1100.0 event key up code=35 age=1.0 slept_before=0.5 awake_for=0.1 prev_busy=0.4',
+    '[ft] t=2100.0 loop busy=1003.1',
+    '[ft] t=2101.0 event key down code=35 age=1001.5 slept_before=0.2 awake_for=0.1 prev_busy=1003.1',
+    '[ft] t=2102.0 event key down code=35 age=950.0 slept_before=0.2 awake_for=0.5 prev_busy=1003.1',
+    '[ft] t=2105.5 frame dur=0.2 gap=1103.0 text=2 q="ppp" gen=3 rows=0 logic{} ui{}',
+]
+
+
+class EventTraceTest(unittest.TestCase):
+    def test_event_and_loop_lines_are_parsed(self):
+        ev = ts.parse_trace(EVENT_TRACE)
+        self.assertEqual([e["type"] for e in ev], ["event", "frame", "event", "loop", "event", "event", "frame"])
+        self.assertEqual((ev[0]["key"], ev[0]["age"], ev[0]["slept_before"], ev[0]["code"]), ("down", 2.0, 400.0, 35))
+        self.assertEqual(ev[3]["busy"], 1003.1)
+
+    def test_each_key_down_gets_the_frame_that_drew_it(self):
+        d = ts.event_delays(ts.parse_trace(EVENT_TRACE))
+        self.assertEqual([x["to_frame"] for x in d], [3.0, 4.5, 3.5])
+        self.assertEqual([x["age"] for x in d], [2.0, 1001.5, 950.0])
+
+    def test_a_key_that_waited_while_the_thread_was_busy_says_blocked(self):
+        v = ts.verdict(ts.parse_trace(EVENT_TRACE))
+        self.assertIn("2 of 3 keys waited", v)
+        self.assertIn("main thread was blocked", v)
+
+    def test_a_key_that_waited_while_the_loop_slept_says_woken_late(self):
+        v = ts.verdict(ts.parse_trace(["[ft] t=1.0 event key down code=1 age=900.0 slept_before=900.0 awake_for=0.1 prev_busy=0.1"]))
+        self.assertIn("loop slept and was woken late", v)
+
+    def test_no_late_key_and_no_events(self):
+        self.assertIn("no late key", ts.verdict(ts.parse_trace(EVENT_TRACE[:2])))
+        self.assertIn("no key events were traced", ts.verdict(ts.parse_trace(TRACE)))
+
+    def test_the_report_lists_late_keys_and_the_verdict(self):
+        out = ts.report(ts.parse_trace(EVENT_TRACE))
+        self.assertIn("<-- late", out)
+        self.assertIn("verdict:", out)
+        self.assertIn("busy 1003.1 ms", out)
