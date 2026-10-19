@@ -12,14 +12,14 @@ The tokens in `SPEC.md` and `tools/sampled.json` were sampled from the earlier r
 | `reference-v4.jpg` | the V4 first pass (top tabs) |
 | `impl-general-{dark,light}.png` | the real window (`ashdash prefs-window`) on a CI runner, General with the Full Disk Access card, 760 x 560 pt at 2x |
 | `impl-permissions-{dark,light}.png` | the real Permissions page with simulated states (Accessibility not granted, Automation asked on first use, Full Disk Access not granted; `ASHDASH_PREFS_FAKE_PERMISSIONS`) |
-| `../../../tests/e2e/screenshots/prefs-shots.sh` | the script that takes them on a CI runner (`scripts/ci-run.sh screenshots`; every page, dark/light, 760x560 / 640x480, recorder states, Cmd+K, Tab focus, Return-Fix; the artifact lasts 7 days) |
+| `../../../tests/e2e/screenshots/prefs-shots.sh` | the script that takes them on a CI runner (`scripts/ci-run.sh screenshots`; every page, dark/light, 760x560 / 640x480, recorder states, "/" focus, Tab focus, Return-Fix; the artifact lasts 7 days) |
 | `SPEC.md` | tokens (dark + light), type, geometry, components, egui 0.36 mapping |
 | `contrast.md` | WCAG ratios for every text/background pair, from `tools/contrast.py` |
 | `tools/sample_tokens.py`, `tools/sampled.json` | pixel sampling of the images; `tools/contrast.py` palette + check |
 
 ## What changed from V4
 
-- The top tab bar is gone. A 160 pt sidebar holds the "Go to a setting... ⌘K" field and seven small-caps items, `⌘1` to `⌘7` right-aligned in mono. The active item (GENERAL) has a 3 px orange bar on its left edge and brighter text. A hairline separates sidebar and content. The content column is narrower; "RANK RESULTS BY WHAT I PICK" now wraps to two lines.
+- The top tab bar is gone. A 160 pt sidebar holds the "Go to a setting... /" field and seven small-caps items, `⌘1` to `⌘7` right-aligned in mono. The active item (GENERAL) has a 3 px orange bar on its left edge and brighter text. A hairline separates sidebar and content. The content column is narrower; "RANK RESULTS BY WHAT I PICK" now wraps to two lines.
 - The invented lines "BASIC SETTINGS FOR ASHDASH" and "SIMPLE TOOLS FOR A FASTER MAC" are replaced by the subtitle "SHORTCUT · THEME · RESULTS · START-UP" and, right-aligned in dim mono, the real config path `~/Library/Application Support/ashdash/config.json`.
 - The theme name reads "Ashdash Dark" (V4 first pass showed it that way as well).
 - Everything else follows V4: small-caps labels with the grey mono key under them, bordered two-column grid, plain orange toggles, orange recorder outline, stepper, RELOAD and attention cards, STATUS strip with square lights. Launch at login has no key.

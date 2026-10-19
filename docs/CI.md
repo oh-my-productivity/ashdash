@@ -53,7 +53,7 @@ contributor needs a maintainer's approval anyway. A maintainer pushes the branch
   preferences, actions panel, measurements, the later behaviours) + `tests/e2e/ci/finalize.py`. About 140 rows; a run takes about 22 minutes. The
   dispatch input `sections` runs some of the sections only (`s31 s32`).
 * **screenshots** (macos-15; pushes to `main` and on demand): `tests/e2e/ci/run-screenshots.sh` = `tests/e2e/screenshots/prefs-shots.sh`: the
-  real preferences window, every page, dark and light, at two window sizes, plus the recorder states, the Tab focus ring, Cmd+K and Cmd+R.
+  real preferences window, every page, dark and light, at two window sizes, plus the recorder states, the Tab focus ring, "/" (focus the search field), Esc in it and Cmd+R.
   The images are the artifact `preferences-screenshots` (7 days). Nothing compares them with reference images; a person looks at them.
 * **launcher-look** (macos-15; on demand): `tests/e2e/ci/run-launcher-look.sh` = `tests/e2e/screenshots/launcher-look.sh`: starts the app with an empty
   home (the default look), `ashdash show`, then `ashdash search saf`, and captures the launcher window in both states (six captures a third of a

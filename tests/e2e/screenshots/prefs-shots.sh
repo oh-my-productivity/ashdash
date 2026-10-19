@@ -13,7 +13,7 @@
 #      and after the TCC grant,
 #   3. for dark and light (ASHDASH_PREFS_THEME) and for 760x560 and 640x480: opens `ashdash prefs-window` in the GUI session
 #      (tests/e2e/guest/gui-exec), walks Cmd+1 ... Cmd+7 with System Events, and takes a window-only screenshot per page
-#      (screencapture -l <window id> -o) plus the recorder states, the Tab focus ring, Cmd+K and Cmd+R.
+#      (screencapture -l <window id> -o) plus the recorder states, the Tab focus ring, "/" (focus the search field), Esc in it and Cmd+R.
 # Output: $E2E_ARTIFACTS/shots/<theme>-<size>-<name>.png, probes.txt, window.txt. The screenshots are workflow artifacts (7 days), never
 # committed; the reference images in docs/design/settings-v4/ are curated by hand.
 # shellcheck disable=SC2015
@@ -115,7 +115,7 @@ mclick() {
 # A click on empty sidebar space takes keyboard focus off any field (Return then reaches the page). Not on the title bar:
 # macOS treats that as a window drag and the plain keys that follow never arrive.
 refocus() { local h=${SIZE#*x}; mclick 160 $((60 + h - 90)); }
-# key codes: 18..23,26,28 = digits 1..8 on a US layout; 40 = k, 15 = r, 53 = esc, 36 = return, 48 = tab, 51 = delete, 49 = space, 0 = a
+# key codes: 18..23,26,28 = digits 1..8 on a US layout; 15 = r, 53 = esc, 36 = return, 48 = tab, 51 = delete, 49 = space, 0 = a
 DIGIT=(0 18 19 20 21 23 22 26)
 
 for THEME in $THEMES; do
@@ -133,16 +133,19 @@ for THEME in $THEMES; do
     w=${SIZE%x*}
     rx=$((80 + 180 + 188 + (w - 160 - 40 - 188) / 2)); ry=$((60 + 130))
     chain() { local name=$1; shift; launch; "$@"; shot "$name"; }
-    a_cmdk() { cmd 40 0.6; se 'keystroke "work"' >/dev/null; sleep 0.6; }
-    a_cmdk_esc() { a_cmdk; key 53 "" 0.8; }
+    # "/" focuses "Go to a setting..." when no text field has focus (typed as a character, so any keyboard layout)
+    a_slash() { se 'keystroke "/"' >/dev/null; sleep 0.6; }
+    a_slash_work() { a_slash; se 'keystroke "work"' >/dev/null; sleep 0.6; }
+    a_slash_esc() { a_slash_work; key 53 "" 0.8; }
     a_tab() { mclick 160 $((60 + ${SIZE#*x} - 90)); for _ in 1 2 3 4 5 6 7 8; do key 48 "" 0.35; done; }
     a_return() { mclick 160 $((60 + ${SIZE#*x} - 90)); key 36 "" 1.2; }
     a_rec() { mclick "$rx" "$ry"; sleep 0.5; }
     a_rec_refuse() { a_rec; key 0 "" 0.8; }
     a_rec_esc() { a_rec_refuse; key 53 "" 0.8; }
     a_rec_backspace() { a_rec; key 51 "" 1.0; }
-    [ "$SIZE" = 760x560 ] && chain cmdk-work a_cmdk
-    [ "$SIZE" = 760x560 ] && chain cmdk-cleared a_cmdk_esc
+    [ "$SIZE" = 760x560 ] && chain slash-focus a_slash
+    [ "$SIZE" = 760x560 ] && chain slash-work a_slash_work
+    [ "$SIZE" = 760x560 ] && chain slash-esc a_slash_esc
     [ "$SIZE" = 760x560 ] && chain tab-focus a_tab
     [ "$SIZE" = 760x560 ] && chain after-return-fix a_return
     [ "$SIZE" = 760x560 ] && chain recorder-recording a_rec

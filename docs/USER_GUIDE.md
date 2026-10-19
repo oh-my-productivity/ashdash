@@ -237,8 +237,8 @@ window exists; opening it again brings it forward. Every change is checked, writ
 running launcher within about a second ([SETTINGS.md](SETTINGS.md)). If a change could not be applied (bad hotkey, broken
 file, a web search URL that is not allowed) the window shows why and the launcher keeps the previous setting.
 
-The window has its own title bar (drag it to move the window), and a sidebar (Cmd+1 ... Cmd+7 switch pages; Cmd+K jumps to the
-"Go to a setting..." field, which filters the page list by name and opens the first match on Return). A strip at the bottom always shows
+The window has its own title bar (drag it to move the window), and a sidebar (Cmd+1 ... Cmd+7 switch pages; `/` (when no text field has focus) jumps to the
+"Go to a setting..." field, which filters the page list by name, opens the first match on Return and is left with Esc). A strip at the bottom always shows
 the settings reload (CONFIG), the number of PROBLEMS and whether the launcher is running, plus DISK ACCESS when Safari bookmarks are on
 and Full Disk Access is not granted. It follows the system light/dark appearance.
 
