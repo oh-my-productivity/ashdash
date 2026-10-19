@@ -178,6 +178,12 @@ Details worth knowing:
 * A theme is an appearance file ([WORKFLOWS.md](WORKFLOWS.md#file-formats-and-identifiers)). Opening one with Ashdash copies it to `themes/` and selects it in `config.json`;
   `ashdash theme <file>` applies one to the running launcher (it only parses the file when Ashdash is not running); or set
   `theme` in the config to its path to use it at every start.
+* **The look without a theme.** The launcher is a square, near-black panel (575 pt wide, 62 pt tall while the query is empty) with a thin
+  dark-grey border and nothing in it but a large white text caret: no placeholder text, no icon. Results appear below the query line
+  inside the same panel, which grows downward. The numbers are in [design/launcher-look.md](design/launcher-look.md). A theme file
+  overrides every value (colours, `roundness`, `width`, text sizes). Besides the usual keys it may set `window` > `borderWidth`
+  (points; without it the border is one device pixel, thin on every screen; `0` = no border) and `search` > `caretColor` /
+  `caretWidth` (points). Files without them keep the defaults. The query font is the launcher's built-in sans-serif at the theme's `search` > `text` > `size` (34 pt by default).
 * Double-clicking works when Ashdash is the handler for the file. If another application already opens those files it stays the default: use
   right-click > Open With > Ashdash, or `open -a /Applications/Ashdash.app <file>`.
 * Workflows (workflow packages) are code that runs as you, so **every way of installing one asks

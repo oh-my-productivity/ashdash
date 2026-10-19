@@ -8,7 +8,7 @@ This page describes the workflows, their jobs and the runners. What cannot run e
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | every pull request (opened, edited, synchronize, reopened) and push to `main`; `workflow_dispatch` | `check`, `deny`, `commit-lint`, `hooks`, `policy`, `packaging` |
-| `e2e.yml` | every pull request **from this repository** and push to `main`: `smoke` (macOS 15 and 26). Pushes to `main` also: `screenshots`, `x86-64` (macOS 15 Intel), `bundle`. Nightly 02:41 UTC: `checklist` (macOS 15 and 26). `workflow_dispatch`: any of them (`suite`, `ref`, `sections`) | `smoke`, `checklist`, `screenshots`, `focus`, `x86-64`, `bundle` |
+| `e2e.yml` | every pull request **from this repository** and push to `main`: `smoke` (macOS 15 and 26). Pushes to `main` also: `screenshots`, `x86-64` (macOS 15 Intel), `bundle`. Nightly 02:41 UTC: `checklist` (macOS 15 and 26). `workflow_dispatch`: any of them (`suite`, `ref`, `sections`) | `smoke`, `checklist`, `screenshots`, `launcher-look`, `focus`, `x86-64`, `bundle` |
 | `stress.yml` | nightly 03:41 UTC; `workflow_dispatch` (`suite`, `ref`, `runs`, `slow_runs`) | `ignored`, `timing` (macOS 15 and 15 Intel), `perf-gui`, `bench`, `test-times` |
 | `soak.yml` | nightly 04:41 UTC; `workflow_dispatch` (`soak_seconds`, `ref`) | `soak` |
 | `advisories.yml` | Mondays 06:17 UTC; `workflow_dispatch` | RustSec advisories for the locked dependencies |
@@ -55,6 +55,10 @@ contributor needs a maintainer's approval anyway. A maintainer pushes the branch
 * **screenshots** (macos-15; pushes to `main` and on demand): `tests/e2e/ci/run-screenshots.sh` = `tests/e2e/screenshots/prefs-shots.sh`: the
   real preferences window, every page, dark and light, at two window sizes, plus the recorder states, the Tab focus ring, Cmd+K and Cmd+R.
   The images are the artifact `preferences-screenshots` (7 days). Nothing compares them with reference images; a person looks at them.
+* **launcher-look** (macos-15; on demand): `tests/e2e/ci/run-launcher-look.sh` = `tests/e2e/screenshots/launcher-look.sh`: starts the app with an empty
+  home (the default look), `ashdash show`, then `ashdash search saf`, and captures the launcher window in both states (six captures a third of a
+  second apart because the caret blinks; one with the window shadow; one of the whole screen) plus `window.txt` with the window's size in points.
+  The images are the artifact `launcher-look` (7 days); a person looks at them against [design/launcher-look.md](design/launcher-look.md).
 * **focus** (macos-15; on demand): `tests/e2e/ci/run-focus.sh` = `tests/e2e/focus/regress.sh`: the launcher must hide when another app takes the focus,
   survive Quick Look and the actions panel, and stay up on a click ([spikes/ui-focus.md](spikes/ui-focus.md)).
 * **x86-64** (macos-15-intel): `cargo test --workspace`, `cargo build -p ashdash`, and the same GUI smoke test with the native x86-64 bundle.
@@ -91,7 +95,7 @@ contributor needs a maintainer's approval anyway. A maintainer pushes the branch
   `soak_seconds` shortens it. A hosted job may run for up to 6 hours; the job limit here is 5.
 
 Logs, results and screenshots are uploaded as artifacts **only when a job fails**, except for the jobs whose result is the artifact
-(`screenshots`, `bundle`, `perf-gui`, `bench`, `test-times`); all expire after 7 days. Screenshots of green e2e runs are deleted before the job ends.
+(`screenshots`, `launcher-look`, `bundle`, `perf-gui`, `bench`, `test-times`); all expire after 7 days. Screenshots of green e2e runs are deleted before the job ends.
 The job summary page of every run has the report (smoke stages, checklist rows that are not PASS, soak samples, performance tables).
 
 ## Commit messages
@@ -167,7 +171,7 @@ What matters for results:
   and `/Applications/Safari.app` is a symlink into a cryptex.
 * The runner is thrown away after the job: nothing the scripts write (login item, TCC rows, `/Applications/Ashdash.app`) survives.
 
-The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`, `run-screenshots.sh`, `run-perf-gui.sh`) refuse to run unless
+The scripts that drive the keyboard, the screen and the hotkey (`run-smoke.sh`, `run-checklist.sh`, `run-soak.sh`, `run-screenshots.sh`, `run-launcher-look.sh`, `run-perf-gui.sh`) refuse to run unless
 `GITHUB_ACTIONS=true`, `RUNNER_ENVIRONMENT=github-hosted`, the account is `runner` and it owns the console. `tcc-grant.sh` additionally
 requires a `VirtualMac*` model, so exporting the variables on a developer's Mac changes nothing (host tests: `tests/e2e/test/run-tests.sh`, job `packaging`).
 The QA scripts under `scripts/qa/` that drive the desktop (`gui-smoke.sh`, `ui-glue-smoke.sh`, `perf-gui.sh`) source `scripts/qa/require-ci.sh` and refuse the same way.

@@ -57,6 +57,7 @@ git push -u origin HEAD                         # the branch must be on origin
 scripts/ci-run.sh smoke --watch                 # GUI smoke test, macOS 15 and 26: starts the app, hotkey, URL scheme, quit
 scripts/ci-run.sh checklist --sections "s31 s32" --watch --download out    # part of the scripted QA checklist; artifacts into out/
 scripts/ci-run.sh screenshots --watch --download shots                    # the preferences window, every page, dark and light
+scripts/ci-run.sh launcher-look --watch --download look                   # the launcher window, empty and with results
 scripts/ci-run.sh ignored --watch               # the #[ignore = "ci: ..."] Rust tests in release mode + full fuzz counts
 scripts/ci-run.sh timing --runs 30 --watch      # clock-dependent tests under CPU load, many times
 scripts/ci-run.sh perf-gui --watch --download perf   # start-up, hotkey latency, idle CPU and memory of the real app
@@ -77,6 +78,7 @@ test fails on the old code). It needs the GitHub CLI (`gh`) logged in. `scripts/
 | `checklist` | `e2e.yml` | the full scripted QA checklist, macOS 15 and 26 | nightly 02:41 UTC |
 | `focus` | `e2e.yml` | the focus regression checks (Quick Look, panel, click, idle) | on demand |
 | `screenshots` | `e2e.yml` | preferences window, all pages, dark and light, as an artifact | push to `main` |
+| `launcher-look` | `e2e.yml` | the launcher window, empty and with results, as an artifact | on demand |
 | `x86-64` | `e2e.yml` | tests, native build and smoke test on the Intel image | push to `main` |
 | `bundle` | `e2e.yml` | universal `.app` and DMG, verified | push to `main` |
 | `ignored` | `stress.yml` | `#[ignore = "ci: ..."]` tests in release mode, full fuzz counts | nightly 03:41 UTC |
