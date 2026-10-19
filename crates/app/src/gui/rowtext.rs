@@ -13,6 +13,8 @@ pub const ICON_GAP: f32 = 10.0;
 pub const TITLE_SUB_GAP: f32 = 2.0;
 /// The mono subtitle is smaller than the plain one by this much (Geist Mono is wider than Inter).
 pub const MONO_SIZE_DELTA: f32 = 0.5;
+/// A fallback row that is not selected shows its title at this share of the normal alpha.
+pub const FALLBACK_TITLE_ALPHA: f32 = 0.75;
 /// Cmd+1..9 select the first nine rows; only they show a hint.
 pub const HINT_ROWS: usize = 9;
 
@@ -149,6 +151,17 @@ pub fn block_tops(center_y: f32, title_h: f32, sub_h: Option<f32>) -> (f32, Opti
             (title_y, Some(title_y + title_h + TITLE_SUB_GAP))
         }
     }
+}
+
+/// The hairline above the first fallback row, inside that row: `(x0, x1, y, width)` for a row between `left` and `right` whose top is
+/// `top`, on a screen with `pixels_per_point` device pixels per point. One device pixel wide, 8 pt in from each side.
+pub fn separator_line(left: f32, right: f32, top: f32, pixels_per_point: f32) -> (f32, f32, f32, f32) {
+    let px = if pixels_per_point.is_finite() && pixels_per_point >= 1.0 {
+        1.0 / pixels_per_point
+    } else {
+        1.0
+    };
+    (left + 8.0, right - 8.0, top + px / 2.0, px)
 }
 
 #[cfg(test)]
@@ -312,5 +325,13 @@ mod tests {
         );
         // without a subtitle the title alone is centred
         assert_eq!(block_tops(24.0, 19.0, None), (14.5, None));
+    }
+
+    #[test]
+    fn the_separator_is_one_device_pixel_in_the_top_of_the_row() {
+        assert_eq!(separator_line(10.0, 566.0, 100.0, 2.0), (18.0, 558.0, 100.25, 0.5));
+        assert_eq!(separator_line(10.0, 566.0, 100.0, 1.0), (18.0, 558.0, 100.5, 1.0));
+        let (_, _, _, w) = separator_line(0.0, 100.0, 0.0, f32::NAN);
+        assert_eq!(w, 1.0, "a nonsensical scale falls back to a point");
     }
 }

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use ashdash_core::theme::Theme;
-use ashdash_core::{Icon, Mods, apps};
+use ashdash_core::{Icon, Mods, apps, first_fallback};
 use eframe::egui::text::{LayoutJob, TextWrapping};
-use eframe::egui::{self, Color32, FontId, Galley, Painter, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Color32, FontId, Galley, Painter, Pos2, Rect, Sense, Stroke, Vec2};
 
 use super::rowtext::SubKind;
 use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowfonts, rowhint, rowtext};
@@ -37,11 +37,14 @@ impl LauncherApp {
             shift: i.modifiers.shift,
             fn_key: false,
         });
+        let ppp = ctx.pixels_per_point();
         if let (Some(p), Some(prev)) = (ctx.input(|i| i.pointer.hover_pos()), self.last_pointer)
             && p.distance(prev) > 2.0
         {
             self.pointer_moved = true;
         }
+        // the hairline goes above the first fallback row, when at least one real hit is above it
+        let separator_row = first_fallback(&self.items).filter(|&i| i > 0);
         egui::ScrollArea::vertical()
             .max_height(VISIBLE_ROWS as f32 * ROW_HEIGHT)
             .auto_shrink([false, true])
@@ -76,6 +79,11 @@ impl LauncherApp {
                         // a faint hover row for a pointer the keyboard selection has moved away from
                         painter.rect_filled(rect, t.result_roundness, HOVER_FILL);
                     }
+                    let is_fallback = item.is_fallback();
+                    if Some(idx) == separator_row && !sel {
+                        let (x0, x1, y, w) = rowtext::separator_line(rect.left(), rect.right(), rect.top(), ppp);
+                        painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(w, c(t.separator)));
+                    }
                     let icon_size = t.icon_size.min(ROW_HEIGHT - 6.0);
                     let icon_rect = Rect::from_min_size(
                         Pos2::new(rect.left() + 8.0, rect.center().y - icon_size / 2.0),
@@ -108,6 +116,8 @@ impl LauncherApp {
                     let dim = if item.valid { 1.0 } else { 0.6 };
                     let title_color = if sel {
                         c(t.result_text_selected)
+                    } else if is_fallback {
+                        c(t.result_text).gamma_multiply(rowtext::FALLBACK_TITLE_ALPHA)
                     } else {
                         c(t.result_text)
                     }
@@ -119,7 +129,8 @@ impl LauncherApp {
                         title_color,
                         max_w,
                     );
-                    // the subtitle: the modifier hint while a modifier is held on the selected row
+                    // the subtitle: the modifier hint while a modifier is held on the selected row; a fallback row shows its URL
+                    // only when selected (so the user sees what Return opens)
                     let subtitle = if sel && !held.is_none() {
                         rowhint::mod_hint(&item, held).unwrap_or_else(|| item.subtitle.clone())
                     } else {
@@ -130,8 +141,8 @@ impl LauncherApp {
                     } else {
                         t.result_subtext
                     });
-                    let sub =
-                        (!subtitle.is_empty()).then(|| self.subtitle_galley(&painter, t, &subtitle, sub_color, max_w));
+                    let sub = (!subtitle.is_empty() && (sel || !is_fallback))
+                        .then(|| self.subtitle_galley(&painter, t, &subtitle, sub_color, max_w));
                     let (title_y, sub_y) =
                         rowtext::block_tops(rect.center().y, title.size().y, sub.as_ref().map(|g| g.size().y));
                     painter.galley(Pos2::new(text_x, title_y), title, title_color);
