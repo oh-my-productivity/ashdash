@@ -115,3 +115,32 @@ def slow_frames(events, since_ms=0.0, limit=5):
     frames = [e for e in events if e["type"] == "frame" and e["t"] >= since_ms]
     frames.sort(key=lambda e: e.get("dur", 0.0), reverse=True)
     return [e["line"] for e in frames[:limit]]
+
+
+def report(events, stall_ms=30.0):
+    """A plain-text report of one session's trace for someone without a probe (`scripts/qa/frame-trace-report.py`): for every typed
+    character the frame that drew it, how long the app took from the request to the answer, every slow frame with its phases, and the
+    gaps between frames while text was typed. A frame's `gap` is the time since the previous frame started: a long one right before a
+    typed character, with a short `dur`, means the thread was blocked outside the app's own code (waiting for the event, presenting the
+    frame), a long `dur` means the app's own code was slow (the phases say which part)."""
+    lines = []
+    requests = {e["gen"]: e for e in events if e["type"] == "request" and "gen" in e}
+    answered = {}
+    for e in events:
+        if e["type"] == "results" and e.get("kind") in ("Final", "Rerun") and e.get("gen") in requests:
+            answered.setdefault(e["gen"], e)
+    typed = [e for e in events if e["type"] == "frame" and e.get("text", 0) > 0]
+    lines.append(f"{len(typed)} frames drew typed text, {len(requests)} queries were requested")
+    lines.append("")
+    lines.append("typed text: query field | frame dur | gap before the frame | request -> answer")
+    for e in typed:
+        req, ans = requests.get(e.get("gen")), answered.get(e.get("gen"))
+        took = "no answer traced" if ans is None or req is None else f"{ans['t'] - req['t']:.1f} ms"
+        mark = "  <-- long gap" if e.get("gap", 0.0) >= stall_ms else ""
+        lines.append(f"  {e.get('q', '')!r:<12} dur {e.get('dur', 0.0):6.2f} ms   gap {e.get('gap', 0.0):7.1f} ms   answer {took}{mark}")
+    slow = [e for e in events if e["type"] == "frame" and e["slow"]]
+    lines.append("")
+    lines.append(f"{len(slow)} slow frames (over 16 ms of the app's own work):")
+    for e in sorted(slow, key=lambda e: -e.get("dur", 0.0))[:10]:
+        lines.append("  " + e["line"].split("] ", 1)[-1])
+    return "\n".join(lines)

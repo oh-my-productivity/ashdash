@@ -90,3 +90,19 @@ class StatsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReportTest(unittest.TestCase):
+    def test_the_report_names_typed_frames_answers_and_slow_frames(self):
+        text = ts.report(ts.parse_trace(TRACE))
+        self.assertIn("3 frames drew typed text, 3 queries were requested", text)
+        # "pu" arrived 310 ms after its request (the Pending batch does not count) and its frame was slow
+        self.assertIn("'pu'", text)
+        self.assertIn("answer 310.0 ms", text)
+        self.assertIn("1 slow frames", text)
+        self.assertIn("ui{results=39.00}", text)
+
+    def test_a_long_gap_is_marked(self):
+        ev = ts.parse_trace(['[ft] t=5.0 frame dur=0.5 gap=250.0 text=1 q="p" gen=1 rows=0 logic{} ui{}'])
+        self.assertIn("<-- long gap", ts.report(ev))
+        self.assertIn("no answer traced", ts.report(ev))
