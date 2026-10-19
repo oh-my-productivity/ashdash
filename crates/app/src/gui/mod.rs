@@ -14,6 +14,7 @@ mod panel;
 pub mod prefs;
 mod quicklook;
 mod results;
+mod rowcache;
 mod rowfonts;
 mod rowhint;
 mod rowtext;
@@ -115,6 +116,12 @@ struct LauncherApp {
     cjk_fonts: crate::fonts::Fallbacks,
     /// `ASHDASH_FRAME_TRACE=1`: per-frame timing lines (see `frametrace.rs`); inert otherwise.
     ft: frametrace::FrameTrace,
+    /// The laid-out text of the result rows, kept between frames (see `rowcache.rs`).
+    rows: rowcache::RowCache<results::RowText>,
+    /// Bumped when a font was added to egui (laid-out text of earlier frames refers to the old glyphs).
+    font_epoch: u32,
+    /// What the font atlas was last warmed for (see `rowfonts::prewarm`).
+    warmed: Option<rowfonts::WarmKey>,
 }
 
 pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result<()> {
@@ -238,6 +245,9 @@ impl LauncherApp {
             glue: glue::Glue::new(),
             cjk_fonts: crate::fonts::Fallbacks::default(),
             ft: frametrace::FrameTrace::default(),
+            rows: rowcache::RowCache::default(),
+            font_epoch: 0,
+            warmed: None,
         };
         if !hotkey_ok {
             // Without a hotkey the window would be unreachable; show it now.
@@ -382,8 +392,13 @@ impl LauncherApp {
             .chain(self.status.as_deref())
             .chain(self.large_type.as_deref())
             .chain(self.glue.panels.top().map(|l| l.title.as_str()));
-        self.cjk_fonts
-            .ensure_with(ctx, &crate::fonts::SystemFonts, texts, &rowfonts::families());
+        if self
+            .cjk_fonts
+            .ensure_with(ctx, &crate::fonts::SystemFonts, texts, &rowfonts::families())
+        {
+            // egui rebuilds its fonts: text laid out before refers to glyphs of the old atlas
+            self.font_epoch = self.font_epoch.wrapping_add(1);
+        }
     }
 }
 
@@ -414,6 +429,8 @@ impl eframe::App for LauncherApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.ft.enter_ui();
+        self.warm_fonts(ui.ctx());
+        self.ft.phase("warm_fonts");
         self.draw(ui);
         if frametrace::enabled() {
             let texts = ui
@@ -426,6 +443,20 @@ impl eframe::App for LauncherApp {
 }
 
 impl LauncherApp {
+    /// Rasterise the printable ASCII glyphs of every font and size the launcher draws with, once per (scale, theme, font set), so the
+    /// first characters typed (and the first rows shown) do not pay for glyph rasterisation and atlas uploads in their own frame.
+    fn warm_fonts(&mut self, ctx: &egui::Context) {
+        // while hidden, or once the first frames of a show are out: not inside the frame that has to make the window appear
+        if self.visible && self.frames_since_show < 2 {
+            return;
+        }
+        let key = rowfonts::WarmKey::of(&self.theme, ctx.pixels_per_point(), self.font_epoch);
+        if self.warmed != Some(key) {
+            rowfonts::prewarm(ctx, &self.theme);
+            self.warmed = Some(key);
+        }
+    }
+
     /// One frame of the launcher window (`eframe::App::ui` wraps this with the frame trace).
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();

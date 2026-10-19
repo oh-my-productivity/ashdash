@@ -3,10 +3,11 @@
 use std::sync::Arc;
 
 use ashdash_core::theme::Theme;
-use ashdash_core::{Icon, Mods, apps, first_fallback};
+use ashdash_core::{Icon, Item, Mods, apps, first_fallback};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{self, Color32, FontId, Galley, Painter, Pos2, Rect, Sense, Stroke, Vec2};
 
+use super::rowcache::{RowCache, RowKey};
 use super::rowtext::SubKind;
 use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowfonts, rowhint, rowtext};
 
@@ -24,6 +25,109 @@ fn one_line(painter: &Painter, text: &str, font: FontId, color: Color32, max_wid
         overflow_character: Some('…'),
     };
     painter.layout_job(job)
+}
+
+/// The laid-out text of one result row: what [`RowCache`] keeps from frame to frame.
+#[derive(Clone)]
+pub(super) struct RowText {
+    title: Arc<Galley>,
+    sub: Option<Arc<Galley>>,
+}
+
+/// What decides how a row's text is laid out, besides the item itself.
+struct RowLook<'a> {
+    selected: bool,
+    /// The row is a fallback search (its subtitle only shows when selected).
+    fallback: bool,
+    /// The modifier hint that replaces the subtitle while a modifier is held on the selected row.
+    held_hint: Option<&'a str>,
+    title_color: Color32,
+    sub_color: Color32,
+    max_width: f32,
+    pixels_per_point: f32,
+    font_epoch: u32,
+}
+
+/// The key of a row's layout: the item's id and texts, the width, the selection and everything else that changes a glyph or a position.
+fn row_key(item: &Item, t: &Theme, look: &RowLook) -> RowKey {
+    RowKey::of(|h| {
+        h.str(&item.id)
+            .str(&item.title)
+            .str(&item.subtitle)
+            .str(look.held_hint.unwrap_or(""))
+            .bool(look.held_hint.is_some())
+            .bool(look.selected)
+            .bool(look.fallback)
+            .f32(look.max_width)
+            .f32(look.pixels_per_point)
+            .u32(look.font_epoch)
+            .f32(t.result_text_size)
+            .f32(t.result_subtext_size)
+            .bytes(&look.title_color.to_array())
+            .bytes(&look.sub_color.to_array());
+    })
+}
+
+/// The title and subtitle galleys of a row, from the cache when the row looks the same as in the last frame.
+fn row_text(
+    cache: &mut RowCache<RowText>,
+    painter: &Painter,
+    t: &Theme,
+    home: &str,
+    item: &Item,
+    look: &RowLook,
+) -> RowText {
+    let key = row_key(item, t, look);
+    cache.get_or_insert_with(key, || {
+        let title = one_line(
+            painter,
+            &item.title,
+            FontId::new(t.result_text_size, rowfonts::text_family()),
+            look.title_color,
+            look.max_width,
+        );
+        // the subtitle: the modifier hint while a modifier is held on the selected row; a fallback row shows its URL only when
+        // selected (so the user sees what Return opens)
+        let subtitle = look.held_hint.unwrap_or(&item.subtitle);
+        let sub = (!subtitle.is_empty() && (look.selected || !look.fallback))
+            .then(|| subtitle_galley(painter, t, home, subtitle, look.sub_color, look.max_width));
+        RowText { title, sub }
+    })
+}
+
+/// The subtitle laid out in one line of at most `max_w`: Inter for plain text; Geist Mono for a path (home as `~`, middle elided) or a
+/// URL (without scheme and `www.`, cut at the end).
+fn subtitle_galley(
+    painter: &Painter,
+    t: &Theme,
+    home: &str,
+    subtitle: &str,
+    color: Color32,
+    max_w: f32,
+) -> Arc<Galley> {
+    let (kind, text) = rowtext::subtitle_text(subtitle, home);
+    match kind {
+        SubKind::Plain => one_line(
+            painter,
+            &text,
+            FontId::new(t.result_subtext_size, rowfonts::text_family()),
+            color,
+            max_w,
+        ),
+        SubKind::Url | SubKind::Path => {
+            let font = FontId::new(
+                t.result_subtext_size - rowtext::MONO_SIZE_DELTA,
+                rowfonts::mono_family(),
+            );
+            let text = if kind == SubKind::Path {
+                let measure = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), color).size().x <= max_w;
+                rowtext::elide_path(&text, measure)
+            } else {
+                text
+            };
+            one_line(painter, &text, font, color, max_w)
+        }
+    }
 }
 
 impl LauncherApp {
@@ -70,8 +174,11 @@ impl LauncherApp {
                     if resp.clicked() {
                         clicked = Some(idx);
                     }
-                    let item = self.items[idx].clone();
                     let sel = idx == self.selected;
+                    let (icon, valid, is_fallback) = {
+                        let item = &self.items[idx];
+                        (item.icon.clone(), item.valid, item.is_fallback())
+                    };
                     let painter = ui.painter_at(rect);
                     if sel {
                         painter.rect_filled(rect, t.result_roundness, c(t.result_selected_background));
@@ -79,7 +186,6 @@ impl LauncherApp {
                         // a faint hover row for a pointer the keyboard selection has moved away from
                         painter.rect_filled(rect, t.result_roundness, HOVER_FILL);
                     }
-                    let is_fallback = item.is_fallback();
                     if Some(idx) == separator_row && !sel {
                         let (x0, x1, y, w) = rowtext::separator_line(rect.left(), rect.right(), rect.top(), ppp);
                         painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(w, c(t.separator)));
@@ -89,14 +195,14 @@ impl LauncherApp {
                         Pos2::new(rect.left() + 8.0, rect.center().y - icon_size / 2.0),
                         Vec2::splat(icon_size),
                     );
-                    match self.icon_uri(ctx, &item.icon) {
+                    match self.icon_uri(ctx, &icon) {
                         Some(uri) => {
                             egui::Image::new(uri)
                                 .fit_to_exact_size(Vec2::splat(icon_size))
                                 .paint_at(ui, icon_rect);
                         }
                         None => {
-                            let glyph = match &item.icon {
+                            let glyph = match &icon {
                                 Icon::Glyph(g) => *g,
                                 Icon::App(_) => "▣",
                                 _ => "•",
@@ -113,7 +219,7 @@ impl LauncherApp {
                     let has_hint = idx < rowtext::HINT_ROWS;
                     let text_x = icon_rect.right() + rowtext::ICON_GAP;
                     let max_w = rowtext::text_max_width(text_x, rect.right(), has_hint);
-                    let dim = if item.valid { 1.0 } else { 0.6 };
+                    let dim = if valid { 1.0 } else { 0.6 };
                     let title_color = if sel {
                         c(t.result_text_selected)
                     } else if is_fallback {
@@ -122,27 +228,26 @@ impl LauncherApp {
                         c(t.result_text)
                     }
                     .gamma_multiply(dim);
-                    let title = one_line(
-                        &painter,
-                        &item.title,
-                        FontId::new(t.result_text_size, rowfonts::text_family()),
-                        title_color,
-                        max_w,
-                    );
-                    // the subtitle: the modifier hint while a modifier is held on the selected row; a fallback row shows its URL
-                    // only when selected (so the user sees what Return opens)
-                    let subtitle = if sel && !held.is_none() {
-                        rowhint::mod_hint(&item, held).unwrap_or_else(|| item.subtitle.clone())
-                    } else {
-                        item.subtitle.clone()
-                    };
                     let sub_color = c(if sel {
                         t.result_subtext_selected
                     } else {
                         t.result_subtext
                     });
-                    let sub = (!subtitle.is_empty() && (sel || !is_fallback))
-                        .then(|| self.subtitle_galley(&painter, t, &subtitle, sub_color, max_w));
+                    let held_hint = (sel && !held.is_none())
+                        .then(|| rowhint::mod_hint(&self.items[idx], held))
+                        .flatten();
+                    let look = RowLook {
+                        selected: sel,
+                        fallback: is_fallback,
+                        held_hint: held_hint.as_deref(),
+                        title_color,
+                        sub_color,
+                        max_width: max_w,
+                        pixels_per_point: ppp,
+                        font_epoch: self.font_epoch,
+                    };
+                    let RowText { title, sub } =
+                        row_text(&mut self.rows, &painter, t, &self.home, &self.items[idx], &look);
                     let (title_y, sub_y) =
                         rowtext::block_tops(rect.center().y, title.size().y, sub.as_ref().map(|g| g.size().y));
                     painter.galley(Pos2::new(text_x, title_y), title, title_color);
@@ -160,6 +265,7 @@ impl LauncherApp {
                     }
                 }
             });
+        self.rows.end_frame();
         self.last_pointer = ctx.input(|i| i.pointer.hover_pos()).or(self.last_pointer);
         self.scroll_to_selected = false;
         if let Some(i) = clicked {
@@ -171,34 +277,6 @@ impl LauncherApp {
                 fn_key: false,
             });
             self.activate(ctx, i, mods);
-        }
-    }
-
-    /// The subtitle laid out in one line of at most `max_w`: Inter for plain text; Geist Mono for a path (home as `~`, middle elided) or
-    /// a URL (without scheme and `www.`, cut at the end).
-    fn subtitle_galley(&self, painter: &Painter, t: &Theme, subtitle: &str, color: Color32, max_w: f32) -> Arc<Galley> {
-        let (kind, text) = rowtext::subtitle_text(subtitle, &self.home);
-        match kind {
-            SubKind::Plain => one_line(
-                painter,
-                &text,
-                FontId::new(t.result_subtext_size, rowfonts::text_family()),
-                color,
-                max_w,
-            ),
-            SubKind::Url | SubKind::Path => {
-                let font = FontId::new(
-                    t.result_subtext_size - rowtext::MONO_SIZE_DELTA,
-                    rowfonts::mono_family(),
-                );
-                let text = if kind == SubKind::Path {
-                    let measure = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), color).size().x <= max_w;
-                    rowtext::elide_path(&text, measure)
-                } else {
-                    text
-                };
-                one_line(painter, &text, font, color, max_w)
-            }
         }
     }
 
@@ -278,7 +356,84 @@ fn short_error(e: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{hotkey_hint, short_error};
+    use ashdash_core::Item;
+    use ashdash_core::theme::Theme;
+    use eframe::egui::Color32;
+
+    use super::{RowLook, hotkey_hint, row_key, short_error};
+
+    fn look() -> RowLook<'static> {
+        RowLook {
+            selected: false,
+            fallback: false,
+            held_hint: None,
+            title_color: Color32::WHITE,
+            sub_color: Color32::GRAY,
+            max_width: 442.0,
+            pixels_per_point: 2.0,
+            font_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn a_rows_layout_key_follows_every_input_of_its_text_and_nothing_else() {
+        let t = Theme::default();
+        let mut item = Item::new("app:safari", "Safari");
+        item.subtitle = "/Applications/Safari.app".into();
+        let base = row_key(&item, &t, &look());
+        assert_eq!(
+            base,
+            row_key(&item.clone(), &t, &look()),
+            "the same row in the next frame"
+        );
+
+        let mut other = item.clone();
+        other.title = "Safari Technology Preview".into();
+        assert_ne!(base, row_key(&other, &t, &look()), "title");
+        other = item.clone();
+        other.subtitle.push('x');
+        assert_ne!(base, row_key(&other, &t, &look()), "subtitle");
+        other = item.clone();
+        other.id = "app:other".into();
+        assert_ne!(base, row_key(&other, &t, &look()), "id");
+
+        let changed = |f: &dyn Fn(&mut RowLook)| {
+            let mut l = look();
+            f(&mut l);
+            row_key(&item, &t, &l)
+        };
+        assert_ne!(base, changed(&|l| l.selected = true), "selection");
+        assert_ne!(base, changed(&|l| l.fallback = true), "fallback");
+        assert_ne!(base, changed(&|l| l.max_width = 441.5), "width");
+        assert_ne!(base, changed(&|l| l.pixels_per_point = 1.0), "screen scale");
+        assert_ne!(base, changed(&|l| l.font_epoch = 1), "a font was added");
+        assert_ne!(base, changed(&|l| l.title_color = Color32::RED), "title colour");
+        assert_ne!(base, changed(&|l| l.sub_color = Color32::RED), "subtitle colour");
+        assert_ne!(
+            base,
+            changed(&|l| l.held_hint = Some("⌘ Reveal in Finder")),
+            "a modifier hint"
+        );
+        assert_ne!(
+            changed(&|l| l.held_hint = Some("")),
+            base,
+            "an empty hint hides the subtitle, which is not the same as no hint"
+        );
+        let bigger = Theme {
+            result_text_size: t.result_text_size + 1.0,
+            ..t.clone()
+        };
+        assert_ne!(base, row_key(&item, &bigger, &look()), "text size");
+        let recoloured = Theme {
+            result_text: [1, 2, 3, 255],
+            ..t
+        };
+        assert_eq!(
+            base,
+            row_key(&item, &recoloured, &look()),
+            "the theme colour reaches the key through the colours in the look"
+        );
+    }
 
     struct NoOs;
     impl ashdash_core::actions::Os for NoOs {
