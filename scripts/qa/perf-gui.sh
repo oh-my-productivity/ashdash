@@ -14,6 +14,8 @@
 #      PERF_REP_START=1 (first repetition number; the desktop lock is held for one invocation, keep it under ~5 min: one variant, one rep)
 #      PERF_MODE=latency|mem|gap (latency: hotkey and `ashdash show` -> window visible only; mem: footprint with the window shown only;
 #        each about 40 s per repetition; gap: latency vs. time hidden)
+#        typing: key-to-glyph and key-to-results latency of typing PERF_TYPE_TEXT (default `pup`) key by key, on the busy-laptop
+#        variants PERF_VARIANTS=heavy,heavy-slow (PERF_TYPE_GAP_MS=110 PERF_TYPE_RUNS=15 PERF_SLOW_FILTER_S=0.25)
 #      PERF_OUT=<dir for results.jsonl and the summary>  (default: a new dir under /tmp)
 set -uo pipefail
 # shellcheck source=require-ci.sh
@@ -46,7 +48,7 @@ if pgrep -x ashdash >/dev/null; then echo "perf-gui: an ashdash is already runni
 swiftc -O "$ROOT/scripts/qa/perf-probe.swift" -o "$T/perf-probe" 2>"$T/swiftc.log" || { cat "$T/swiftc.log" >&2; exit 2; }
 [ "$("$T/perf-probe" trusted)" = "true" ] || { echo "perf-gui: this terminal has no Accessibility permission (synthetic key events would be dropped)" >&2; exit 2; }
 
-if [[ ",${PERF_VARIANTS:-empty,real,synth5000}," == *",synth5000,"* ]]; then
+if [[ ",${PERF_VARIANTS:-empty,real,synth5000}," == *",synth5000,"* || ",${PERF_VARIANTS:-}," == *",heavy,"* || ",${PERF_VARIANTS:-}," == *",heavy-slow,"* ]]; then
     python3 - "$T/apps5000" <<'PY'
 import os, random, sys
 d = sys.argv[1]; os.makedirs(d)

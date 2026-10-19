@@ -14,6 +14,10 @@
 //       latency_ms, not of the app; building the events is done before t0) and "visible <t1>" and "latency_ms <t1-t0>".
 //   perf-probe key <keycode>            post one key down+up (53 = Esc)
 //   perf-probe type <text>              post the characters as unicode key events
+//   perf-probe typetimed <text> <gap-ms>  like "type", one character every <gap-ms> milliseconds, and print
+//                                       "key <index> <char> <unix-seconds>" right before each character is posted (events are built
+//                                       before the clock starts); the typing-lag run compares these times with the launcher's own
+//                                       frame trace (ASHDASH_FRAME_TRACE) to get key-to-glyph and key-to-results latency
 //   perf-probe bounds <owner>           print "x y w h layer" of every on-screen window of <owner>
 //   perf-probe trusted                  print whether this process may post events
 import ApplicationServices
@@ -115,6 +119,25 @@ case "type":
             e?.post(tap: .cghidEventTap)
         }
         usleep(20000)
+    }
+case "typetimed":
+    guard a.count >= 4, let gap = Double(a[3]) else { exit(2) }
+    var chars: [(String, [CGEvent])] = []
+    let src = CGEventSource(stateID: .hidSystemState)
+    for ch in a[2] {
+        var units = Array(String(ch).utf16)
+        let evs = [true, false].compactMap { down -> CGEvent? in
+            let e = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: down)
+            e?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            return e
+        }
+        chars.append((String(ch), evs))
+    }
+    for (i, (ch, evs)) in chars.enumerated() {
+        print("key", i, ch, String(format: "%.4f", now()))
+        fflush(stdout)
+        for e in evs { e.post(tap: .cghidEventTap) }
+        usleep(UInt32(gap * 1000))
     }
 default:
     exit(2)

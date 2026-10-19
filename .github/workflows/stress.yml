@@ -51,6 +51,21 @@ on:
         type: string
         default: "40"
         required: false
+      perf_mode:
+        description: "perf-gui: PERF_MODE (empty = the full run; typing = key-to-glyph and key-to-results latency of typing a query)"
+        type: string
+        default: ""
+        required: false
+      perf_variants:
+        description: "perf-gui: PERF_VARIANTS (empty = the script default; typing mode: heavy,heavy-slow)"
+        type: string
+        default: ""
+        required: false
+      perf_reps:
+        description: "perf-gui: PERF_REPS (empty = the script default)"
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -133,6 +148,10 @@ jobs:
         with:
           key: perf-gui
       - run: bash tests/e2e/ci/run-perf-gui.sh
+        env:
+          PERF_MODE: ${{ inputs.perf_mode }}
+          PERF_VARIANTS: ${{ inputs.perf_variants }}
+          PERF_REPS: ${{ inputs.perf_reps }}
       - name: Upload the results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

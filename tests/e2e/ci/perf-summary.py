@@ -4,7 +4,7 @@
     perf-summary.py results.jsonl
 
 One row per measurement kind and variant: start-up (cold and warm cache), idle CPU and memory with the window hidden, memory after use,
-hotkey-to-window and `ashdash show` latency. The numbers are measurements on a shared virtual machine: use them to compare runs of the
+hotkey-to-window and `ashdash show` latency, and (typing mode) key-to-glyph and key-to-results latency of typing a query. The numbers are measurements on a shared virtual machine: use them to compare runs of the
 same image over time and for orders of magnitude, not as absolute limits (docs/PERF.md).
 """
 import json
@@ -65,6 +65,17 @@ def main(path):
     for r in rows:
         if r.get("kind") == "cycles":
             out.append(f"| {r['n']} show/type/hide cycles (rep {r['rep']}) | {r['variant']} | {fmt(r['baseline']['rss_mb'])} | {fmt(r['snap']['rss_mb'])} | {fmt(r['snap']['footprint_mb'])} |")
+    typing = [r for r in rows if r.get("kind") == "typing-summary"]
+    if typing:
+        out.append("\n| typing `%s` key by key (%s ms apart) | variant | key | n | glyph p50 ms | glyph p95 ms | glyph max ms | results p50 ms | results p95 ms | results max ms |" % (typing[0].get("text", ""), typing[0].get("gap_ms", "?")))
+        out.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+        for r in typing:
+            def line(label, d):
+                g, q = d["glyph_ms"], d["results_ms"]
+                out.append(f"| | {r['variant']} | {label} | {g['n']} | {fmt(g['p50'])} | {fmt(g['p95'])} | {fmt(g['max'])} | {fmt(q['p50'])} | {fmt(q['p95'])} | {fmt(q['max'])} |")
+            line("all", r["all"])
+            for index, d in sorted(r["by_index"].items(), key=lambda kv: int(kv[0])):
+                line(f"#{int(index) + 1}", d)
     print("\n".join(out))
 
 

@@ -15,9 +15,15 @@ Per variant (apps=empty | real | synth5000) and per repetition:
      +10 s, and after N more cycles (does memory come back, does it grow?).
   4. hotkey -> window visible latency, N presses (also `ashdash show` over the socket as a proxy).
   5. quit, start again with the cache now warm: hotkey-ready and first-window times.
+PERF_MODE=typing (variants `heavy`, `heavy-slow`) measures only one thing, the lag of typing a query key by key: see typing_mode().
 Results go to $PERF_OUT/results.jsonl, one JSON object per measurement.
 """
-import json, os, re, signal, subprocess, sys, threading, time, statistics, shutil
+import json, os, plistlib, re, signal, subprocess, sys, threading, time, statistics, shutil
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import typing_stats  # noqa: E402
+import format_ids as ids  # noqa: E402  (object type ids of the workflow format: never spelled out in scripts)
 
 BIN = os.environ["PERF_BIN"]
 PROBE = os.environ["PERF_PROBE"]
@@ -30,6 +36,10 @@ CYCLES = int(os.environ.get("PERF_CYCLES", "20"))
 LAT_N = int(os.environ.get("PERF_LAT_N", "10"))
 VARIANTS = os.environ.get("PERF_VARIANTS", "empty,real,synth5000").split(",")
 QUERY = os.environ.get("PERF_QUERY", "saf")
+TYPE_TEXT = os.environ.get("PERF_TYPE_TEXT", "pup")      # typing mode: what is typed, key by key
+TYPE_GAP_MS = int(os.environ.get("PERF_TYPE_GAP_MS", "110"))   # typing mode: time between two keys (a quick typist)
+TYPE_RUNS = int(os.environ.get("PERF_TYPE_RUNS", "15"))   # typing mode: show/type/hide rounds per repetition
+SLOW_FILTER_S = float(os.environ.get("PERF_SLOW_FILTER_S", "0.25"))   # heavy-slow: how long its Script Filters take
 HOTKEY = ("ctrl+alt+shift+j", "38", "alt,shift,ctrl")   # config string, key code, flags
 OWNER = "ashdash"
 MINW = "300"       # launcher window is >= 300 pt wide; the status item window is ~22 pt
@@ -87,7 +97,7 @@ def threads(pid):
 class Instance:
     def __init__(self, home):
         self.home = home
-        env = dict(os.environ, HOME=home, ASHDASH_TRACE="1")
+        env = dict(os.environ, HOME=home, ASHDASH_TRACE="1", ASHDASH_FRAME_TRACE="1")
         for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             env.pop(k, None)
         self.lines = []        # (monotonic time, text)
@@ -217,8 +227,10 @@ def make_home(variant, tag):
     cfg = {"hotkey": HOTKEY[0]}
     if variant == "empty":
         cfg["app_dirs"] = []
-    elif variant == "synth5000":
+    elif variant in ("synth5000", "heavy", "heavy-slow"):
         cfg["app_dirs"] = [os.path.join(ROOT, "apps5000")]
+        if variant != "synth5000":
+            heavy_profile(home, data, slow=variant == "heavy-slow")
     elif variant != "real":
         raise SystemExit(f"unknown variant {variant}")
     with open(os.path.join(data, "config.json"), "w") as f:
@@ -226,10 +238,46 @@ def make_home(variant, tag):
     return home
 
 
+def script_filter(uid, keyword, withspace, script, running=""):
+    return {"uid": uid, "type": ids.INPUT_SCRIPTFILTER, "version": 3,
+            "config": {"keyword": keyword, "withspace": withspace, "argumenttype": 1, "type": 0, "scriptargtype": 1,
+                       "script": script, "title": f"{keyword} results", "runningsubtext": running, "subtext": "synthetic"}}
+
+
+def write_workflow(data, name, objects):
+    d = os.path.join(data, "workflows", f"user.workflow.{name}")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "info.plist"), "wb") as f:
+        plistlib.dump({"name": name, "bundleid": f"perf.{name}", "objects": objects, "connections": {}}, f)
+
+
+def heavy_profile(home, data, slow):
+    """What a busy laptop has besides the apps: 60 workflows with keywords and Script Filters, 3,000 Chromium bookmarks in two
+    profiles. `slow` adds the case that hurts most: Script Filters whose keyword has no space after it (`p`, `pu`), so typing `pup`
+    starts a script that takes SLOW_FILTER_S seconds at the first, second and third key. Synthetic and under the temporary HOME."""
+    items = '{"items":[{"title":"Result","subtitle":"synthetic","arg":"x"}]}'
+    for i in range(60):
+        write_workflow(data, f"wf{i:02d}", [script_filter(f"SF{i}", f"zz{i:02d}", True, f"echo '{items}'")])
+    if slow:
+        script = f"sleep {SLOW_FILTER_S}; echo '{items}'"
+        write_workflow(data, "slow-p", [script_filter("SLOW1", "p", False, script, "Searching...")])
+        write_workflow(data, "slow-pu", [script_filter("SLOW2", "pu", False, script, "Searching...")])
+    import random
+    random.seed(11)
+    words = "alpha beta gamma delta docs guide api ref notes wiki board issue review build deploy status".split()
+    for profile in ("Default", "Profile 1"):
+        pdir = os.path.join(home, "Library/Application Support/Google/Chrome", profile)
+        os.makedirs(pdir, exist_ok=True)
+        children = [{"type": "url", "name": " ".join(random.choice(words) for _ in range(4)) + f" {n}",
+                     "url": f"https://example.com/{profile.replace(' ', '')}/{n}"} for n in range(1500)]
+        with open(os.path.join(pdir, "Bookmarks"), "w") as f:
+            json.dump({"roots": {"bookmark_bar": {"type": "folder", "name": "Bookmarks bar", "children": children}}}, f)
+
+
 def count_apps(variant):
     if variant == "empty":
         return 0
-    if variant == "synth5000":
+    if variant in ("synth5000", "heavy", "heavy-slow"):
         return len([x for x in os.listdir(os.path.join(ROOT, "apps5000")) if x.endswith(".app")])
     n = 0
     for d in ("/Applications", "/System/Applications", "/System/Library/CoreServices/Applications"):
@@ -437,8 +485,66 @@ def cycle_block_short(inst, variant, rep):
     log(kind="mem", variant=variant, rep=rep, snaps=[base, shown, typed, h1, h10])
 
 
+def typing_round(inst, text):
+    """Show the launcher, type `text` key by key, wait for the answers, hide. Returns the per-key latencies and the slow frames."""
+    t_show = time.time()
+    if hotkey_show() is None or not focused_since(inst, t_show):
+        return None
+    time.sleep(0.6)   # let the first frame, the focus and any start-up work settle
+    t_start = time.time() * 1000
+    r = sh([PROBE, "typetimed", text, str(TYPE_GAP_MS)], timeout=30)
+    keys = []
+    for line in r.stdout.splitlines():
+        p = line.split()
+        if len(p) == 4 and p[0] == "key":
+            keys.append((int(p[1]), p[2], float(p[3]) * 1000))
+    time.sleep(2.0 + 3 * SLOW_FILTER_S)   # the slowest query still in flight finishes
+    events = typing_stats.parse_trace(l for t, l in list(inst.lines) if t * 1000 >= t_start - 50)
+    rows = typing_stats.key_latencies(keys, events, text)
+    slow = typing_stats.slow_frames([e for e in events if e["t"] >= t_start], limit=3)
+    hide(inst)
+    time.sleep(0.5)
+    return rows, slow
+
+
+def typing_mode():
+    """PERF_MODE=typing: for each variant (heavy, heavy-slow) and repetition, start the real app on the synthetic busy profile and
+    type PERF_TYPE_TEXT key by key (TYPE_GAP_MS apart) TYPE_RUNS times. The probe notes the wall clock at each key; the app's frame trace
+    (ASHDASH_FRAME_TRACE) says when the frame with the glyph was finished and when the results for that prefix were applied. One
+    `typing` line per round and one `typing-summary` per variant (p50/p95 over all keys, and per key position) go to results.jsonl."""
+    log(kind="env", accessibility_trusted=probe("trusted")[1], bin=BIN, uptime=sh(["uptime"]).stdout.strip(),
+        apps={v: count_apps(v) for v in VARIANTS}, text=TYPE_TEXT, gap_ms=TYPE_GAP_MS, runs=TYPE_RUNS)
+    for variant in VARIANTS:
+        all_rows = []
+        for rep in range(REP_START, REP_START + REPS):
+            home = make_home(variant, f"t{rep}")
+            inst = None
+            try:
+                inst, res = start_timing(variant, rep, home, "typing-start")
+                if not (inst.alive() and res.get("hotkey_ready_ms")):
+                    continue
+                hide(inst)
+                time.sleep(5)   # the index and the bookmark cache finish loading
+                for n in range(TYPE_RUNS + 1):
+                    got = typing_round(inst, TYPE_TEXT)
+                    if got is None:
+                        log(kind="typing", variant=variant, rep=rep, round=n, error="launcher did not show or take focus")
+                        continue
+                    rows, slow = got
+                    log(kind="typing", variant=variant, rep=rep, round=n, warmup=(n == 0), keys=rows, slow_frames=slow)
+                    if n > 0:   # round 0 is the cold one (first glyphs of the session): kept in the log, left out of the statistics
+                        all_rows += rows
+            finally:
+                if inst is not None:
+                    inst.quit()
+            shutil.rmtree(home, ignore_errors=True)
+        log(kind="typing-summary", variant=variant, text=TYPE_TEXT, gap_ms=TYPE_GAP_MS, **typing_stats.summarize(all_rows))
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
+    if os.environ.get("PERF_MODE") == "typing":
+        return typing_mode()
     if os.environ.get("PERF_MODE") == "gap":
         return gap_mode()
     if os.environ.get("PERF_MODE") in ("latency", "mem"):
