@@ -132,3 +132,23 @@ class LimitsTest(unittest.TestCase):
         self.assertEqual(len(out), 2, out)
         self.assertTrue(all("no key-to" in x for x in out))
         self.assertEqual(ts.check_limits(ts.summarize([]), "heavy-slow")[0], "heavy-slow: no key-to-glyph latency was measured")
+
+
+class TaintedKeysTest(unittest.TestCase):
+    def test_a_key_the_driver_handed_over_late_is_counted_and_not_measured(self):
+        ev = ts.parse_trace(['[ft] t=1900.0 frame dur=0.5 gap=1.0 text=1 q="p" gen=1 rows=0 logic{} ui{}',
+                             '[ft] t=1960.0 frame dur=0.5 gap=1.0 text=1 q="pu" gen=2 rows=0 logic{} ui{}'])
+        rows = ts.key_latencies([(0, "p", 1000.0, 850.0), (1, "u", 1950.0, 4.0)], ev, "pu")
+        self.assertEqual([r["post_ms"] for r in rows], [850.0, 4.0])
+        s = ts.summarize(rows)
+        self.assertEqual(s["tainted"], 1)
+        self.assertEqual((s["all"]["glyph_ms"]["n"], s["all"]["glyph_ms"]["max"]), (1, 10.0))
+        self.assertEqual(ts.summarize([])["tainted"], 0)
+
+    def test_a_run_whose_driver_stalled_all_the_time_fails(self):
+        rows = [{"index": 0, "char": "p", "glyph_ms": 5.0, "results_ms": 9.0, "post_ms": 500.0}] * 5 + [
+            {"index": 0, "char": "p", "glyph_ms": 5.0, "results_ms": 9.0, "post_ms": 3.0}
+        ]
+        out = ts.check_limits(ts.summarize(rows), "heavy")
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("stalled on 5 of 6 keys", out[0])

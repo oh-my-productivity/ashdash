@@ -499,8 +499,9 @@ function run(argv) {
     $.NSThread.sleepForTimeInterval(0.35);
   }
   for (var i = 0; i < text.length; i++) {
-    out.push('key ' + i + ' ' + text[i] + ' ' + $.NSDate.date.timeIntervalSince1970);
+    var t0 = $.NSDate.date.timeIntervalSince1970;
     se.keystroke(text[i]);
+    out.push('key ' + i + ' ' + text[i] + ' ' + t0 + ' ' + (($.NSDate.date.timeIntervalSince1970 - t0) * 1000));
     $.NSThread.sleepForTimeInterval(gap);
   }
   return out.join('\\n');
@@ -518,8 +519,8 @@ def type_timed(text):
     keys = []
     for line in (r.stdout + r.stderr).splitlines():
         p = line.split()
-        if len(p) == 4 and p[0] == "key":
-            keys.append((int(p[1]), p[2], float(p[3]) * 1000))
+        if len(p) in (4, 5) and p[0] == "key":
+            keys.append((int(p[1]), p[2], float(p[3]) * 1000) + ((float(p[4]),) if len(p) == 5 else ()))
     if len(keys) != len(text):
         log(kind="typing-error", how=how, rc=r.returncode, out=(r.stdout + r.stderr)[-400:])
     return keys, how

@@ -74,8 +74,13 @@ def main(path):
                 g, q = d["glyph_ms"], d["results_ms"]
                 out.append(f"| | {r['variant']} | {label} | {g['n']} | {fmt(g['p50'])} | {fmt(g['p95'])} | {fmt(g['max'])} | {fmt(q['p50'])} | {fmt(q['p95'])} | {fmt(q['max'])} |")
             line("all", r["all"])
+            if r.get("tainted"):
+                out.append(f"| | {r['variant']} | stalled keys left out | {r['tainted']} | | | | | | |")
             for index, d in sorted(r["by_index"].items(), key=lambda kv: int(kv[0])):
                 line(f"#{int(index) + 1}", d)
+    limits = [r for r in rows if r.get("kind") == "typing-limits"]
+    for r in limits:
+        out.append("\nTyping limits: " + ("all kept." if not r["failures"] else "**BROKEN**: " + "; ".join(r["failures"])))
     print("\n".join(out))
 
 

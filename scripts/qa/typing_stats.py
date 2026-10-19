@@ -59,12 +59,16 @@ def percentile(values, p):
 def key_latencies(keys, events, text):
     """For each key `(index, char, t_ms)` the probe posted (typing `text`), the latency in ms of
     * `glyph`: from the key to the first traced frame at or after it whose query field already held `text[:index + 1]`,
+    * `post_ms` (when the key tuple has a fourth item): how long the synthetic key press itself took to be handed over by the test driver;
+      see [`POST_TAINTED_MS`],
     * `results`: from the key to the first `Final` results (or `Rerun`: any answer after the final one) of a query that was
       requested for exactly that prefix.
     A latency is None when nothing matching was traced (the glyph never drawn, the results never applied)."""
     requests = {e["gen"]: e["q"] for e in events if e["type"] == "request" and "gen" in e and "q" in e}
     out = []
-    for index, _char, t0 in keys:
+    for key in keys:
+        index, _char, t0 = key[:3]
+        post_ms = key[3] if len(key) > 3 else None
         prefix = text[: index + 1]
         glyph = next(
             (e["t"] - t0 for e in events if e["type"] == "frame" and e["t"] >= t0 and e.get("q") == prefix),
@@ -81,8 +85,16 @@ def key_latencies(keys, events, text):
             ),
             None,
         )
-        out.append({"index": index, "char": prefix[-1], "glyph_ms": _r(glyph), "results_ms": _r(results)})
+        row = {"index": index, "char": prefix[-1], "glyph_ms": _r(glyph), "results_ms": _r(results)}
+        if post_ms is not None:
+            row["post_ms"] = _r(post_ms)
+        out.append(row)
     return out
+
+
+# A key whose hand-over to the system took longer than this says nothing about the app: the driver (System Events) stalled, and the
+# character reached the launcher that much later. Such keys are counted and left out of the percentiles.
+POST_TAINTED_MS = 100.0
 
 
 def _r(v):
@@ -91,7 +103,10 @@ def _r(v):
 
 def summarize(rows):
     """p50/p95/max/n of glyph_ms and results_ms over `rows` (the dicts of [`key_latencies`], any number of runs), overall and
-    per character position."""
+    per character position. Keys that the test driver handed over late (`post_ms` over [`POST_TAINTED_MS`]) are counted in `tainted`
+    and not measured."""
+    tainted = [r for r in rows if r.get("post_ms", 0.0) > POST_TAINTED_MS]
+    rows = [r for r in rows if r.get("post_ms", 0.0) <= POST_TAINTED_MS]
 
     def stats(values):
         got = [v for v in values if v is not None]
@@ -103,7 +118,7 @@ def summarize(rows):
             "max": max(got) if got else None,
         }
 
-    out = {"all": {m: stats([r[m] for r in rows]) for m in ("glyph_ms", "results_ms")}, "by_index": {}}
+    out = {"all": {m: stats([r[m] for r in rows]) for m in ("glyph_ms", "results_ms")}, "by_index": {}, "tainted": len(tainted)}
     for index in sorted({r["index"] for r in rows}):
         sel = [r for r in rows if r["index"] == index]
         out["by_index"][index] = {m: stats([r[m] for r in sel]) for m in ("glyph_ms", "results_ms")}
@@ -165,6 +180,9 @@ def check_limits(summary, variant, glyph_p95=GLYPH_P95_MS, results_p95=None):
         out.append(f"{variant}: key-to-glyph p95 {g['p95']} ms is over {glyph_p95} ms")
     if g["n"] and g["missing"] > g["n"] // 2:
         out.append(f"{variant}: {g['missing']} of {g['n'] + g['missing']} typed characters were never seen drawn")
+    tainted = summary.get("tainted", 0)
+    if tainted > (g["n"] + tainted) // 3:
+        out.append(f"{variant}: the test driver stalled on {tainted} of {g['n'] + tainted} keys: the run says nothing")
     r = summary["all"]["results_ms"]
     if limit_results is not None:
         if r["n"] == 0:
