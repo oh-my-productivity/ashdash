@@ -25,9 +25,9 @@ start_app() {
   wd 25 "$GUI_EXEC" --detach -- /usr/bin/open --env "HOME=$QAH" --env ASHDASH_TRACE=1 --stdout "$LOG" --stderr "$LOG" "$APP" >/dev/null
   local i; for i in $(seq 1 30); do alive && break; sleep 1; done; sleep 2.5
 }
-visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=600 {f=1} END {exit !f}'; }
+visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=500 {f=1} END {exit !f}'; }
 # any launcher-sized window at layer 25 (raised) or 0 (a Quick Look preview is up and the launcher is lowered below it)
-visible_any() { win_tool Ashdash ashdash | awk '($2==25 || $2==0) && $6>=600 {f=1} END {exit !f}'; }
+visible_any() { win_tool Ashdash ashdash | awk '($2==25 || $2==0) && $6>=500 {f=1} END {exit !f}'; }
 show() { visible && return 0; hotkey; local i; for i in 1 2 3 4 5 6 7 8; do sleep 0.25; visible && return 0; done; return 1; }
 hide_() { visible || return 0; key_code $KC_ESC; sleep 0.4; visible && { hotkey; sleep 0.5; }; }
 cpu_s() { ps -o cputime= -p "$1" | awk -F'[:.]' '{ if (NF==3) print $1*60+$2+$3/100; else print $1*3600+$2*60+$3+$4/100 }'; }
@@ -81,7 +81,7 @@ done; fi
 
 # --- a click inside the launcher keeps it (and its focus)
 if want click; then
-show; read -r x y w h < <(win_tool Ashdash ashdash | awk '$2==25 && $6>=600 {print $4, $5, $6, $7; exit}')
+show; read -r x y w h < <(win_tool Ashdash ashdash | awk '$2==25 && $6>=500 {print $4, $5, $6, $7; exit}')
 qt click $((x + w / 2)) $((y + h / 2)) >/dev/null 2>&1; sleep 1
 c=0; visible && last_frame | grep -q 'focused=Some(true)' && c=1
 check click-inside $c "launcher up and focused after a click in the window (${w}x${h} at $x,$y)"

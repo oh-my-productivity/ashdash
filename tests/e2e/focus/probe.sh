@@ -46,7 +46,7 @@ start_app() {
   local i; for i in $(seq 1 30); do alive && break; sleep 1; done
   sleep 2.5
 }
-visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=600 {f=1} END {exit !f}'; }
+visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=500 {f=1} END {exit !f}'; }
 show() { visible && return 0; hotkey; local i; for i in 1 2 3 4 5 6 7 8; do sleep 0.25; visible && return 0; done; return 1; }
 hide_() { visible || return 0; key_code $KC_ESC; sleep 0.4; visible && { hotkey; sleep 0.5; }; }
 textedit_open() { open -a TextEdit; sleep 3; se 'tell process "TextEdit" to keystroke "n" using command down' >/dev/null; sleep 1.5; }

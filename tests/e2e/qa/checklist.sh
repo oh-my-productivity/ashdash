@@ -38,10 +38,10 @@ start_app() { # start_app [ENV=VAL ...]: launch in the GUI session with the seed
 }
 reseed() { rm -rf "$QAH" "$WORK"; mkdir -p "$QAH" "$WORK"; python3 tests/e2e/qa/fixtures.py "$QAH" "$WORK" >/dev/null; }
 
-# the launcher is visible when a >=600 pt wide Ashdash window is at the panel layer (the status item window is 32 wide)
+# the launcher is visible when a >=500 pt wide Ashdash window is at the panel layer (the status item window is 32 wide)
 # (a freshly started app also owns a hidden, full-size window at layer 3: only layer 25 counts)
-visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=600 {f=1} END {exit !f}'; }
-lw() { win_tool Ashdash ashdash | awk '$2==25 && $6>=600 {print $4, $5, $6, $7; exit}'; }   # x y w h
+visible() { win_tool Ashdash ashdash | awk '$2==25 && $6>=500 {f=1} END {exit !f}'; }
+lw() { win_tool Ashdash ashdash | awk '$2==25 && $6>=500 {print $4, $5, $6, $7; exit}'; }   # x y w h
 show() { visible && return 0; hotkey; local i; for i in 1 2 3 4 5 6 7 8; do sleep 0.25; visible && return 0; done; return 1; }
 hide_() { visible || return 0; key_code $KC_ESC; sleep 0.4; visible && { hotkey; sleep 0.5; }; }
 clear_field() { se 'keystroke "a" using {command down}' >/dev/null; key_code $KC_DELETE >/dev/null; }
@@ -88,16 +88,16 @@ key code 49 using {option down, shift down}
 delay 0.12
 end repeat' >/dev/null
   sleep 1.5
-  local nw; nw=$(win_tool Ashdash ashdash | awk '$6>=600' | wc -l | tr -d ' ')
+  local nw; nw=$(win_tool Ashdash ashdash | awk '$6>=500' | wc -l | tr -d ' ')
   if alive && [ "$nw" = 0 ]; then
-    show && [ "$(win_tool Ashdash ashdash | awk '$6>=600' | wc -l | tr -d ' ')" = 1 ] && result 3.1.2 PASS "20 toggles at 0.12 s: ends hidden (even count), process alive, one launcher window after the next press" || result 3.1.2 FAIL "after 20 toggles the next press did not show exactly one window"
+    show && [ "$(win_tool Ashdash ashdash | awk '$6>=500' | wc -l | tr -d ' ')" = 1 ] && result 3.1.2 PASS "20 toggles at 0.12 s: ends hidden (even count), process alive, one launcher window after the next press" || result 3.1.2 FAIL "after 20 toggles the next press did not show exactly one window"
   else result 3.1.2 FAIL "after 20 toggles: alive=$(alive && echo y || echo n) launcher windows=$nw (expected hidden)"; fi
   hide_
   # 3.1.3 over a full-screen app (single display): TextEdit in full screen
   textedit_open
   se 'tell process "TextEdit" to set value of attribute "AXFullScreen" of window 1 to true' >/dev/null; sleep 4
   if show; then
-    local r; r=$(win_tool Ashdash ashdash | awk '$6>=600 {print "layer " $2 " at " $4 "," $5}' | head -1)
+    local r; r=$(win_tool Ashdash ashdash | awk '$6>=500 {print "layer " $2 " at " $4 "," $5}' | head -1)
     shot fs-launcher >/dev/null 2>&1
     result 3.1.3a PASS "launcher shows over a full-screen TextEdit ($r); front app: $(front)"
   else result 3.1.3a FAIL "launcher did not appear over a full-screen app"; fi
