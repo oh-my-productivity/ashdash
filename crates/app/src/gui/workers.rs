@@ -145,6 +145,7 @@ impl LauncherApp {
             let previous = self.items.get(self.selected).map(|i| i.id.clone());
             let old_selected = self.selected;
             let old = std::mem::replace(&mut self.items, r.items);
+            super::frametrace::results(r.generation, r.kind, self.items.len());
             let track = &mut self.glue.track;
             match r.kind {
                 Kind::Pending => {

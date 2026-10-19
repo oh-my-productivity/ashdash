@@ -2,6 +2,7 @@
 //! background workers that feed it.
 
 mod focus;
+mod frametrace;
 mod geometry;
 mod glue;
 pub(crate) mod importprompt;
@@ -112,6 +113,8 @@ struct LauncherApp {
     glue: glue::Glue,
     /// Which system CJK fonts were looked for (see `crate::fonts`): none until CJK text is on screen.
     cjk_fonts: crate::fonts::Fallbacks,
+    /// `ASHDASH_FRAME_TRACE=1`: per-frame timing lines (see `frametrace.rs`); inert otherwise.
+    ft: frametrace::FrameTrace,
 }
 
 pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result<()> {
@@ -234,6 +237,7 @@ impl LauncherApp {
             automation,
             glue: glue::Glue::new(),
             cjk_fonts: crate::fonts::Fallbacks::default(),
+            ft: frametrace::FrameTrace::default(),
         };
         if !hotkey_ok {
             // Without a hotkey the window would be unreachable; show it now.
@@ -250,6 +254,7 @@ impl LauncherApp {
         }
         self.generation += 1;
         self.sent_query = self.query.clone();
+        frametrace::request(self.generation, &self.query);
         if self.query.trim().is_empty() {
             self.items.clear();
             self.selected = 0;
@@ -384,11 +389,15 @@ impl LauncherApp {
 
 impl eframe::App for LauncherApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ft.begin();
         self.poll_background(ctx);
+        self.ft.phase("poll_background");
         self.poll_menu(ctx);
         self.poll_automation(ctx);
+        self.ft.phase("menu+automation");
         self.reveal_if_drawn();
         self.poll_theme_epoch();
+        self.ft.phase("reveal+theme");
         self.hot_reload.poll(&mut prefs::reload::Host {
             paths: &self.engine.paths,
             manager: &mut self._hotkey_manager,
@@ -396,6 +405,7 @@ impl eframe::App for LauncherApp {
             theme: &mut self.theme,
             automation: &mut self.automation,
         });
+        self.ft.phase("hot_reload");
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -403,6 +413,21 @@ impl eframe::App for LauncherApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.ft.enter_ui();
+        self.draw(ui);
+        if frametrace::enabled() {
+            let texts = ui
+                .ctx()
+                .input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Text(_))).count());
+            self.ft
+                .end(texts, &self.query, self.generation, self.items.len().min(VISIBLE_ROWS));
+        }
+    }
+}
+
+impl LauncherApp {
+    /// One frame of the launcher window (`eframe::App::ui` wraps this with the frame trace).
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if !self.visible {
             return;
@@ -434,7 +459,9 @@ impl eframe::App for LauncherApp {
             focus::FocusStep::Stay => {}
         }
 
+        self.ft.phase("chrome-pre");
         self.handle_keys(&ctx);
+        self.ft.phase("keys");
         self.glue.track.end_frame();
         if !self.visible {
             return;
@@ -512,7 +539,9 @@ impl eframe::App for LauncherApp {
                         edit = edit
                             .hint_text(egui::RichText::new(hint.clone()).color(c(t.search_text).gamma_multiply(0.35)));
                     }
+                    self.ft.phase("layout-pre");
                     let resp = ui.add(edit);
+                    self.ft.phase("textedit");
                     if self.want_focus || !resp.has_focus() {
                         resp.request_focus();
                         self.want_focus = false;
@@ -536,6 +565,7 @@ impl eframe::App for LauncherApp {
             } else if rows > 0 {
                 ui.add_space(style::BODY_GAP);
                 self.draw_results(ui, &ctx, &t);
+                self.ft.phase("results");
             }
 
             if let Some(msg) = &footer {
