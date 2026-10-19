@@ -92,6 +92,8 @@ capture results || rc=1
 # a query nothing matches: only the web-search fallbacks remain, the first one selected (its URL shown in mono), the others without URL
 HOME=$LOOK_HOME "$BIN" search zzqxvk >>"$ART/log.txt" 2>&1; sleep 2.5
 capture fbonly || rc=1
+# the literal "~" is the query text, ashdash expands it itself
+# shellcheck disable=SC2088
 HOME=$LOOK_HOME "$BIN" search "~/$LONG_REL/" >>"$ART/log.txt" 2>&1; sleep 2.5
 capture longpath || rc=1
 cat "$ART/window.txt" 2>/dev/null
