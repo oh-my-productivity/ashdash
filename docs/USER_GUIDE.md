@@ -184,6 +184,9 @@ Details worth knowing:
   overrides every value (colours, `roundness`, `width`, text sizes). Besides the usual keys it may set `window` > `borderWidth`
   (points; without it the border is one device pixel, thin on every screen; `0` = no border) and `search` > `caretColor` /
   `caretWidth` (points). Files without them keep the defaults. The query font is the launcher's built-in sans-serif at the theme's `search` > `text` > `size` (34 pt by default).
+  Result rows use Inter (titles, plain subtitles) and Geist Mono (paths, URLs and the `⌘1`..`⌘9` hints); long paths are shortened in the
+  middle (`~/…/dir/file.txt`) so they never run under the hints. The selected row is dark teal with white text (contrast above 4.5:1);
+  the web-search fallbacks sit under a hairline and show their URL only when selected.
 * Double-clicking works when Ashdash is the handler for the file. If another application already opens those files it stays the default: use
   right-click > Open With > Ashdash, or `open -a /Applications/Ashdash.app <file>`.
 * Workflows (workflow packages) are code that runs as you, so **every way of installing one asks

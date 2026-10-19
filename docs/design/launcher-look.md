@@ -27,6 +27,40 @@ The same panel, extended downward: a 9 pt gap under the query row, then the resu
 is something to say (a status question, loading, the buffer line), a 26 pt footer line. Width, border and fill do not change; the window is
 always exactly as tall as the panel, so no blur shows outside it. Heights are computed in `crates/app/src/gui/style.rs` (`window_height`).
 
+## Result rows
+
+Each row is 48 pt tall (at most 9 visible) and as wide as the content box (556 pt in the default look). Values are the defaults of
+`Theme::default()`; a theme file overrides every colour, size and radius, and no theme key was added or renamed for this.
+
+| Part | Value | Theme key |
+|---|---|---|
+| Selection fill | `#2C6E74`, radius 4 pt, the whole row (edge to edge in the content box, no gaps between rows) | `result` > `backgroundSelected`, `roundness` |
+| Hover fill | `#FFFFFF0A` at the same radius, only on an unselected row under a pointer that moved since the window was shown | none (derived) |
+| Title | Inter Regular 16 pt; `#FFFFFFCB`, selected `#FFFFFFFF` | `result` > `text` > `size`, `color`, `colorSelected` |
+| Subtitle | Inter Regular 12 pt; `#FFFFFF7E`, selected `#FFFFFFE6` | `result` > `subtext` > `size`, `color`, `colorSelected` |
+| Path or URL subtitle | Geist Mono 11.5 pt (subtitle size - 0.5), same colours. A subtitle is a path or URL when it starts with `/`, `~/`, `file://`, `http://` or `https://` | |
+| Hint | `⌘1`..`⌘9`, Geist Mono at the subtitle size, subtitle colours, right edge 12 pt from the row's right edge, in a 40 pt column | |
+| Icon | 36 pt at 8 pt from the left; the text starts 10 pt after it | `result` > `iconSize` |
+| Text block | title and subtitle (2 pt apart) are centred as one block; a row without a subtitle centres the title | |
+| Text width | from the text start to 8 pt before the hint column (442 pt in the default look); longer text ends in `…` | |
+| Separator | one device pixel, `#CBCBCB28`, 8 pt in from each side, in the top of the first web-search fallback row; not drawn when that row is selected or when no real hit is above it | `separator` > `color` |
+| Fallback rows | not selected: no subtitle, title at 75 % alpha (`#FFFFFF98`); selected: normal, with the URL shown | |
+
+**Contrast** (WCAG 2.2, the panel taken as opaque `#05080A`): title on the selection 5.85, subtitle and hint on the selection 5.11, the
+selection against the panel 3.43 (a non-text element needs 3.0), unselected title 12.6 and subtitle 5.2. A unit test in `theme.rs`
+computes the first two and fails below 4.5.
+
+**Fonts.** Results use Inter and Geist Mono (the same files as the preferences window, no new bytes in the binary); the query keeps the
+bundled proportional font. They are two named egui families, `results` (Inter, then egui's default chain) and `results-mono` (Geist Mono,
+then Inter, then the default chain), registered once when the window system starts. `⌘` is not in Geist Mono and comes from Inter; `↩`
+is in both. The system CJK fonts that are loaded when CJK text is shown are appended to both families.
+
+**Shortening.** Titles and plain subtitles are cut at the end with `…`. A path first writes the home folder as `~`, then keeps its first
+component and as many trailing components as fit with `…` between (`~/very/long/dir/file.txt` becomes `~/…/dir/file.txt`), always keeping
+the last one; if even that is too wide it is cut at the end. A URL loses `https://` and a leading `www.`, then is cut at the end.
+
+**Web search titles** read `Search Google for “saf”` (curly quotes), also in `ashdash query`.
+
 ## Native window
 
 The window is transparent with a blur view behind the panel (dark HUD material when the fill is not opaque). The blur view's corner radius
