@@ -17,9 +17,24 @@ pub struct WindowStyle {
     pub vibrancy: Option<Vibrancy>,
     /// Corner radius in points; the blur view and the shadow follow it.
     pub corner_radius: f64,
+    /// Whether the window has the system shadow. Off from macOS 26 on: see [`system_shadow`].
+    pub system_shadow: bool,
     /// Whether the blur view is clipped to rounded corners. With square corners there is nothing to clip,
     /// so no mask is set at all (a stray mask would only cost a layer pass and risk a hairline at the edges).
     pub clip_to_corners: bool,
+}
+
+/// The first macOS release (26, "Tahoe") whose window server paints a light "Liquid Glass" rim over the outer one or two device pixels of
+/// every window that has a system shadow, brighter the lighter the desktop behind it. It lies on top of the window's content, so it
+/// covers our own 1 pixel border (`#242628` came out as `#3a3c3d` on a dark desktop and as a white line on a light one) and cannot be
+/// switched off other than by switching the shadow off: measured on CI with the blur view hidden, with an opaque window and with the
+/// level changed, only `hasShadow = NO` removed it (docs/design/launcher-look.md, "The white border").
+pub const RIM_MACOS_MAJOR: u32 = 26;
+
+/// Whether the launcher window gets the system shadow on this macOS release (`os_major`, 0 = unknown): not where the system adds its
+/// rim to windows that have one. The window then has exactly our border and nothing else.
+pub fn system_shadow(os_major: u32) -> bool {
+    os_major < RIM_MACOS_MAJOR
 }
 
 /// Horizontal space between the panel's padding and the query text, in points. Together with the border and
@@ -48,11 +63,18 @@ pub fn vibrancy_for(window_color: Rgba) -> Option<Vibrancy> {
     })
 }
 
+/// The window style for the macOS release this process runs on.
 pub fn window_style(t: &Theme) -> WindowStyle {
+    window_style_on(t, super::mac::macos_major())
+}
+
+/// [`window_style`] for a given macOS major version.
+pub fn window_style_on(t: &Theme, os_major: u32) -> WindowStyle {
     let corner_radius = corner_radius(t);
     WindowStyle {
         vibrancy: vibrancy_for(t.window_color),
         corner_radius: f64::from(corner_radius),
+        system_shadow: system_shadow(os_major),
         clip_to_corners: corner_radius > 0.0,
     }
 }
@@ -110,26 +132,44 @@ mod tests {
     }
 
     #[test]
+    fn the_system_shadow_is_off_where_the_system_draws_a_rim_on_it() {
+        assert!(system_shadow(15), "macOS 15: shadow, no rim (CI screenshots)");
+        assert!(system_shadow(14));
+        assert!(!system_shadow(26), "macOS 26: rim on shadowed windows");
+        assert!(!system_shadow(27), "and later releases");
+        assert!(system_shadow(0), "unknown version: the plain look");
+        let t = Theme::default();
+        assert!(window_style_on(&t, 15).system_shadow);
+        assert!(!window_style_on(&t, 26).system_shadow);
+        // nothing else about the look depends on the release
+        let (a, b) = (window_style_on(&t, 15), window_style_on(&t, 26));
+        assert_eq!(
+            (a.vibrancy, a.corner_radius, a.clip_to_corners),
+            (b.vibrancy, b.corner_radius, b.clip_to_corners)
+        );
+    }
+
+    #[test]
     fn style_follows_theme_roundness() {
         let mut t = Theme {
             window_roundness: 22.0,
             ..Theme::default()
         };
         t.window_color[3] = 180;
-        let s = window_style(&t);
+        let s = window_style_on(&t, 15);
         assert_eq!(s.corner_radius, 22.0);
         assert!(s.vibrancy.is_some());
         assert!(s.clip_to_corners);
         t.window_roundness = -3.0;
-        assert_eq!(window_style(&t).corner_radius, 0.0);
-        assert!(!window_style(&t).clip_to_corners);
+        assert_eq!(window_style_on(&t, 15).corner_radius, 0.0);
+        assert!(!window_style_on(&t, 15).clip_to_corners);
         t.window_roundness = f32::NAN;
         assert_eq!(corner_radius(&t), 0.0);
     }
 
     #[test]
     fn the_default_panel_is_square_and_has_no_mask() {
-        let s = window_style(&Theme::default());
+        let s = window_style_on(&Theme::default(), 15);
         assert_eq!(s.corner_radius, 0.0);
         assert!(!s.clip_to_corners);
         // nearly opaque, so the blur is kept (it shows faintly) and it is the dark one

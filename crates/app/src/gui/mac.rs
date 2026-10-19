@@ -10,7 +10,7 @@ use objc2_app_kit::{
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowCollectionBehavior,
     NSWindowOrderingMode,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSProcessInfo, NSString};
 
 use super::geometry::{Rect, flip_point_y, flip_y};
 use super::style::WindowStyle;
@@ -140,8 +140,13 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The major version of macOS (15, 26 ...); 0 when it cannot be read.
+pub fn macos_major() -> u32 {
+    u32::try_from(NSProcessInfo::processInfo().operatingSystemVersion().majorVersion).unwrap_or(0)
+}
+
 /// Make the window usable over full-screen apps and on every Space, put it
-/// above normal windows, and apply blur / rounded corners / shadow.
+/// above normal windows, and apply blur / rounded corners / shadow (no shadow on macOS 26, see above).
 /// Idempotent; call it before every show so theme changes are picked up.
 pub fn style_launcher_window(title: &str, style: &WindowStyle) {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -159,7 +164,9 @@ pub fn style_launcher_window(title: &str, style: &WindowStyle) {
     window.setHidesOnDeactivate(false);
     window.setOpaque(false);
     window.setBackgroundColor(Some(&NSColor::clearColor()));
-    window.setHasShadow(true);
+    // Not on macOS 26 and later: there the window server paints a light rim over the edge of every window that has the system
+    // shadow, on top of our border (style::RIM_MACOS_MAJOR).
+    window.setHasShadow(style.system_shadow);
 
     let Some(content) = window.contentView() else {
         return;
