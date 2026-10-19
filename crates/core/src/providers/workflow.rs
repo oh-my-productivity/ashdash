@@ -36,8 +36,41 @@ impl Provider for WorkflowProvider {
         let mut items: Vec<Item> = Vec::new();
         let mut exclusive = false;
         let budget = st.config.file_search.budget();
-        for wf in st.workflows.read().unwrap().iter() {
-            let (found, ex) = wf.keyword_items_os(ctx.query, st.paths, &*self.os, &budget);
+        let workflows = st.workflows.read().unwrap();
+        // Workflows that start a process (a Script Filter, a Spotlight search) run side by side: two matching filters cost the
+        // time of the slower one, not the sum. Everything else is answered from memory, in order, on this thread.
+        let slow: Vec<bool> = workflows
+            .iter()
+            .map(|wf| wf.would_run_process(ctx.query, st.paths))
+            .collect();
+        let token = crate::cancel::current();
+        let mut answers: Vec<Option<(Vec<Item>, bool)>> = vec![None; workflows.len()];
+        std::thread::scope(|scope| {
+            let mut running = Vec::new();
+            for (i, wf) in workflows.iter().enumerate().filter(|(i, _)| slow[*i]) {
+                let (os, budget, token) = (&*self.os, &budget, token.clone());
+                let run = move || wf.keyword_items_os(ctx.query, st.paths, os, budget);
+                running.push((
+                    i,
+                    scope.spawn(move || {
+                        // the query thread re-raises a panic of this one (below), where it is handled
+                        crate::recovery::mark_thread();
+                        match token {
+                            Some(t) => crate::cancel::scope(&t, run),
+                            None => run(),
+                        }
+                    }),
+                ));
+            }
+            for (i, wf) in workflows.iter().enumerate().filter(|(i, _)| !slow[*i]) {
+                answers[i] = Some(wf.keyword_items_os(ctx.query, st.paths, &*self.os, &budget));
+            }
+            for (i, handle) in running {
+                // a panic in the helper surfaces on the query thread, as it did when the workflow ran there
+                answers[i] = Some(handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+            }
+        });
+        for (found, ex) in answers.into_iter().flatten() {
             exclusive |= ex;
             items.extend(found);
         }
@@ -165,36 +198,65 @@ mod tests {
     }
 
     #[test]
+    fn script_filters_that_match_the_same_query_run_side_by_side() {
+        let (e, root) = engine("wf-parallel");
+        // each script waits (up to 5 s) for the other one's marker: they only meet when both run at the same time
+        let script = |mine: &str, other: &str| {
+            let dir = root.display();
+            format!(
+                "touch '{dir}/{mine}'; for i in $(seq 1 100); do [ -e '{dir}/{other}' ] && break; sleep 0.05; done; \
+                 if [ -e '{dir}/{other}' ]; then echo '{{\"items\":[{{\"title\":\"met-{mine}\"}}]}}'; \
+                 else echo '{{\"items\":[{{\"title\":\"alone-{mine}\"}}]}}'; fi"
+            )
+        };
+        for (name, mine, other) in [("a", "ma", "mb"), ("b", "mb", "ma")] {
+            let dir = e.paths.workflows_dir().join(format!("user.workflow.{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let doc = json!({
+                "name": name, "bundleid": format!("t.{name}"), "objects": [
+                    {"uid": name.to_uppercase(), "type": kind::INPUT_SCRIPTFILTER, "config": {
+                        "keyword": "sf", "withspace": true, "argumenttype": 1, "type": 0, "scriptargtype": 1,
+                        "script": script(mine, other), "title": "sf", "subtext": "s"}}
+                ],
+                "connections": {}
+            });
+            to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
+        }
+        e.reload_blocking();
+        let mut titles: Vec<String> = e.query("sf x").into_iter().map(|i| i.title).collect();
+        titles.sort();
+        assert_eq!(titles, ["met-ma", "met-mb"], "the two scripts did not overlap in time");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_cancelled_script_filter_is_killed_instead_of_waited_for() {
         use crate::cancel::CancelToken;
-        use std::time::{Duration, Instant};
         let (e, root) = engine("wf-cancel");
-        let marker = root.join("finished");
-        let script = format!("sleep 20; touch '{}'; echo '{{\"items\":[]}}'", marker.display());
+        let (started, finished) = (root.join("started"), root.join("finished"));
+        let script = format!(
+            "touch '{}'; sleep 20; touch '{}'; echo '{{\"items\":[]}}'",
+            started.display(),
+            finished.display()
+        );
         install_script_filter(&e, "sf", true, &script);
         let token = CancelToken::new();
         let canceller = {
-            let t = token.clone();
+            let (t, started) = (token.clone(), started.clone());
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(300));
+                // cancel while the script is running
+                while !started.exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
                 t.cancel();
             })
         };
-        let started = Instant::now();
+        // returns when the script is killed; a query that waited for the 20 s script would have written `finished`
         let items = e.query_cancellable("sf rust", &token);
-        let took = started.elapsed();
         canceller.join().unwrap();
-        assert!(
-            took < Duration::from_secs(5),
-            "waited {took:?} for a script that was cancelled"
-        );
-        assert!(
-            took >= Duration::from_millis(250),
-            "it must have been running when cancelled"
-        );
+        assert!(started.exists(), "it must have been running when cancelled");
         assert!(items.iter().all(|i| !i.title.is_empty()));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!marker.exists(), "the script must not run on to its end");
+        assert!(!finished.exists(), "the script must not run on to its end");
         let _ = std::fs::remove_dir_all(root);
     }
 

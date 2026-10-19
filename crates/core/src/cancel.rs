@@ -49,6 +49,12 @@ pub fn scope<R>(token: &CancelToken, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// The token of the [`scope`] this thread is in, to hand to a helper thread that works for the same query (which runs
+/// `scope(&token, ..)` itself).
+pub fn current() -> Option<CancelToken> {
+    CURRENT.with(|c| c.borrow().clone())
+}
+
 /// Whether the work this thread is doing was cancelled. False outside a [`scope`].
 pub fn is_cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(CancelToken::is_cancelled))
@@ -64,6 +70,24 @@ mod tests {
         let t = CancelToken::new();
         t.cancel();
         assert!(!is_cancelled(), "a token nobody scoped does not touch this thread");
+    }
+
+    #[test]
+    fn a_helper_thread_can_join_the_scope_of_the_thread_that_started_it() {
+        assert!(current().is_none());
+        let t = CancelToken::new();
+        scope(&t, || {
+            let mine = current().expect("in a scope");
+            let seen = std::thread::scope(|s| {
+                s.spawn(|| scope(&mine, || (is_cancelled(), current().is_some())))
+                    .join()
+                    .unwrap()
+            });
+            assert_eq!(seen, (false, true));
+            t.cancel();
+            let cancelled = std::thread::scope(|s| s.spawn(|| scope(&mine, is_cancelled)).join().unwrap());
+            assert!(cancelled, "the helper sees the cancel of the query");
+        });
     }
 
     #[test]
