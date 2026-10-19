@@ -151,7 +151,7 @@ and must be followed by a space (`open report`), or stand alone to show a hint r
 | `2+3*4`, `(1+2)^3`, `= sqrt(81)` | the result; Return copies it. Prefix `=` forces a calculation | `calc` |
 | `saf`, `vsc`, `visual studio` | applications: prefix of a word, word initials, or substring, ranked by what you launched before for similar queries | `apps` |
 | `lock`, `sleep`, `restart`, ... | system commands: Lock, Sleep, Sleep Displays, Log Out, Restart, Shut Down, Start Screen Saver, Empty Trash. Log Out, Restart, Shut Down and Empty Trash ask for a second Return | `system` |
-| anything else | "Search Google / Amazon / Wikipedia for '...'" as the last rows (the searches marked `fallback`) | `web-fallback` |
+| anything else | "Search Google / Amazon / Wikipedia for “...”" as the last rows (the searches marked `fallback`), set apart from real hits by a hairline; the URL shows when the row is selected | `web-fallback` |
 
 \* The id is what you put in `providers_disabled` to switch a feature off, for example
 `ashdash config set providers_disabled calc,system`.

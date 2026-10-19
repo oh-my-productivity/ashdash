@@ -135,7 +135,7 @@ A list of objects:
 | Field | Type | Meaning |
 |---|---|---|
 | `keyword` | string | What you type before the terms (`g rust`). Case-insensitive; must be followed by a space. |
-| `title` | string | Name shown in the result row ("Search Google for ..."). |
+| `title` | string | Name shown in the result row ("Search Google for “...”"). |
 | `url` | string | URL template; `{query}` is replaced by the percent-encoded terms. |
 | `fallback` | boolean (optional, default `false`) | Also offered at the end of the list when nothing else matches. |
 
