@@ -1,5 +1,5 @@
-//! Pure decisions about the native window look (vibrancy, corner radius).
-//! The AppKit calls that apply them live in `mac`.
+//! Pure decisions about the window look: vibrancy, corner radius, border, and the heights that make the
+//! window exactly as tall as the panel drawn in it. The AppKit calls that apply them live in `mac`.
 
 use ashdash_core::theme::{Rgba, Theme};
 
@@ -17,7 +17,21 @@ pub struct WindowStyle {
     pub vibrancy: Option<Vibrancy>,
     /// Corner radius in points; the blur view and the shadow follow it.
     pub corner_radius: f64,
+    /// Whether the blur view is clipped to rounded corners. With square corners there is nothing to clip,
+    /// so no mask is set at all (a stray mask would only cost a layer pass and risk a hairline at the edges).
+    pub clip_to_corners: bool,
 }
+
+/// Horizontal space between the panel's padding and the query text, in points. Together with the border and
+/// `window_padding` this puts the caret 17 pt from the panel's left edge in the default look.
+pub const FIELD_PAD_X: f32 = 8.0;
+/// Height of the query row as a multiple of the query font size. egui's text row is about 1.12 times the font size,
+/// so the row is always at least as tall as the text and the panel height is exact (the caret is centred in it).
+pub const QUERY_ROW_FACTOR: f32 = 1.25;
+/// Space between the query row and the results (or a notice row below it).
+pub const BODY_GAP: f32 = 9.0;
+/// Height of the footer line (status, loading, buffer) under the results, including the space above it.
+pub const FOOTER_HEIGHT: f32 = 26.0;
 
 /// Perceived brightness 0..=255 (Rec. 601 weights).
 pub fn luminance(c: Rgba) -> f32 {
@@ -35,10 +49,48 @@ pub fn vibrancy_for(window_color: Rgba) -> Option<Vibrancy> {
 }
 
 pub fn window_style(t: &Theme) -> WindowStyle {
+    let corner_radius = corner_radius(t);
     WindowStyle {
         vibrancy: vibrancy_for(t.window_color),
-        corner_radius: f64::from(t.window_roundness.max(0.0)),
+        corner_radius: f64::from(corner_radius),
+        clip_to_corners: corner_radius > 0.0,
     }
+}
+
+/// The window's corner radius in points: never negative, 0 for a nonsensical value.
+pub fn corner_radius(t: &Theme) -> f32 {
+    if t.window_roundness.is_finite() {
+        t.window_roundness.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// Border width in points. A theme that gives no width gets one *device* pixel (0.5 pt on a 2x screen), a width it
+/// gives is used as written (0 = no border).
+pub fn border_width(theme_width: Option<f32>, pixels_per_point: f32) -> f32 {
+    match theme_width {
+        Some(w) if w.is_finite() => w.max(0.0),
+        _ if pixels_per_point.is_finite() && pixels_per_point >= 1.0 => 1.0 / pixels_per_point,
+        _ => 1.0,
+    }
+}
+
+/// Height of the query row (the text line) in points.
+pub fn query_row_height(t: &Theme) -> f32 {
+    t.search_size.max(1.0) * QUERY_ROW_FACTOR
+}
+
+/// Height of the panel with nothing but the query row: border, padding, row.
+pub fn header_height(t: &Theme, pixels_per_point: f32) -> f32 {
+    query_row_height(t) + 2.0 * t.window_padding + 2.0 * border_width(t.window_border_width, pixels_per_point)
+}
+
+/// Height of the whole window: the query row plus, when there is something below it, the gap and `body_h`
+/// (results, a notice or the import prompt), plus the footer line when one is shown.
+pub fn window_height(t: &Theme, pixels_per_point: f32, body_h: f32, footer: bool) -> f32 {
+    let gap = if body_h > 0.0 { BODY_GAP } else { 0.0 };
+    header_height(t, pixels_per_point) + gap + body_h + if footer { FOOTER_HEIGHT } else { 0.0 }
 }
 
 #[cfg(test)]
@@ -67,7 +119,85 @@ mod tests {
         let s = window_style(&t);
         assert_eq!(s.corner_radius, 22.0);
         assert!(s.vibrancy.is_some());
+        assert!(s.clip_to_corners);
         t.window_roundness = -3.0;
         assert_eq!(window_style(&t).corner_radius, 0.0);
+        assert!(!window_style(&t).clip_to_corners);
+        t.window_roundness = f32::NAN;
+        assert_eq!(corner_radius(&t), 0.0);
+    }
+
+    #[test]
+    fn the_default_panel_is_square_and_has_no_mask() {
+        let s = window_style(&Theme::default());
+        assert_eq!(s.corner_radius, 0.0);
+        assert!(!s.clip_to_corners);
+        // nearly opaque, so the blur is kept (it shows faintly) and it is the dark one
+        assert_eq!(s.vibrancy, Some(Vibrancy { dark: true }));
+    }
+
+    #[test]
+    fn a_theme_without_a_width_gets_one_device_pixel() {
+        assert_eq!(border_width(None, 2.0), 0.5);
+        assert_eq!(border_width(None, 1.0), 1.0);
+        assert_eq!(border_width(None, 3.0), 1.0 / 3.0);
+        // a nonsensical scale falls back to a point
+        assert_eq!(border_width(None, 0.0), 1.0);
+        assert_eq!(border_width(None, f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn a_width_from_the_theme_is_used_as_written() {
+        assert_eq!(border_width(Some(2.0), 2.0), 2.0);
+        assert_eq!(border_width(Some(0.0), 2.0), 0.0, "0 = no border");
+        assert_eq!(border_width(Some(-1.0), 2.0), 0.0);
+        assert_eq!(
+            border_width(Some(f32::INFINITY), 2.0),
+            0.5,
+            "not a number of points: treated as unset"
+        );
+    }
+
+    #[test]
+    fn the_empty_default_panel_is_about_575_by_62_points() {
+        let t = Theme::default();
+        assert_eq!(t.window_width, 575.0);
+        let h = window_height(&t, 2.0, 0.0, false);
+        assert!((h - 62.0).abs() <= 1.0, "{h}");
+        assert_eq!(h, header_height(&t, 2.0));
+        // the caret sits border + padding + field padding from the left edge: 17.5 pt (reference: about 17)
+        let caret_x = border_width(t.window_border_width, 2.0) + t.window_padding + FIELD_PAD_X;
+        assert!((caret_x - 17.0).abs() <= 1.0, "{caret_x}");
+        // the row is taller than the caret (~39 pt for a 34 pt font) so the caret is centred in it
+        assert!(query_row_height(&t) > 39.0 && query_row_height(&t) < 46.0);
+    }
+
+    #[test]
+    fn results_extend_the_panel_downward() {
+        let t = Theme::default();
+        let empty = window_height(&t, 2.0, 0.0, false);
+        let three_rows = window_height(&t, 2.0, 3.0 * 48.0, false);
+        assert_eq!(three_rows, empty + BODY_GAP + 144.0);
+        // a footer line adds its own height, with or without rows
+        assert_eq!(window_height(&t, 2.0, 0.0, true), empty + FOOTER_HEIGHT);
+        assert_eq!(window_height(&t, 2.0, 144.0, true), three_rows + FOOTER_HEIGHT);
+        // the width never changes with the content: only the height
+        assert!(window_height(&t, 2.0, 432.0, true) > three_rows);
+    }
+
+    #[test]
+    fn a_thicker_border_or_bigger_font_makes_the_header_taller() {
+        let mut t = Theme::default();
+        let base = header_height(&t, 2.0);
+        t.window_border_width = Some(3.0);
+        assert_eq!(header_height(&t, 2.0), base - 1.0 + 6.0);
+        t.window_border_width = None;
+        t.search_size = 40.0;
+        assert_eq!(header_height(&t, 2.0), base + 6.0 * QUERY_ROW_FACTOR);
+        t.search_size = 0.0;
+        assert!(
+            header_height(&t, 2.0) > 0.0,
+            "a zero font size does not collapse the row"
+        );
     }
 }

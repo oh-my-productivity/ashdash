@@ -198,7 +198,8 @@ pub fn style_launcher_window(title: &str, style: &WindowStyle) {
         }
         if let Some(layer) = view.layer() {
             layer.setCornerRadius(style.corner_radius);
-            layer.setMasksToBounds(true);
+            // square corners: nothing to clip
+            layer.setMasksToBounds(style.clip_to_corners);
         }
     });
     window.invalidateShadow();

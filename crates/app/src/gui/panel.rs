@@ -224,11 +224,10 @@ impl LauncherApp {
         self.glue.panels.is_open()
     }
 
-    pub(super) fn search_hint(&self) -> String {
-        self.glue
-            .panels
-            .top()
-            .map_or_else(|| "Ashdash".to_string(), |l| l.title.clone())
+    /// The placeholder of the query field: only an open panel has one (what its list is); the plain
+    /// empty launcher shows the caret and nothing else.
+    pub(super) fn search_hint(&self) -> Option<String> {
+        self.glue.panels.top().map(|l| l.title.clone())
     }
 
     pub(super) fn footer_text(&self) -> Option<String> {

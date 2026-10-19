@@ -124,7 +124,7 @@ pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result
         .with_always_on_top()
         .with_resizable(false)
         .with_visible(false)
-        .with_inner_size([theme.window_width, header_height(&theme)]);
+        .with_inner_size([theme.window_width, style::header_height(&theme, 1.0)]);
 
     let options = eframe::NativeOptions {
         viewport,
@@ -154,10 +154,6 @@ pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result
 
 fn query_id() -> egui::Id {
     egui::Id::new("ashdash-query")
-}
-
-fn header_height(t: &Theme) -> f32 {
-    t.window_padding * 2.0 + t.search_size * 1.5
 }
 
 impl LauncherApp {
@@ -458,36 +454,51 @@ impl eframe::App for LauncherApp {
         if self.visible && self.engine.reload_pending() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
-        let status_h = if footer.is_some() { 26.0 } else { 0.0 };
-        let sep = if body_h > 0.0 { 9.0 } else { 0.0 };
-        let total_h = header_height(&t) + sep + body_h + status_h;
+        let ppp = ctx.pixels_per_point();
+        let total_h = style::window_height(&t, ppp, body_h, footer.is_some());
         self.sync_height(&ctx, total_h);
 
         let frame = egui::Frame::new()
             .fill(c(t.window_color))
-            .stroke(egui::Stroke::new(1.0, c(t.window_border)))
-            .corner_radius(t.window_roundness)
+            .stroke(egui::Stroke::new(
+                style::border_width(t.window_border_width, ppp),
+                c(t.window_border),
+            ))
+            .corner_radius(style::corner_radius(&t))
             .inner_margin(egui::Margin::same(t.window_padding as i8));
 
         let search_hint = self.search_hint();
         frame.show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
-            // Search field
-            egui::Frame::new()
-                .fill(c(t.search_background))
-                .corner_radius(t.search_roundness)
-                .inner_margin(egui::Margin::symmetric(8, 2))
-                .show(ui, |ui| {
-                    let edit = egui::TextEdit::singleline(&mut self.query)
+            ui.visuals_mut().text_cursor.stroke = egui::Stroke::new(t.search_caret_width, c(t.search_caret));
+            // The query row has a fixed height, so the panel is exactly as tall as the window (see `style::window_height`).
+            let (row, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), style::query_row_height(&t)),
+                egui::Sense::hover(),
+            );
+            if t.search_background[3] > 0 {
+                ui.painter()
+                    .rect_filled(row, t.search_roundness, c(t.search_background));
+            }
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(row.shrink2(Vec2::new(style::FIELD_PAD_X, 0.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    let mut edit = egui::TextEdit::singleline(&mut self.query)
                         .font(FontId::proportional(t.search_size))
                         .text_color(c(t.search_text))
-                        .hint_text(
-                            egui::RichText::new(search_hint.clone()).color(c(t.search_text).gamma_multiply(0.35)),
-                        )
                         .interactive(prompt_h.is_none())
                         .frame(egui::Frame::NONE)
                         .id(query_id())
+                        .vertical_align(egui::Align::Center)
+                        .min_size(Vec2::new(0.0, row.height()))
                         .desired_width(f32::INFINITY);
+                    // No placeholder in the plain empty state; an open panel says what its list is.
+                    if let Some(hint) = &search_hint {
+                        edit = edit
+                            .hint_text(egui::RichText::new(hint.clone()).color(c(t.search_text).gamma_multiply(0.35)));
+                    }
                     let resp = ui.add(edit);
                     if self.want_focus || !resp.has_focus() {
                         resp.request_focus();
@@ -500,25 +511,37 @@ impl eframe::App for LauncherApp {
                         trace::trace(|| format!("query={:?}", self.query));
                         self.request_query();
                     }
-                });
+                },
+            );
 
             if prompt_h.is_some() {
-                ui.add_space(9.0);
+                ui.add_space(style::BODY_GAP);
                 self.draw_import_prompt(ui, &t);
             } else if let Some(text) = hint {
-                ui.add_space(9.0);
+                ui.add_space(style::BODY_GAP);
                 self.draw_hint_row(ui, &t, &text);
             } else if rows > 0 {
-                ui.add_space(9.0);
+                ui.add_space(style::BODY_GAP);
                 self.draw_results(ui, &ctx, &t);
             }
 
             if let Some(msg) = &footer {
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(msg)
-                        .size(t.result_subtext_size + 1.0)
-                        .color(c(t.result_subtext_selected)),
+                // exactly `FOOTER_HEIGHT` tall (the window height counts on it); the text sits at the bottom
+                let (line, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), style::FOOTER_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(line)
+                        .layout(egui::Layout::left_to_right(egui::Align::BOTTOM)),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .size(t.result_subtext_size + 1.0)
+                                .color(c(t.result_subtext_selected)),
+                        );
+                    },
                 );
             }
         });
