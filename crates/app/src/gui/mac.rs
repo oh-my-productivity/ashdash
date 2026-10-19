@@ -167,14 +167,23 @@ pub fn style_launcher_window(title: &str, style: &WindowStyle) {
     EFFECT_VIEW.with(|slot| {
         let mut slot = slot.borrow_mut();
         let view = slot.get_or_insert_with(|| {
-            let v = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), content.bounds());
+            // The blur must sit BEHIND the content view: a subview of it is drawn over the view's own layer, which is
+            // where egui renders, and hid everything (CI screenshot of run 39190625823: a flat HUD-grey rectangle).
+            // So it goes next to the content view, in the window's frame view, just below it.
+            let v = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), content.frame());
             v.setAutoresizingMask(
                 NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
             );
             v.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             v.setState(NSVisualEffectState::Active);
             v.setWantsLayer(true);
-            content.addSubview_positioned_relativeTo(&v, NSWindowOrderingMode::Below, None);
+            // SAFETY: a plain getter on a view we own, called on the main thread (`mtm`).
+            match unsafe { content.superview() } {
+                Some(parent) => {
+                    parent.addSubview_positioned_relativeTo(&v, NSWindowOrderingMode::Below, Some(&content))
+                }
+                None => content.addSubview_positioned_relativeTo(&v, NSWindowOrderingMode::Below, None),
+            }
             v
         });
         match style.vibrancy {
