@@ -76,33 +76,51 @@ pub fn nav_item(ui: &mut Ui, nav: Nav, active: bool) -> Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The "Go to a setting…  ⌘K" field. Returns its response; `⌘K` is drawn inside while empty.
+/// The placeholder of the sidebar search field.
+const SEARCH_PLACEHOLDER: &str = "Go to a setting…";
+/// The key that focuses the search field, drawn inside it while it is empty.
+const SEARCH_KEY_HINT: &str = "/";
+
+/// Distance from the top of a galley to the baseline of its first row (`None` for an empty galley).
+fn baseline_in(galley: &egui::Galley) -> Option<f32> {
+    let row = galley.rows.first()?;
+    Some(row.pos.y + row.glyphs.first()?.pos.y)
+}
+
+/// The "Go to a setting…  /" field. Returns its response. While the text is empty the placeholder
+/// and the `/` hint are drawn inside. Everything sits on one baseline, and that line is centred in
+/// the field: the typed text is centred by the text edit itself, the placeholder is drawn at the
+/// place the typed text would have, and the hint (another font, so another ascent) is moved so that
+/// its baseline is the placeholder's. Heights come from the laid-out galleys, not from constants.
 pub fn search_field(ui: &mut Ui, text: &mut String, id: egui::Id) -> Response {
     let p = Palette::of(ui);
     let width = ui.available_width();
-    let resp = ui.add_sized(
-        [width, m::SEARCH_H],
-        egui::TextEdit::singleline(text)
-            .id(id)
-            .hint_text(RichText::new("Go to a setting…").size(m::SMALL).color(p.dim))
-            .margin(egui::Margin {
-                left: 8,
-                right: 30,
-                top: 4,
-                bottom: 4,
-            })
-            .font(egui::FontId::proportional(m::SMALL)),
-    );
+    let font = egui::FontId::proportional(m::SMALL);
+    let out = egui::TextEdit::singleline(text)
+        .id(id)
+        .margin(egui::Margin {
+            left: 8,
+            right: 24,
+            top: 4,
+            bottom: 4,
+        })
+        .font(font.clone())
+        .vertical_align(Align::Center)
+        .min_size(vec2(width, m::SEARCH_H))
+        .show(ui);
+    let rect = out.response.response.rect;
     if text.is_empty() {
-        ui.painter().text(
-            pos2(resp.rect.max.x - 8.0, resp.rect.center().y),
-            Align2::RIGHT_CENTER,
-            "⌘K",
-            style::mono_font(m::KEY),
-            p.dim,
-        );
+        let painter = ui.painter().with_clip_rect(rect);
+        let placeholder = painter.layout_no_wrap(SEARCH_PLACEHOLDER.into(), font, ui.visuals().weak_text_color());
+        // the (empty) text galley and the placeholder are the same font: one row of the same height
+        let top = out.galley_pos.y + (out.galley.size().y - placeholder.size().y) / 2.0;
+        let base = top + baseline_in(&placeholder).unwrap_or(placeholder.size().y);
+        painter.galley(pos2(out.galley_pos.x, top), placeholder, p.dim);
+        let hint = painter.layout_no_wrap(SEARCH_KEY_HINT.into(), style::mono_font(m::KEY), p.dim);
+        let hint_top = base - baseline_in(&hint).unwrap_or(hint.size().y);
+        painter.galley(pos2(rect.max.x - 8.0 - hint.size().x, hint_top), hint, p.dim);
     }
-    resp
+    out.response.response
 }
 
 // ------------------------------------------------------------------ page header
