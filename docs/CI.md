@@ -83,6 +83,8 @@ contributor needs a maintainer's approval anyway. A maintainer pushes the branch
   memory after 20 show/type/hide cycles, for an empty, a real and a 5,000-app configuration. The table is in the job summary
   (`tests/e2e/ci/perf-summary.py`), `results.jsonl` and the `footprint`/`vmmap` dumps are the artifact `perf-gui`. A shared 3-core virtual machine says
   nothing about absolute numbers on a Mac; compare runs of the same image over time ([PERF.md](PERF.md)).
+  `-f perf_mode=typing -f perf_variants=heavy,heavy-slow [-f perf_gap_ms=50]` runs only the typing-lag measurement (key to glyph, key to results,
+  limits that fail the run: [PERF.md](PERF.md#typing-lag-pup-in-the-launcher-key-to-glyph-and-key-to-results)).
 * **bench** (macos-15): `scripts/ci/run-bench.sh`: `cargo bench -p ashdash-core --bench report` (p95 query latency at 500 and 5,000 apps, cold
   start with and without the index cache, idle CPU of the engine) and the criterion benchmark `queries`. Output in the job summary and the artifact `bench`.
 * **test-times** (macos-15, debug and release-with-ignored): `scripts/ci/test-times.sh` runs every test alone and lists the slowest. This is

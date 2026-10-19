@@ -287,11 +287,88 @@ Not done (optional; 1 and 2 first).
 * Baseline window-list latency was not measurable today (see section 1); the before/after comparison there rests on the trace and on the earlier numbers.
 * The wake-up orders the window front on whichever Space is current; a window woken while a full-screen app is active was not tried.
 
+## Typing lag: `pup` in the launcher (key-to-glyph and key-to-results)
+
+Report from a real laptop: typing `pup` shows the results late, and the last `p` is drawn in the query field late. Everything below was
+measured on CI (macos-15 runner, a shared virtual machine, so absolute numbers are a few ms worse than on a laptop; the before/after
+comparison on the same kind of machine is what counts). Nothing was run locally.
+
+### Method
+
+* `ASHDASH_FRAME_TRACE=1` (off by default, zero cost off: `crates/app/src/gui/frametrace.rs`) prints, on stderr, one line per query request, per
+  batch of results applied, and per frame that was slow (over 16 ms of the app's own work) or drew typed text, with the phases of the frame
+  (`poll_background`, `warm_fonts`, `keys`, `textedit`, `results`, ...) and the `gap` since the previous frame started.
+* `scripts/ci-run.sh perf-gui -f perf_mode=typing -f perf_variants=heavy,heavy-slow -f perf_reps=2 [-f perf_gap_ms=50]` starts the real release
+  app on a synthetic busy profile (5,002 apps with an icon file each, 60 workflows with keywords, two Chromium profiles with 1,500 bookmarks each;
+  `heavy-slow` adds two Script Filters with the keywords `p` and `pu` (no space) that take 250 ms each, so every character of `pup` starts one),
+  shows the launcher with the hotkey and types `pup` as System Events keystrokes 110 ms apart (50 ms for a fast typist), 15 rounds per
+  repetition after one warm-up round. The last letter changes from round to round (`pul`, `pum`, ...) so the rows of the last key and their icons are new.
+* The driver (`scripts/qa/perf-gui.py`, `type_timed`) notes the wall clock right before each key. **Key to glyph** = from that time to the end of the
+  first traced frame whose query field holds the typed prefix (the frame is traced before it is presented, so add up to one display refresh).
+  **Key to results** = from the key to the first `Final`/`Rerun` batch of results of a query requested for exactly that prefix. A key that System Events
+  itself took more than 100 ms to hand over is counted as `stalled` and left out (the first key through System Events costs ~65 ms by itself; an
+  ignored F13 key is sent first to take that out; stalls of 200 and 730 ms happened twice in the 1,080 keys and say nothing about the app).
+* Limits (CI fails the run): key-to-glyph p95 over 50 ms; key-to-results p95 over 150 ms (`heavy`) or 450 ms (`heavy-slow`); no data; more than a third of the keys stalled.
+  The pure parts (parsing, percentiles, limits) are unit-tested in `scripts/qa/typing_stats_test.py`.
+
+### What the traces say
+
+* **The UI thread is not slow on CI.** Frames that drew a typed character took 0.1-0.6 ms of the app's own work (`textedit` 0.05-0.2 ms, `results` 0.05-0.4 ms), no
+  frame was over 16 ms (none flagged SLOW) and the slowest traced frame took 4.7 ms, in 1,080 typed keys over six runs; there is no lock, I/O or process spawn on the UI thread in the per-keystroke path (checked in `gui/mod.rs`, `results.rs`,
+  `workers.rs`, `glue.rs`, `window.rs`; the only engine calls per frame are two short mutex reads in `Engine::reload_pending`, `mod.rs:521`). A typed character is
+  drawn in the next frame: p50 2-3 ms when the app was idle (first key) and p50 9-14 ms / p95 ~21 ms for keys typed while earlier frames are still presented,
+  which is the wait for the display refresh (vsync) of the previous frame, not app work.
+* **The late results are the query worker, not the engine.** Before this change the worker ran one query at a time and waited for it
+  (`workers.rs`, old `rx.recv()` after `recv_timeout(PENDING_AFTER)`): a Script Filter or file search started by the first character had to finish before the next character's
+  query could start. In the `heavy-slow` profile the answer for `pup` arrived 581 ms after the last key (the first filter's 250 ms, then the two filters of `pup` one after the other).
+  Fast queries (apps, bookmarks, clipboard, calculator) answer in ~20-35 ms after the key on CI, including the wait for the next frame.
+* **The first character of a session drew slower**: the first `p` frame took 0.4-4.6 ms (`textedit`) because the glyph of the query field's 34 pt font had to be rasterised and
+  uploaded in that frame; after the warm-up it takes 0.1-0.35 ms. egui keeps up to four bitmaps per glyph (quarter-pixel positions), so the warm-up lays out the printable ASCII
+  range at four offsets in all five fonts and sizes the launcher draws with (`rowfonts::prewarm`), while the window is hidden.
+
+### Numbers (CI, 2 repetitions x 15 rounds x 3 keys = 90 keys per variant; p50 / p95 in ms)
+
+| run | variant | key gap | glyph p50 / p95 | results p50 / p95 | stalled keys |
+|---|---|---:|---|---|---:|
+| before ([39215040845](https://github.com/oh-my-productivity/ashdash/actions/runs/39215040845), main + trace + driver) | heavy | 110 | 9.2 / 20.9 | 26.4 / 34.2 | 0 |
+| after ([39215068429](https://github.com/oh-my-productivity/ashdash/actions/runs/39215068429)) | heavy | 110 | 9.5 / 21.4 | 25.2 / 35.6 | 0 |
+| before ([39216043093](https://github.com/oh-my-productivity/ashdash/actions/runs/39216043093)) | heavy | 50 | 8.7 / 19.2 | 21.8 / 33.9 | 0 |
+| after ([39216064416](https://github.com/oh-my-productivity/ashdash/actions/runs/39216064416)) | heavy | 50 | 8.8 / 20.9 | 21.2 / 34.6 | 0 |
+| before (39215040845) | heavy-slow | 110 | 2.7 / 5.2 | 580.5 / 616.2 (last key only) | 0 |
+| after (39215068429) | heavy-slow | 110 | 1.8 / 4.5 | 313.9 / 326.2 (last key only) | 0 |
+| before (39216043093) | heavy-slow | 50 | 1.9 / 3.8 (max 203) | 696.6 / 727.4 | n/a |
+| after (39216064416) | heavy-slow | 50 | 1.9 / 5.5 (max 734) | 315.0 / 331.7 | n/a |
+
+(The gap-50 runs ran before stalled keys were separated; their maxima are System Events stalls, see above. In `heavy-slow` the results of `p` and `pu` are never shown:
+they are superseded by the next key before they finish, which is the point.)
+
+Reading: with the synthetic profile there was no UI-thread stall to remove, so the key-to-glyph and fast-query numbers are the same before and after (within noise);
+the measured gain is the Script Filter case (581 ms to 314 ms, the two matching filters now run side by side, `providers/workflow.rs`) and the first-frame glyph work.
+Not changed by the numbers, but changed by the code and covered by unit tests: a query that started a process is cancelled and its child killed when the next key arrives
+(`cancel.rs`, `actions.rs`), a query that would start a process waits 40 ms for the next key (`workers.rs`, `COALESCE`), the row layout is cached between frames (`rowcache.rs`).
+
+### What CI could not prove, and what to run on the laptop
+
+CI could not reproduce a late last character: the app's own frame work is 0.1-0.6 ms and the character is drawn within one display refresh. What differs on the laptop and is
+not in the synthetic profile: the real GPU and display (ProMotion, an external display), the vibrancy view and window resize when the list grows (`window.rs`, `sync_height`: the
+resize and the Metal surface reconfiguration happen outside `ui()` and show up as a long `gap` in the next frame), thousands of real icons, the user's real workflows and
+clipboard, file-search providers and other processes competing for CPU. To see which one it is on the laptop:
+
+```sh
+killall ashdash 2>/dev/null
+ASHDASH_FRAME_TRACE=1 /Applications/Ashdash.app/Contents/MacOS/ashdash 2> /tmp/ashdash-ft.txt &
+# press the hotkey, type pup the way it feels slow, press Esc, then:
+python3 scripts/qa/frame-trace-report.py /tmp/ashdash-ft.txt
+```
+
+The report lists, for every typed character, the frame that drew it (`dur` = the app's own work, `gap` = time since the previous frame started, a long gap with a short `dur` means
+the thread was blocked outside the app's code), the time from request to answer, and every slow frame with its phases (`results` = row drawing, `warm_fonts`, `poll_background`, ...).
+
 ## Not verified / limits
 
 * The bare release binary, not the packaged `Ashdash.app` (Info.plist `LSUIElement`, code signature, hardened runtime, login-item launch could change start-up and memory). Apple Silicon only; no x86_64 slice.
 * Synthetic key events, not a physical keyboard; no multi-monitor, full-screen app, Space switch, sleep/wake, or Stage Manager runs; the window list is the visibility oracle, not a screenshot.
 * 60 s idle windows and 20 extra show/hide cycles: hours-long leaks are not ruled out. Idle was measured with the window hidden only; CPU while the window is shown and idle (cursor blink, frame rate) was not.
-* 5,002-app bundles are fake (no icon files, tiny plists); real icons, the icon cache and large result lists are not exercised. The "real" list is 82-83 apps on this machine only.
+* 5,002-app bundles are fake (tiny plists; the typing-lag variants give each one a small shared icon file); real icons, the icon cache and large result lists are not exercised. The "real" list is 82-83 apps on this machine only.
 * Load was 1.7-5.3 (1-min) with other work running; an idle machine can only improve the times, but the first repetition of each variant ran under the heaviest load and its start-up times are the slowest of the three in most rows.
 * The cause of the 185 MB graphics allocation, the 8.2 MB CG image, the extra ~80 ms of the hotkey path and the two first-launch outliers are open; the statements above name only what the evidence supports.
