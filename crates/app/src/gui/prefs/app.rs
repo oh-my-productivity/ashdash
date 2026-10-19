@@ -295,14 +295,16 @@ impl PrefsApp {
         }
     }
 
-    /// Cmd+1..7 move between pages, Cmd+K focuses the "Go to a setting…" field, Cmd+R re-checks
-    /// the permissions, Return (with nothing focused) follows the "Fix…" button of the General
-    /// page. Nothing of this runs while the shortcut recorder is listening: the combination
-    /// being recorded must not also switch pages.
+    /// Cmd+1..7 move between pages, a plain `/` focuses the "Go to a setting…" field (only while no
+    /// text field has focus: in a text field `/` is an ordinary character, and the slash that
+    /// focuses the field is not typed into it), Cmd+R re-checks the permissions, Return (with
+    /// nothing focused) follows the "Fix…" button of the General page. Nothing of this runs while
+    /// the shortcut recorder is listening: the combination being recorded must not also switch pages.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if self.general.recorder.is_listening() {
             return;
         }
+        Self::slash_focuses_the_search(ctx);
         let events = ctx.input(|i| i.events.clone());
         for ev in &events {
             if let egui::Event::Key {
@@ -315,8 +317,6 @@ impl PrefsApp {
             {
                 if let Some(n) = Nav::from_shortcut(*modifiers, *key) {
                     self.go(n);
-                } else if *key == Key::K && modifiers.matches_exact(Modifiers::COMMAND) {
-                    ctx.memory_mut(|mem| mem.request_focus(search_id()));
                 } else if *key == Key::R && modifiers.matches_exact(Modifiers::COMMAND) {
                     self.check_permissions();
                 } else if *key == Key::Enter
@@ -329,6 +329,17 @@ impl PrefsApp {
                 }
             }
         }
+    }
+
+    /// A typed `/` while no text field has focus: focus the search field and swallow that character
+    /// (the key's text event follows its key event in the same frame, so it would be typed there).
+    /// The layout does not matter: this looks at the typed character, not at the key.
+    fn slash_focuses_the_search(ctx: &egui::Context) {
+        if ctx.text_edit_focused() || !ctx.input(|i| i.events.iter().any(is_slash_text)) {
+            return;
+        }
+        ctx.input_mut(|i| i.events.retain(|e| !is_slash_text(e)));
+        ctx.memory_mut(|mem| mem.request_focus(search_id()));
     }
 
     /// Load a system CJK font when the user's own text can need it: workflow, snippet and web search
@@ -504,6 +515,11 @@ impl PrefsApp {
     }
 }
 
+/// The text event of a bare `/` key press.
+fn is_slash_text(e: &egui::Event) -> bool {
+    matches!(e, egui::Event::Text(t) if t == "/")
+}
+
 fn search_id() -> egui::Id {
     egui::Id::new("prefs-go-to-a-setting")
 }
@@ -601,8 +617,18 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// What a keyboard sends for a `/`: the key press, then the typed character.
+    fn slash_events() -> Vec<egui::Event> {
+        vec![key_event(Key::Slash, Modifiers::NONE), egui::Event::Text("/".into())]
+    }
+
+    fn focus_with_slash(ctx: &egui::Context, app: &mut PrefsApp) {
+        frame_with(ctx, app, slash_events());
+        frame(ctx, app);
+    }
+
     #[test]
-    fn cmd_digits_move_between_pages_and_cmd_k_focuses_the_search_field() {
+    fn cmd_digits_move_between_pages_and_slash_focuses_the_search_field() {
         let (paths, root) = temp("keys");
         let ctx = egui::Context::default();
         let mut app = test_app(&ctx, paths);
@@ -620,14 +646,157 @@ mod tests {
             vec![key_event(Key::Num3, Modifiers::COMMAND | Modifiers::SHIFT)],
         );
         assert_eq!(app.nav, Nav::Search);
+        // Cmd+K is not the shortcut any more
         frame_with(&ctx, &mut app, vec![key_event(Key::K, Modifiers::COMMAND)]);
         frame(&ctx, &mut app);
+        assert!(!ctx.memory(|mem| mem.has_focus(search_id())));
+        focus_with_slash(&ctx, &mut app);
         assert!(ctx.memory(|mem| mem.has_focus(search_id())));
+        assert_eq!(
+            app.nav_query, "",
+            "the slash that focuses the field is not typed into it"
+        );
         frame_with(&ctx, &mut app, vec![key_event(Key::Escape, Modifiers::NONE)]);
+        frame(&ctx, &mut app);
+        assert!(!ctx.memory(|mem| mem.has_focus(search_id())), "Esc leaves the field");
         frame_with(&ctx, &mut app, vec![key_event(Key::Num6, Modifiers::COMMAND)]);
         assert_eq!(app.nav, Nav::Permissions);
         frame_with(&ctx, &mut app, vec![key_event(Key::Num7, Modifiers::COMMAND)]);
         assert_eq!(app.nav, Nav::About);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_slash_is_an_ordinary_character_in_a_text_field_and_in_the_recorder() {
+        let (paths, root) = temp("slash");
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx, paths);
+        frame(&ctx, &mut app);
+        // typed into the focused search field: stays in it, the field keeps the focus
+        focus_with_slash(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("a".into())]);
+        frame_with(&ctx, &mut app, slash_events());
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("b".into())]);
+        assert_eq!(app.nav_query, "a/b");
+        assert!(ctx.memory(|mem| mem.has_focus(search_id())));
+        frame_with(&ctx, &mut app, vec![key_event(Key::Escape, Modifiers::NONE)]);
+        frame(&ctx, &mut app);
+        // while the shortcut recorder listens, `/` belongs to it
+        app.general.recorder.start();
+        frame_with(&ctx, &mut app, slash_events());
+        frame(&ctx, &mut app);
+        assert!(!ctx.memory(|mem| mem.has_focus(search_id())));
+        assert_eq!(app.nav_query, "");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_slash_in_any_other_text_edit_is_left_in_the_input() {
+        let ctx = egui::Context::default();
+        let other = egui::Id::new("some-other-text-edit");
+        let text = std::cell::RefCell::new(String::new());
+        let run = |events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                PrefsApp::slash_focuses_the_search(ui.ctx());
+                let kept = ui.ctx().input(|i| i.events.iter().any(is_slash_text));
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("kept"), kept));
+                egui::TextEdit::singleline(&mut *text.borrow_mut()).id(other).show(ui);
+            });
+            out.textures_delta.clear();
+            ctx.data(|d| d.get_temp::<bool>(egui::Id::new("kept"))).unwrap()
+        };
+        run(vec![]);
+        ctx.memory_mut(|m| m.request_focus(other));
+        run(vec![]);
+        assert!(ctx.text_edit_focused());
+        assert!(run(slash_events()), "the slash stays in the input for the text edit");
+        assert!(!ctx.memory(|m| m.has_focus(search_id())));
+        assert_eq!(*text.borrow(), "/");
+        // and without a focused text edit it is taken
+        ctx.memory_mut(|m| m.surrender_focus(other));
+        run(vec![]);
+        assert!(!run(slash_events()), "the slash is taken out of the input");
+        assert!(ctx.memory(|m| m.has_focus(search_id())));
+    }
+
+    /// The placeholder, the typed text and the `/` hint are on one baseline, and that line is centred in the
+    /// 28 pt field (measured on the laid-out galleys, not on constants).
+    #[test]
+    fn the_search_field_text_is_vertically_centred_on_one_baseline() {
+        let (paths, root) = temp("centred");
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx, paths);
+        frame(&ctx, &mut app);
+        let shapes = |ctx: &egui::Context, app: &mut PrefsApp, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(m::WINDOW[0], m::WINDOW[1]),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| app.draw(ui));
+            out.textures_delta.clear();
+            let field = ctx.read_response(search_id()).expect("the search field was drawn").rect;
+            // (text, top-left, baseline y) of every text shape inside the field
+            let mut found = Vec::new();
+            for clipped in &out.shapes {
+                if let egui::epaint::Shape::Text(t) = &clipped.shape
+                    && field.contains_rect(t.visual_bounding_rect().shrink(0.01))
+                    && !t.galley.text().is_empty()
+                {
+                    let row = &t.galley.rows[0];
+                    let base = t.pos.y + row.pos.y + row.glyphs[0].pos.y;
+                    found.push((t.galley.text().to_string(), t.pos.y + row.pos.y, row.row.size.y, base));
+                }
+            }
+            (field, found)
+        };
+        let (field, empty) = shapes(&ctx, &mut app, vec![]);
+        assert!(
+            (field.height() - m::SEARCH_H).abs() < 0.5,
+            "field height {}",
+            field.height()
+        );
+        let placeholder = empty
+            .iter()
+            .find(|t| t.0.starts_with("Go to"))
+            .expect("placeholder drawn");
+        let hint = empty.iter().find(|t| t.0 == "/").expect("hint drawn");
+        assert!(
+            (placeholder.3 - hint.3).abs() <= 0.51,
+            "baselines {} vs {}",
+            placeholder.3,
+            hint.3
+        );
+        // the row box of the placeholder is centred in the field
+        let centre = placeholder.1 + placeholder.2 / 2.0;
+        assert!(
+            (centre - field.center().y).abs() <= 0.51,
+            "row centre {centre} vs field {}",
+            field.center().y
+        );
+
+        // typed text: focus, type one character, same baseline and centre as the placeholder had
+        frame_with(&ctx, &mut app, slash_events());
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("g".into())]);
+        let (_, typed) = shapes(&ctx, &mut app, vec![]);
+        let typed = typed.iter().find(|t| t.0 == "g").expect("typed text drawn");
+        assert!(
+            (typed.3 - placeholder.3).abs() <= 0.51,
+            "typed baseline {} vs {}",
+            typed.3,
+            placeholder.3
+        );
+        assert!((typed.1 + typed.2 / 2.0 - field.center().y).abs() <= 0.51);
+        assert!(!typed.0.is_empty() && !empty.iter().any(|t| t.0 == "g"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -637,8 +806,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = test_app(&ctx, paths);
         frame(&ctx, &mut app);
-        frame_with(&ctx, &mut app, vec![key_event(Key::K, Modifiers::COMMAND)]);
-        frame(&ctx, &mut app);
+        focus_with_slash(&ctx, &mut app);
         frame_with(&ctx, &mut app, vec![egui::Event::Text("snip".into())]);
         assert_eq!(app.nav_query, "snip");
         assert_eq!(nav::filter(&app.nav_query), vec![Nav::Snippets]);
