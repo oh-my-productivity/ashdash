@@ -147,6 +147,8 @@ pub struct Theme {
     pub name: String,
     pub window_color: Rgba,
     pub window_border: Rgba,
+    /// Border width in points. `None` (the default; no `borderWidth` key) = one device pixel, whatever the screen's scale.
+    pub window_border_width: Option<f32>,
     pub window_roundness: f32,
     pub window_padding: f32,
     pub window_width: f32,
@@ -154,6 +156,10 @@ pub struct Theme {
     pub search_text: Rgba,
     pub search_size: f32,
     pub search_roundness: f32,
+    /// Colour of the text caret in the query field.
+    pub search_caret: Rgba,
+    /// Width of the caret in points.
+    pub search_caret_width: f32,
     pub result_text: Rgba,
     pub result_text_selected: Rgba,
     pub result_text_size: f32,
@@ -167,19 +173,23 @@ pub struct Theme {
 }
 
 impl Default for Theme {
-    /// A dark theme with values for a conventional dark look.
+    /// The look a user gets with no theme chosen: a square, near-black panel with a one-pixel dark grey border and a large
+    /// query line with a thin white caret (docs/design/launcher-look.md). A theme file overrides every value.
     fn default() -> Self {
         Theme {
             name: "Ashdash Dark".into(),
-            window_color: [30, 30, 34, 255],
-            window_border: [0, 0, 0, 127],
-            window_roundness: 15.0,
+            window_color: [5, 8, 10, 245],
+            window_border: [0x24, 0x26, 0x28, 255],
+            window_border_width: None,
+            window_roundness: 0.0,
             window_padding: 9.0,
-            window_width: 700.0,
-            search_background: [0, 0, 0, 62],
+            window_width: 575.0,
+            search_background: [0, 0, 0, 0],
             search_text: [255, 255, 255, 255],
-            search_size: 30.0,
-            search_roundness: 8.0,
+            search_size: 34.0,
+            search_roundness: 0.0,
+            search_caret: [255, 255, 255, 255],
+            search_caret_width: 1.0,
             result_text: [255, 255, 255, 203],
             result_text_selected: [255, 255, 255, 255],
             result_text_size: 17.0,
@@ -252,6 +262,10 @@ impl Theme {
         }
         set!(out.window_color, col(window, "color"));
         set!(out.window_border, col(window, "borderColor"));
+        set!(
+            out.window_border_width,
+            num(window, "borderWidth").map(|w| Some(w.max(0.0)))
+        );
         set!(out.window_roundness, num(window, "roundness"));
         set!(out.window_padding, num(window, "paddingVertical"));
         set!(out.window_width, num(window, "width"));
@@ -259,6 +273,8 @@ impl Theme {
         set!(out.search_roundness, num(search, "roundness"));
         set!(out.search_text, col(stext, "color"));
         set!(out.search_size, num(stext, "size"));
+        set!(out.search_caret, col(search, "caretColor"));
+        set!(out.search_caret_width, num(search, "caretWidth").map(|w| w.max(0.0)));
         set!(out.result_text, col(rtext, "color"));
         set!(out.result_text_selected, col(rtext, "colorSelected"));
         set!(out.result_text_size, num(rtext, "size"));
@@ -326,6 +342,79 @@ mod tests {
         assert_eq!(t.result_selected_background, [0x48, 0, 0x69, 0xE4]);
         assert_eq!(t.result_text_size, 22.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_default_look_is_the_square_near_black_panel() {
+        let t = Theme::default();
+        assert_eq!(
+            t.window_color,
+            [0x05, 0x08, 0x0A, 245],
+            "near-black, slightly cool, ~0.96 opaque"
+        );
+        assert_eq!(t.window_border, [0x24, 0x26, 0x28, 255]);
+        assert_eq!(t.window_border_width, None, "one device pixel");
+        assert_eq!(t.window_roundness, 0.0, "square corners");
+        assert_eq!(t.window_width, 575.0);
+        assert_eq!(t.search_size, 34.0);
+        assert_eq!(t.search_background[3], 0, "no box around the query");
+        assert_eq!(t.search_text, [255, 255, 255, 255]);
+        assert_eq!(t.search_caret, [255, 255, 255, 255]);
+        assert_eq!(t.search_caret_width, 1.0);
+    }
+
+    fn theme_with(window: &str, search: &str) -> Theme {
+        Theme::from_bytes(
+            format!(
+                r##"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>{THEME_KEY}</key><dict>
+<key>window</key><dict>{window}</dict><key>search</key><dict>{search}</dict>
+</dict></dict></plist>"##
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_theme_without_the_new_keys_keeps_the_default_border_and_caret() {
+        let t = theme_with("<key>color</key><string>#112233FF</string>", "");
+        assert_eq!(t.window_color, [0x11, 0x22, 0x33, 0xFF]);
+        let d = Theme::default();
+        assert_eq!(t.window_border, d.window_border);
+        assert_eq!(t.window_border_width, None);
+        assert_eq!(
+            (t.search_caret, t.search_caret_width),
+            (d.search_caret, d.search_caret_width)
+        );
+    }
+
+    #[test]
+    fn border_and_caret_keys_are_read() {
+        let t = theme_with(
+            "<key>borderColor</key><string>#FF000080</string><key>borderWidth</key><real>2.5</real>",
+            "<key>caretColor</key><string>#00FF00</string><key>caretWidth</key><integer>3</integer>",
+        );
+        assert_eq!(t.window_border, [255, 0, 0, 0x80]);
+        assert_eq!(t.window_border_width, Some(2.5));
+        assert_eq!(t.search_caret, [0, 255, 0, 255]);
+        assert_eq!(t.search_caret_width, 3.0);
+    }
+
+    #[test]
+    fn negative_widths_become_zero_and_bad_colours_are_ignored() {
+        let t = theme_with(
+            "<key>borderColor</key><string>nonsense</string><key>borderWidth</key><integer>-4</integer>",
+            "<key>caretColor</key><string>#12</string><key>caretWidth</key><real>-1</real>",
+        );
+        assert_eq!(
+            t.window_border_width,
+            Some(0.0),
+            "an explicit 0 means no border, not a hairline"
+        );
+        assert_eq!(t.window_border, Theme::default().window_border);
+        assert_eq!(t.search_caret_width, 0.0);
+        assert_eq!(t.search_caret, Theme::default().search_caret);
     }
 
     /// A plist of `depth` nested arrays inside the theme dictionary.
