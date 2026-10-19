@@ -186,24 +186,28 @@ impl LauncherApp {
             keys
         };
         if keys.esc {
-            if self.quicklook.is_open() {
-                self.quicklook.close();
-            } else if self.large_type.is_some() {
-                self.close_large_type(ctx);
-                if !self.visible {
+            match esc_step(
+                self.quicklook.is_open(),
+                self.large_type.is_some(),
+                self.status.is_some() && self.confirming.is_some(),
+                self.panel_open(),
+            ) {
+                EscStep::CloseQuickLook => self.quicklook.close(),
+                EscStep::CloseLargeType => {
+                    self.close_large_type(ctx);
+                    if !self.visible {
+                        return;
+                    }
+                }
+                EscStep::CancelConfirmation => {
+                    self.confirming = None;
+                    self.status = None;
+                }
+                EscStep::PanelBack => self.panel_back(),
+                EscStep::Hide => {
+                    self.hide(ctx);
                     return;
                 }
-            } else if self.status.is_some() && self.confirming.is_some() {
-                self.confirming = None;
-                self.status = None;
-            } else if !self.query.is_empty() {
-                self.query.clear();
-                self.request_query();
-            } else if self.panel_open() {
-                self.panel_back();
-            } else {
-                self.hide(ctx);
-                return;
             }
         }
         // Universal Actions: Right opens the panel (or the next level), Left goes back,
@@ -299,6 +303,33 @@ impl LauncherApp {
     }
 }
 
+/// What one Esc press does. Things drawn on top of the launcher are dismissed first, one per press; with
+/// none of them up, Esc hides the launcher at once, whatever is typed in the query (the next `show` starts
+/// with an empty query, so nothing needs clearing first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscStep {
+    CloseQuickLook,
+    CloseLargeType,
+    CancelConfirmation,
+    /// One level back out of the Universal Actions panel (the query text of the level below is restored).
+    PanelBack,
+    Hide,
+}
+
+fn esc_step(quicklook_open: bool, large_type_open: bool, confirming: bool, panel_open: bool) -> EscStep {
+    if quicklook_open {
+        EscStep::CloseQuickLook
+    } else if large_type_open {
+        EscStep::CloseLargeType
+    } else if confirming {
+        EscStep::CancelConfirmation
+    } else if panel_open {
+        EscStep::PanelBack
+    } else {
+        EscStep::Hide
+    }
+}
+
 /// Shown when a key named a row that the arriving results took away.
 const RESULTS_CHANGED: &str = "The results changed under that key press. Check the highlighted row and press it again.";
 
@@ -314,6 +345,21 @@ mod tests {
             repeat,
             modifiers: Modifiers::NONE,
         }
+    }
+
+    #[test]
+    fn esc_with_text_in_the_query_closes_the_launcher_in_one_press() {
+        // the query text is not an input of the decision: it never takes a press of its own
+        assert_eq!(esc_step(false, false, false, false), EscStep::Hide);
+    }
+
+    #[test]
+    fn esc_dismisses_what_is_drawn_on_top_first_one_layer_per_press() {
+        assert_eq!(esc_step(true, true, true, true), EscStep::CloseQuickLook);
+        assert_eq!(esc_step(false, true, true, true), EscStep::CloseLargeType);
+        assert_eq!(esc_step(false, false, true, true), EscStep::CancelConfirmation);
+        assert_eq!(esc_step(false, false, false, true), EscStep::PanelBack);
+        assert_eq!(esc_step(false, false, false, false), EscStep::Hide);
     }
 
     #[test]
