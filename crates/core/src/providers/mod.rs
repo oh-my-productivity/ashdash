@@ -97,6 +97,11 @@ pub trait Provider: Send + Sync {
         true
     }
     fn query(&self, ctx: &QueryCtx) -> ProviderOutput;
+    /// Whether [`Provider::query`] for this query would start a process or search the disk (a Script Filter, Spotlight): work
+    /// that takes tens of milliseconds at least. Cheap and side-effect free; false for everything that answers from memory.
+    fn is_slow(&self, _ctx: &QueryCtx) -> bool {
+        false
+    }
     fn placement(&self) -> Placement {
         Placement::Ranked
     }

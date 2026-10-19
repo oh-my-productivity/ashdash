@@ -535,6 +535,10 @@ impl Engine {
         let mut fixed = Vec::new(); // from providers that opt out of learning
         let mut trailing = Vec::new();
         for p in providers {
+            // superseded by a newer keystroke (see `crate::cancel`): the answer will be dropped, so stop asking
+            if crate::cancel::is_cancelled() {
+                return Vec::new();
+            }
             let out = p.query(&ctx);
             if out.exclusive {
                 let mut v = out.items;
@@ -559,6 +563,40 @@ impl Engine {
         items.truncate(config.max_results);
         items.extend(trailing);
         items
+    }
+
+    /// [`Engine::query`] that gives up early when `token` is cancelled: providers are not asked any more and a Script Filter or
+    /// Spotlight child process that is being waited for is killed. The result of a cancelled query is meaningless (usually empty);
+    /// the caller dropped interest in it when it cancelled.
+    pub fn query_cancellable(&self, input: &str, token: &crate::cancel::CancelToken) -> Vec<Item> {
+        crate::cancel::scope(token, || self.query(input))
+    }
+
+    /// Whether answering `input` would start a process or search the disk (a Script Filter, a File Filter, a file search): the
+    /// slow cases. Everything else is answered from memory in about a millisecond. Cheap; runs nothing.
+    pub fn query_is_slow(&self, input: &str) -> bool {
+        let q = input.trim_start();
+        if q.trim().is_empty() {
+            return false;
+        }
+        let live = self.live.read().unwrap().clone();
+        let (config, providers) = match &live {
+            Some(l) => (&l.config, &l.providers),
+            None => (&self.config, &self.providers),
+        };
+        let state = EngineState {
+            config,
+            paths: &self.paths,
+            apps: &self.apps,
+            workflows: &self.workflows,
+            snippets: &self.snippets,
+            clipboard: &self.clipboard,
+        };
+        let ctx = QueryCtx {
+            query: q,
+            engine_state: &state,
+        };
+        providers.iter().any(|p| p.is_slow(&ctx))
     }
 
     /// Universal Actions available for a result (empty when it has none).

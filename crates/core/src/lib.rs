@@ -5,6 +5,7 @@ pub mod apps;
 pub mod bookmarks;
 pub mod brand;
 pub mod calc;
+pub mod cancel;
 pub mod clipboard;
 pub mod config;
 pub mod confine;

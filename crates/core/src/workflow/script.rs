@@ -472,6 +472,12 @@ fn run_with_timeout(cmd: &mut Command, stdin: Option<&str>, timeout: Duration) -
             let _ = child.wait();
             bail!("script timed out after {}s", timeout.as_secs());
         }
+        // A newer keystroke made this run pointless (see `crate::cancel`): stop the script instead of waiting for it.
+        if crate::cancel::is_cancelled() {
+            kill_group(&mut child);
+            let _ = child.wait();
+            bail!("script cancelled");
+        }
         std::thread::sleep(Duration::from_millis(5));
     };
     // The interpreter is gone; let the pipes drain briefly, then take what there is.

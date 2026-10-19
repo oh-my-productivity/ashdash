@@ -40,6 +40,9 @@ use crate::fuzzy;
 use crate::item::{Action, Icon, Item};
 use crate::websearch::percent_encode;
 
+/// How often a bounded process wait looks at the cancel flag of `crate::cancel`.
+const CANCEL_POLL: Duration = Duration::from_millis(20);
+
 // ------------------------------------------------------------------ Os trait
 
 /// A command line: program + separate arguments (+ optional stdin text).
@@ -289,8 +292,15 @@ impl Os for RealOs {
         let deadline = Instant::now() + budget.timeout;
         let mut out = BoundedOutput::default();
         loop {
+            // A newer keystroke made this search pointless (see `crate::cancel`): kill the child and give up.
+            if crate::cancel::is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("{} cancelled", cmd.program.to_string_lossy());
+            }
             let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
+            // wake up now and then to look at the cancel flag
+            match rx.recv_timeout(left.min(CANCEL_POLL)) {
                 Ok(chunk) => {
                     out.bytes.extend_from_slice(&chunk);
                     if out.bytes.len() > budget.max_bytes {
@@ -300,6 +310,9 @@ impl Os for RealOs {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
+                    if Instant::now() < deadline {
+                        continue; // only the cancel poll expired
+                    }
                     out.timed_out = true;
                     break;
                 }
@@ -1468,6 +1481,43 @@ mod tests {
             .unwrap();
         assert!(out.timed_out && !out.truncated && out.bytes.is_empty());
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn bounded_output_kills_a_process_when_the_query_is_cancelled() {
+        use crate::cancel::{self, CancelToken};
+        let token = CancelToken::new();
+        let canceller = {
+            let t = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                t.cancel();
+            })
+        };
+        let started = Instant::now();
+        let r = cancel::scope(&token, || {
+            RealOs.output_bounded(
+                &Cmd::new("sleep").arg("30"),
+                &OutputBudget {
+                    timeout: Duration::from_secs(25),
+                    max_bytes: 1 << 20,
+                },
+            )
+        });
+        canceller.join().unwrap();
+        assert!(r.is_err(), "a cancelled search is an error, not an empty answer");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        // without a token the same call is unaffected
+        let out = RealOs
+            .output_bounded(
+                &Cmd::new("echo").arg("hi"),
+                &OutputBudget {
+                    timeout: Duration::from_secs(10),
+                    max_bytes: 1 << 20,
+                },
+            )
+            .unwrap();
+        assert_eq!(out.bytes, b"hi\n");
     }
 
     #[test]

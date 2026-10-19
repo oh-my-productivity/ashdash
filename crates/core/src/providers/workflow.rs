@@ -47,6 +47,15 @@ impl Provider for WorkflowProvider {
         }
         ProviderOutput { items, exclusive }
     }
+
+    fn is_slow(&self, ctx: &QueryCtx) -> bool {
+        let st = ctx.engine_state;
+        st.workflows
+            .read()
+            .unwrap()
+            .iter()
+            .any(|wf| wf.would_run_process(ctx.query, st.paths))
+    }
 }
 
 #[cfg(test)]
@@ -84,6 +93,120 @@ mod tests {
             J::Array(a) => plist::Value::Array(a.iter().map(to_plist).collect()),
             J::Object(o) => plist::Value::Dictionary(o.iter().map(|(k, v)| (k.clone(), to_plist(v))).collect()),
         }
+    }
+
+    /// A Script Filter workflow: `keyword`, argument optional, bash `script`.
+    fn install_script_filter(e: &crate::engine::Engine, keyword: &str, with_space: bool, script: &str) {
+        let dir = e.paths.workflows_dir().join("user.workflow.sf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = json!({
+            "name": "SF", "bundleid": "t.sf", "objects": [
+                {"uid": "S", "type": kind::INPUT_SCRIPTFILTER, "config": {
+                    "keyword": keyword, "withspace": with_space, "argumenttype": 1, "type": 0, "scriptargtype": 1,
+                    "script": script, "title": "sf", "subtext": "s"}}
+            ],
+            "connections": {}
+        });
+        to_plist(&doc).to_file_xml(dir.join("info.plist")).unwrap();
+        e.reload_blocking();
+    }
+
+    #[test]
+    fn only_a_fully_typed_script_filter_keyword_with_its_argument_is_slow() {
+        let (e, root) = engine("wf-slow");
+        install_script_filter(&e, "sf", true, "echo '{\"items\":[]}'");
+        assert!(e.query_is_slow("sf rust"), "keyword and argument: a script would start");
+        assert!(!e.query_is_slow("sf"), "the keyword alone shows the placeholder row");
+        assert!(!e.query_is_slow("s"), "a partial keyword shows the placeholder row");
+        assert!(!e.query_is_slow("pup"), "no keyword matches");
+        assert!(!e.query_is_slow("   "), "a blank query asks nothing");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_keyword_without_a_space_starts_a_script_on_every_character() {
+        let (e, root) = engine("wf-nospace");
+        install_script_filter(&e, "p", false, "echo '{\"items\":[]}'");
+        // typing "pup" against the keyword "p": all three keystrokes would start the script
+        for q in ["p", "pu", "pup"] {
+            assert!(e.query_is_slow(q), "{q}");
+        }
+        assert!(!e.query_is_slow("x"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_script_filter_answered_from_its_live_cache_is_not_slow() {
+        let (e, root) = engine("wf-cached");
+        install_script_filter(
+            &e,
+            "sf",
+            true,
+            "echo '{\"cache\":{\"seconds\":60},\"items\":[{\"title\":\"A\"}]}'",
+        );
+        assert!(e.query_is_slow("sf a"));
+        assert!(e.query("sf a").iter().any(|i| i.title == "A"));
+        assert!(
+            !e.query_is_slow("sf a"),
+            "the script's own cache answers the same query"
+        );
+        assert!(e.query_is_slow("sf b"), "another argument is another script run");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_search_keywords_are_slow_once_they_have_something_to_search_for() {
+        let (e, root) = engine("files-slow");
+        assert!(e.query_is_slow("open report"));
+        assert!(e.query_is_slow("in budget"));
+        assert!(!e.query_is_slow("open"), "the hint row");
+        assert!(!e.query_is_slow("opens"), "an ordinary search");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cancelled_script_filter_is_killed_instead_of_waited_for() {
+        use crate::cancel::CancelToken;
+        use std::time::{Duration, Instant};
+        let (e, root) = engine("wf-cancel");
+        let marker = root.join("finished");
+        let script = format!("sleep 20; touch '{}'; echo '{{\"items\":[]}}'", marker.display());
+        install_script_filter(&e, "sf", true, &script);
+        let token = CancelToken::new();
+        let canceller = {
+            let t = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                t.cancel();
+            })
+        };
+        let started = Instant::now();
+        let items = e.query_cancellable("sf rust", &token);
+        let took = started.elapsed();
+        canceller.join().unwrap();
+        assert!(
+            took < Duration::from_secs(5),
+            "waited {took:?} for a script that was cancelled"
+        );
+        assert!(
+            took >= Duration::from_millis(250),
+            "it must have been running when cancelled"
+        );
+        assert!(items.iter().all(|i| !i.title.is_empty()));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!marker.exists(), "the script must not run on to its end");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_query_cancelled_before_it_starts_asks_no_provider() {
+        use crate::cancel::CancelToken;
+        let (e, root) = engine("wf-precancel");
+        let token = CancelToken::new();
+        token.cancel();
+        assert!(e.query_cancellable("saf", &token).is_empty());
+        assert!(!e.query("saf").is_empty(), "the same query without a token is answered");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -327,6 +327,33 @@ impl Workflow {
         out
     }
 
+    /// Whether answering `query` would start a process: a Script Filter (not answered from a live cache entry) or a File Filter
+    /// (Spotlight) whose keyword is fully typed and whose argument is there. Reads the loaded workflow only; runs nothing. The
+    /// query worker uses it to wait a few milliseconds for the next keystroke before it spawns something that is slow and that
+    /// the next keystroke would make pointless.
+    pub fn would_run_process(&self, query: &str, paths: &Paths) -> bool {
+        if self.disabled {
+            return false;
+        }
+        let vars = self.base_vars(paths);
+        self.nodes.iter().filter(|n| is_filter_kind(&n.kind)).any(|node| {
+            let keyword = render(&node.s("keyword"), "", &vars);
+            let withspace = node.b("withspace");
+            let KeywordMatch::Full { arg, spaced } = match_keyword(query, &keyword, withspace) else {
+                return false;
+            };
+            let needs_arg = node.i("argumenttype") == 0;
+            if (withspace && !spaced) || (needs_arg && arg.is_empty()) {
+                return false; // the placeholder row, no process
+            }
+            match node.kind.as_str() {
+                KIND_SCRIPT_FILTER => !matches!(self.runtime.cached(&node.uid, &arg), Some((_, true))),
+                KIND_FILE_FILTER => true,
+                _ => false,
+            }
+        })
+    }
+
     /// Placeholders for filters that would run for `query` and declare a
     /// `runningsubtext`: a UI shows them while the real (slow) query is in
     /// flight. Empty when no filter applies.

@@ -75,6 +75,10 @@ impl Provider for FilesProvider {
             None => ProviderOutput::none(),
         }
     }
+
+    fn is_slow(&self, ctx: &QueryCtx) -> bool {
+        trigger(ctx.query).is_some_and(|(_, mode, rest)| !FileQuery::parse(mode, rest).is_empty())
+    }
 }
 
 fn file_items(os: &dyn Os, scope: &FileSearchScope, kw: &str, mode: SearchMode, rest: &str, max: usize) -> Vec<Item> {
