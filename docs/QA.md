@@ -139,7 +139,7 @@ Mark each item OK / FAIL / n.a. and note the macOS version and display setup.
 - [ ] Up/Down and Ctrl+P/Ctrl+N move the selection; selection scrolls into view; wraps or stops consistently.
 - [ ] Return runs the selected item and hides the launcher; items that need a second Return show the prompt.
 - [ ] Tab autocompletes the selected item's title/autocomplete text into the field.
-- [ ] Esc hides the launcher (first Esc clears the text if that is the chosen design: note it).
+- [ ] One Esc hides the launcher, also with text in the field (it does not clear the text first); the next show starts with an empty field. Esc over Quick Look, Large Type, a pending confirmation or the actions panel dismisses only that layer.
 - [ ] Cmd+1…Cmd+9 run the visible result in that row; the number hints match the rows.
 - [ ] Cmd+L shows Large Type for the selection; Esc/click dismisses it. With a very long text (several screens) the text scrolls with the wheel, arrows and Page keys.
 - [ ] Hold Return on Shut Down / Restart / Empty Trash (do not release): it asks once and **never** confirms by repeating; releasing and pressing Return again confirms (decline with Esc; do not run it for real).

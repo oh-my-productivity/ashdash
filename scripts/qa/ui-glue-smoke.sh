@@ -123,7 +123,7 @@ key $RET; sleep 1.5; key $RET; shot 05-installed 1.5
 key $RIGHT; sleep 0.5; key $DOWN; shot 06-actions-for-file 0.4
 key $RIGHT; shot 07-open-with 2
 typ "saf"; shot 08-open-with-filtered 0.6
-key $ESC; sleep 0.3; key $ESC; shot 09-back-in-actions 0.5
+key $ESC; shot 09-back-in-actions 0.5   # one Esc goes back a level; it does not clear the filter first
 key $LEFT; shot 10-back-in-results 0.6
 
 # 5: Quick Look through the Os handle: the preview must be drawn above the launcher

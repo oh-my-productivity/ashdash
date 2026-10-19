@@ -239,8 +239,14 @@ s33() {
   has "$o" '^Safari' && result 3.3.3b PASS "Tab completes an application row to its title (OCR: $o)" || result 3.3.3b FAIL "Tab on an application row does nothing (no autocomplete text): docs/QA.md 3.3 promises 'the selected item's title/autocomplete text'. crates/app/src/gui/keys.rs:250 needs item.autocomplete, which apps, files and calculator rows never set. OCR after Tab: $o"
   # Esc
   show; clear_field; type_text "abc"; key_code $KC_ESC; sleep 0.8
-  if visible; then result 3.3.4 PASS "first Esc clears the text and keeps the launcher open (design note: second Esc hides)"; key_code $KC_ESC; sleep 0.5
-  else result 3.3.4 PASS "Esc hides the launcher at once, with text in the field (it does not clear first)"; fi
+  if visible; then result 3.3.4 FAIL "the first Esc left the launcher open with text in the field (one Esc must close it)"; key_code $KC_ESC; sleep 0.5
+  else
+    result 3.3.4 PASS "one Esc hides the launcher with text in the field (it does not clear the text first)"
+    show; sleep 0.5; o=$(look esc-reshow)
+    # the next show starts clean: the typed text is gone and the placeholder is back
+    has "$o" 'abc' && result 3.3.4b FAIL "the next show still has the old text (OCR: $o)" || result 3.3.4b PASS "the next show starts with an empty query (OCR: $o)"
+    hide_
+  fi
   # Cmd+number
   ask 'pk ' 1.2 >/dev/null; clear_picked; o=$(look numbers); se 'keystroke "3" using {command down}' >/dev/null; p=$(await_picked)
   [ "$p" = P03 ] && has "$o" '1' && result 3.3.5 PASS "Cmd+3 runs the third row (picked=$p); the row hints on screen: $o" || result 3.3.5 FAIL "picked='$p'"

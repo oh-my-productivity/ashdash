@@ -43,7 +43,7 @@ Uninstall: quit Ashdash, delete the app, and delete `~/Library/Application Suppo
 
 1. Start Ashdash. It is a menu-bar app: no Dock icon, a status item in the menu bar (Show Ashdash, Reload, Preferences..., Quit Ashdash).
 2. Press **Option+Shift+Space**. The launcher appears on the screen that has the mouse pointer.
-3. Type, for example `saf` and press **Return** to open Safari. **Esc** clears the query, a second **Esc** closes the window.
+3. Type, for example `saf` and press **Return** to open Safari. **Esc** closes the window at once, also with text in the field; the next time it opens the field is empty.
    **Cmd+Q** quits Ashdash.
 4. Choose your own hotkey in Preferences (menu-bar item > Preferences..., or `ashdash prefs`; General > "Record new
    shortcut...") or with `ashdash config set hotkey cmd+shift+space` ([SETTINGS.md](SETTINGS.md)). Settings apply to the
@@ -101,7 +101,7 @@ In the launcher window (from `crates/app/src/gui/keys.rs`):
 | Right Arrow (cursor at the end of the text) | open the **actions panel** for the selected file, folder, URL or text result, or for the whole buffer ([below](#universal-actions-panel-and-file-buffer)) |
 | Left Arrow (cursor at the start), Esc | inside the panel: back one level |
 | Option+Up / Option+Down | add the selected file or folder to the buffer / remove it |
-| Esc | close Quick Look / Large Type, else cancel a pending confirmation, else clear the query (in the panel: its filter), else go back out of the panel, else hide the window |
+| Esc | close Quick Look / Large Type, else cancel a pending confirmation, else go back one level out of the actions panel, else hide the window (also when the query is not empty) |
 | Cmd+Q | quit Ashdash |
 | Mouse click on a row | same as Return (with the held modifiers) |
 
@@ -120,7 +120,7 @@ Right Arrow on a result that is a file, folder, URL or text opens a list of what
 * Typing filters the list; Return runs the selected action through the same path as any other result, so Move to Trash
   names the full path and asks for a second, fresh Return. The panel is not offered for system commands, workflow results or
   `>` Terminal rows. Actions you run here are not learned for ranking.
-* Left Arrow (cursor at the start) or Esc (once the filter is empty) goes back; hiding the launcher closes the panel.
+* Left Arrow (cursor at the start) or Esc goes back (Esc does not clear the filter first); hiding the launcher closes the panel.
 * **File buffer:** Option+Up adds the selected file or folder to a buffer (only files and folders; the footer says
   "Buffer: N items - Right: actions - Alt+Down: remove"), Option+Down removes it. With a non-empty buffer, Right Arrow opens
   the actions for the **whole buffer** (Reveal in Finder, Copy, Copy Path, Copy Name, Compress, Email as Attachment, Move to Trash).

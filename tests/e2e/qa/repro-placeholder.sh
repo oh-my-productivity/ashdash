@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wave 5 screenshot: the field showed its placeholder ("Ashdash") while results for "saf" were listed. on a CI runner after prep.sh:
 #   bash tests/e2e/qa/repro-placeholder.sh [trials=40]
-# Types 'saf' after the hotkey in several ways (fresh show; Esc-then-retype; Cmd+A/Delete-then-retype; ashdash://search; `ashdash show`)
+# Types 'saf' after the hotkey in several ways (fresh show; Esc, show again, retype; Cmd+A/Delete-then-retype; ashdash://search; `ashdash show`)
 # and takes a window screenshot at several delays; a trial is a HIT when the OCR of the window has the placeholder as its first line and a
 # result row ('Safari') below it. Results (id REPRO-PLACEHOLDER) go to $QA_RESULTS.
 # shellcheck disable=SC2015
@@ -21,7 +21,7 @@ for i in $(seq 1 "$N"); do
   case $(( i % 5 )) in
     0) hide_; show; type_text saf; trial fresh "$d" ;;
     1) show; clear_field; type_text saf; trial retype "$d" ;;
-    2) show; type_text saf; sleep 1; key_code $KC_ESC; sleep 0.2; type_text saf; trial esc-retype "$d" ;;
+    2) show; type_text saf; sleep 1; key_code $KC_ESC; sleep 0.4; show; type_text saf; trial esc-retype "$d" ;;
     3) hide_; wd 10 /usr/bin/open "ashdash://search?query=saf"; trial url "$d" ;;
     4) hide_; HOME=$QAH wd 10 "$BIN" show >/dev/null; type_text saf; trial cli-show "$d" ;;
   esac

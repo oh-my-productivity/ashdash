@@ -45,7 +45,7 @@ ITEMS = {
     "3.2.9d": "`lock` / `sleep` / `restart` / `logout`",
     # 3.3
     "3.3.1a": "Up/Down then Return", "3.3.1b": "Ctrl+N / Ctrl+P", "3.3.1c": "Up on the first row (wrap or stop)", "3.3.1d": "Selection scrolls into view",
-    "3.3.2": "Return runs and hides", "3.3.3a": "Tab completes a keyword row", "3.3.3b": "Tab on an application row", "3.3.4": "Esc behaviour",
+    "3.3.2": "Return runs and hides", "3.3.3a": "Tab completes a keyword row", "3.3.3b": "Tab on an application row", "3.3.4": "One Esc closes, with text", "3.3.4b": "Next show starts clean",
     "3.3.5": "Cmd+1..9 and the row hints", "3.3.6a": "Cmd+L Large Type", "3.3.6b": "Esc dismisses Large Type",
     "3.3.7a": "Held Return on a confirmation never confirms", "3.3.7b": "Fresh Return confirms (Empty Trash through Finder)",
     "3.3.8": "Modifier overrides on a Script Filter item", "3.3.6c": "Large Type taller than the screen scrolls", "3.3.10": "Held modifier swaps the subtitle", "3.3.11": "Script Filter running row and rerun",

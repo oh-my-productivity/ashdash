@@ -66,6 +66,7 @@ if want ql; then for i in 1 2 3; do
 done; fi
 
 # --- actions panel (Right arrow on a file result) and Esc: Esc closes the panel and keeps the launcher, the next Esc hides it
+# (with text in the query the second Esc hides at once: it does not clear the text first)
 if want panel; then for i in 1 2 3; do
   show; chord command 0; key_code 51 >/dev/null
   se 'keystroke "/etc/hosts"' >/dev/null; sleep 1.2
@@ -73,9 +74,9 @@ if want panel; then for i in 1 2 3; do
   txt=$(look "panel-$i"); panel_up=0; has "$txt" 'Reveal|Copy|Open' && visible && panel_up=1
   key_code $KC_ESC >/dev/null; sleep 1
   txt1=$(look "panel-$i-esc1"); after_esc1=0; visible && after_esc1=1
-  # (with text in the field one Esc clears it, and the next one hides: docs/QA.md 3.3.4)
-  after_esc2=0; for _ in 1 2; do key_code $KC_ESC >/dev/null; sleep 1; visible || { after_esc2=1; break; }; done
-  check "panel-$i" $((panel_up & after_esc1 & after_esc2)) "panel shown (OCR '$(echo "$txt" | cut -c1-80)')=$panel_up; after the first Esc the launcher is up=$after_esc1 ('$(echo "$txt1" | cut -c1-60)'); hidden within two more Esc=$after_esc2"
+  # the query text ("/etc/hosts") is back after the panel closed; one more Esc must hide the launcher (docs/QA.md 3.3.4)
+  after_esc2=0; key_code $KC_ESC >/dev/null; sleep 1; visible || after_esc2=1
+  check "panel-$i" $((panel_up & after_esc1 & after_esc2)) "panel shown (OCR '$(echo "$txt" | cut -c1-80)')=$panel_up; after the first Esc the launcher is up=$after_esc1 ('$(echo "$txt1" | cut -c1-60)'); hidden by the next single Esc=$after_esc2"
   hide_
 done; fi
 
