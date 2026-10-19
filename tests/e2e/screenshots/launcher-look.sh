@@ -10,8 +10,12 @@
 #   3. `ashdash show` -> the EMPTY state; several captures a third of a second apart (the caret blinks, so one of them has it),
 #      once with and once without the window shadow; the window's size and position are written to window.txt,
 #   4. `ashdash search saf` -> the state WITH results (the panel grows downward); the same captures.
-# Output: $E2E_ARTIFACTS/shots/*.png, window.txt, log.txt. The images are workflow artifacts (7 days), never committed. Nothing compares them
-# with a reference image: a person looks at them (docs/design/launcher-look.md has the numbers to look for).
+#   5. edge-check.py reads the captures: the outermost pixel ring of every no-shadow capture, and the ring just outside the border in the
+#      with-shadow capture, must be the border colour (or transparent), never light (luminance <= EDGE_MAX_LUM, default 80). A light
+#      edge pixel fails the suite: that is the "white border" of macOS 26 (docs/design/launcher-look.md) and it must not come back.
+# Output: $E2E_ARTIFACTS/shots/*.png, window.txt, edge-check.txt, log.txt. The images are workflow artifacts (7 days), never committed.
+# Apart from the edge check nothing compares them with a reference image: a person looks at them (docs/design/launcher-look.md has the
+# numbers to look for).
 # shellcheck disable=SC2015
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
@@ -74,4 +78,11 @@ capture empty || rc=1
 HOME=$LOOK_HOME "$BIN" search saf >>"$ART/log.txt" 2>&1; sleep 2.5
 capture results || rc=1
 cat "$ART/window.txt" 2>/dev/null
+
+# the pixel check of the edges (a light pixel on the window edge fails the suite)
+log "display: $(system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|UI Looks like|Display Type' | tr -s ' ' | tr '\n' ';')"
+python3 "$ROOT/tests/e2e/screenshots/edge-check.py" --selftest >>"$ART/log.txt" 2>&1 || { log "edge-check selftest FAILED"; rc=1; }
+python3 "$ROOT/tests/e2e/screenshots/edge-check.py" --max-lum "${EDGE_MAX_LUM:-80}" --report "$ART/edge-check.txt" "$SHOTS" >/dev/null 2>>"$ART/log.txt" \
+  && log "edge-check: ok" || { log "edge-check: FAILED (see edge-check.txt)"; rc=1; }
+grep -E "FAIL|^edge-check" "$ART/edge-check.txt" 2>/dev/null
 exit "$rc"

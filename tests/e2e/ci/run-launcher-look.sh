@@ -3,7 +3,7 @@
 #   bash tests/e2e/ci/run-launcher-look.sh
 # The empty launcher and the launcher with results go to $RUNNER_TEMP/ashdash-ci/launcher-look/shots/*.png, which the `launcher-look` job
 # of e2e.yml uploads as an artifact (7 days), together with window.txt (the window's size in points). They are evidence for a person to
-# look at; nothing compares them with reference images, so the job fails only when the script cannot take them.
+# look at; the job fails when the script cannot take them or when the edge check finds a light pixel on the window's edge.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=common.sh
@@ -21,6 +21,10 @@ n=$(find "$art/shots" -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
   echo "$n screenshots in the artifact \`launcher-look\` (empty state and with results)."
   echo '```'
   cat "$art/window.txt" 2>/dev/null
+  echo '```'
+  echo "Pixel check of the window edges (tests/e2e/screenshots/edge-check.py):"
+  echo '```'
+  cut -c1-220 "$art/edge-check.txt" 2>/dev/null
   echo '```'
 } | ci_summary
 [ "$n" -ge 10 ] || { echo "run-launcher-look: only $n screenshots were taken (expected at least 10)" >&2; rc=1; }
