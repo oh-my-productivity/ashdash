@@ -1,7 +1,7 @@
 //! Web searches: keyword searches (`g rust`) and trailing fallbacks.
 
 use super::{Placement, Provider, ProviderOutput, QueryCtx, strip_keyword};
-use crate::item::{Action, Icon, Item};
+use crate::item::{Action, FALLBACK_ID_PREFIX, Icon, Item};
 use crate::websearch::WebSearch;
 
 /// `<keyword> <terms>` opens the search directly. Exclusive once terms exist.
@@ -64,7 +64,7 @@ impl Provider for FallbackProvider {
             .enumerate()
             .map(|(i, ws)| {
                 let mut it = web_item(&ws.title, &ws.url_for(q), q);
-                it.id = format!("fallback:{}", ws.keyword);
+                it.id = format!("{FALLBACK_ID_PREFIX}{}", ws.keyword);
                 it.score = -1000.0 - i as f64;
                 it
             })
@@ -73,20 +73,38 @@ impl Provider for FallbackProvider {
     }
 }
 
+/// "Search Google for “saf”" (curly quotes: straight ones look like code in a result row).
+fn search_title(engine: &str, query: &str) -> String {
+    format!("Search {engine} for \u{201C}{query}\u{201D}")
+}
+
 fn web_item(engine: &str, url: &str, query: &str) -> Item {
-    Item::new(
-        format!("web:{engine}:{query}"),
-        format!("Search {engine} for '{query}'"),
-    )
-    .subtitle(url.to_string())
-    .icon(Icon::Glyph("🔍"))
-    .action(Action::OpenUrl(url.to_string()))
+    Item::new(format!("web:{engine}:{query}"), search_title(engine, query))
+        .subtitle(url.to_string())
+        .icon(Icon::Glyph("🔍"))
+        .action(Action::OpenUrl(url.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::testutil::engine;
     use crate::item::Action;
+
+    #[test]
+    fn the_title_quotes_the_query_with_curly_quotes() {
+        assert_eq!(
+            super::search_title("Google", "saf"),
+            "Search Google for \u{201C}saf\u{201D}"
+        );
+        let (e, root) = engine("web-title");
+        let r = e.query("saf");
+        let fb = r.iter().find(|i| i.id.starts_with("fallback:")).expect("a fallback");
+        assert!(fb.title.starts_with("Search "), "{}", fb.title);
+        assert!(fb.title.ends_with("for \u{201C}saf\u{201D}"), "{}", fb.title);
+        assert!(!fb.title.contains('\''), "{}", fb.title);
+        assert!(fb.subtitle.starts_with("https://"), "the URL stays in the subtitle");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn keyword_with_terms_is_exclusive_without_fallbacks() {

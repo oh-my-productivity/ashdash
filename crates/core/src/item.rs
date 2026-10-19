@@ -187,3 +187,52 @@ impl Item {
         self
     }
 }
+
+/// The id prefix of the web-search fallbacks that close the list (`providers::websearch`).
+pub const FALLBACK_ID_PREFIX: &str = "fallback:";
+
+impl Item {
+    /// Whether this is a trailing web-search fallback rather than a real hit.
+    pub fn is_fallback(&self) -> bool {
+        self.id.starts_with(FALLBACK_ID_PREFIX)
+    }
+}
+
+/// The index of the first fallback row. Fallbacks are appended after ranking, so they form one block at the end.
+/// `Some(0)` means the list holds nothing but fallbacks (nothing to set them apart from).
+pub fn first_fallback(items: &[Item]) -> Option<usize> {
+    items.iter().position(Item::is_fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(id: &str) -> Item {
+        Item::new(id, "t")
+    }
+
+    #[test]
+    fn no_fallback_in_a_list_of_hits() {
+        assert_eq!(first_fallback(&[]), None);
+        assert_eq!(first_fallback(&[hit("app:/A"), hit("calc")]), None);
+    }
+
+    #[test]
+    fn a_list_of_only_fallbacks_starts_at_zero() {
+        let items = [hit("fallback:g"), hit("fallback:w")];
+        assert_eq!(first_fallback(&items), Some(0));
+    }
+
+    #[test]
+    fn hits_followed_by_fallbacks_give_the_first_fallback_row() {
+        let items = [hit("app:/A"), hit("app:/B"), hit("fallback:g"), hit("fallback:w")];
+        assert_eq!(first_fallback(&items), Some(2));
+        assert!(items[2].is_fallback() && !items[1].is_fallback());
+    }
+
+    #[test]
+    fn the_prefix_must_be_at_the_start_of_the_id() {
+        assert_eq!(first_fallback(&[hit("web:fallback:x")]), None);
+    }
+}

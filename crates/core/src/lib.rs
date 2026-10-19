@@ -28,4 +28,4 @@ mod testperf;
 
 pub use config::{Config, Paths};
 pub use engine::{Engine, Outcome};
-pub use item::{Action, Icon, Item, Mods};
+pub use item::{Action, Icon, Item, Mods, first_fallback};
