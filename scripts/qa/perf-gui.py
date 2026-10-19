@@ -590,7 +590,7 @@ def idle_round(inst, idle_s):
     text = IDLE_BURST1 + IDLE_BURST2
     rows = [dict(r, idle_s=idle_s) for r in typing_stats.key_latencies(keys, events, text) if r["index"] >= len(IDLE_BURST1)]
     delays = typing_stats.event_delays([e for e in events if e["t"] >= t_start])
-    diag = {"idle_s": idle_s, "keys": len(keys), "key_events": len(delays),
+    diag = {"idle_s": idle_s, "n_keys": len(keys), "key_events": len(delays),
             "max_event_age_ms": max([d["age"] or 0.0 for d in delays], default=None),
             "loop_busy_ms": [e["busy"] for e in typing_stats.busy_stretches(events, 100.0)],
             "stall_samples": [l for l in lines if "stall-sample" in l or l.startswith("[ft-stack]")][:80]}
