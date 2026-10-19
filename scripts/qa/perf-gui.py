@@ -16,6 +16,8 @@ Per variant (apps=empty | real | synth5000) and per repetition:
   4. hotkey -> window visible latency, N presses (also `ashdash show` over the socket as a proxy).
   5. quit, start again with the cache now warm: hotkey-ready and first-window times.
 PERF_MODE=typing (variants `heavy`, `heavy-slow`) measures only one thing, the lag of typing a query key by key: see typing_mode().
+PERF_MODE=idle types `pup`, lets the launcher sit idle for 0.3/1/2/4 s (window shown, no input), then types `ppppp` fast, and reports the
+key-to-glyph latency of the second burst per pause length: the late-key bug of the owner's laptop, see idle_mode().
 Results go to $PERF_OUT/results.jsonl, one JSON object per measurement.
 """
 import json, os, plistlib, re, signal, subprocess, sys, threading, time, statistics, shutil
@@ -41,6 +43,10 @@ TYPE_GAP_MS = int(os.environ.get("PERF_TYPE_GAP_MS") or "110")   # typing mode: 
 TYPE_RUNS = int(os.environ.get("PERF_TYPE_RUNS") or "15")   # typing mode: show/type/hide rounds per repetition
 TYPE_VARY = os.environ.get("PERF_TYPE_VARY", "1")   # typing mode: "1" = every round ends in another letter (new result rows, so new icons), "0" = the same text every round
 TYPE_WARMUP = os.environ.get("PERF_TYPE_WARMUP", "1")   # typing mode: "1" = send an ignored key first (see _JXA_TYPE), "0" = type cold
+IDLES = [float(x) for x in (os.environ.get("PERF_IDLES") or "0.3,1,2,4").split(",")]   # idle mode: pauses (seconds) between the two bursts
+IDLE_ROUNDS = int(os.environ.get("PERF_IDLE_ROUNDS") or "12")   # idle mode: rounds per pause length
+IDLE_BURST1 = os.environ.get("PERF_IDLE_FIRST") or "pup"   # idle mode: typed first, 110 ms apart
+IDLE_BURST2 = os.environ.get("PERF_IDLE_SECOND") or "ppppp"   # idle mode: typed after the pause, 50 ms apart (a fast burst)
 SLOW_FILTER_S = float(os.environ.get("PERF_SLOW_FILTER_S", "0.25"))   # heavy-slow: how long its Script Filters take
 HOTKEY = ("ctrl+alt+shift+j", "38", "alt,shift,ctrl")   # config string, key code, flags
 OWNER = "ashdash"
@@ -100,6 +106,11 @@ class Instance:
     def __init__(self, home):
         self.home = home
         env = dict(os.environ, HOME=home, ASHDASH_TRACE="1", ASHDASH_FRAME_TRACE="1")
+        if os.environ.get("PERF_MODE") == "idle":
+            env["ASHDASH_STALL_SAMPLE"] = "1"   # a stack sample of any main-thread stall (crates/app/src/gui/looptrace.rs)
+        for item in (os.environ.get("PERF_APP_ENV") or "").split():   # "NAME=value NAME2=value": extra environment for the app under test
+            if "=" in item:
+                env[item.split("=", 1)[0]] = item.split("=", 1)[1]
         for k in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             env.pop(k, None)
         self.lines = []        # (monotonic time, text)
@@ -526,6 +537,110 @@ def type_timed(text):
     return keys, how
 
 
+# JXA for idle mode: burst 1, a pause with no input at all, burst 2: one process, so nothing but the pause separates the bursts (a second
+# osascript would take a variable time to start and its warm-up key would wake the launcher). Key indexes run on from burst 1 into burst 2.
+_JXA_IDLE = """
+ObjC.import('Foundation');
+function run(argv) {
+  var t1 = argv[0], g1 = parseFloat(argv[1]), idle = parseFloat(argv[2]), t2 = argv[3], g2 = parseFloat(argv[4]);
+  var se = Application('System Events'), out = [], n = 0;
+  se.name();
+  se.keyCode(105);   // F13: ignored by the launcher; the first System Events keystroke is slow by itself
+  $.NSThread.sleepForTimeInterval(0.35);
+  function burst(text, gap, pause) {
+    for (var i = 0; i < text.length; i++) {
+      var t0 = $.NSDate.date.timeIntervalSince1970;
+      se.keystroke(text[i]);
+      out.push('key ' + n + ' ' + text[i] + ' ' + t0 + ' ' + (($.NSDate.date.timeIntervalSince1970 - t0) * 1000));
+      n++;
+      $.NSThread.sleepForTimeInterval(i == text.length - 1 ? pause : gap);
+    }
+  }
+  burst(t1, g1, idle);
+  burst(t2, g2, 0);
+  return out.join('\\n');
+}
+"""
+
+
+def type_idle(idle_s):
+    """Type IDLE_BURST1, wait `idle_s` with no input, type IDLE_BURST2 (System Events). Returns [(index, char, unix-ms, post-ms)]."""
+    r = sh(["osascript", "-l", "JavaScript", "-e", _JXA_IDLE, IDLE_BURST1, "0.11", str(idle_s), IDLE_BURST2, "0.05"], timeout=60 + idle_s)
+    keys = []
+    for line in (r.stdout + r.stderr).splitlines():
+        p = line.split()
+        if len(p) == 5 and p[0] == "key":
+            keys.append((int(p[1]), p[2], float(p[3]) * 1000, float(p[4])))
+    if len(keys) != len(IDLE_BURST1) + len(IDLE_BURST2):
+        log(kind="typing-error", how="system-events-idle", rc=r.returncode, out=(r.stdout + r.stderr)[-400:])
+    return keys
+
+
+def idle_round(inst, idle_s):
+    """Show the launcher, type burst 1, idle, type burst 2, hide. Returns (rows of burst 2, diagnostics) or None."""
+    t_show = time.time()
+    if hotkey_show() is None or not focused_since(inst, t_show):
+        return None
+    time.sleep(0.6)
+    t_start = time.time() * 1000
+    keys = type_idle(idle_s)
+    time.sleep(1.5)
+    lines = [l for t, l in list(inst.lines) if t * 1000 >= t_start - 50]
+    events = typing_stats.parse_trace(lines)
+    text = IDLE_BURST1 + IDLE_BURST2
+    rows = [dict(r, idle_s=idle_s) for r in typing_stats.key_latencies(keys, events, text) if r["index"] >= len(IDLE_BURST1)]
+    delays = typing_stats.event_delays([e for e in events if e["t"] >= t_start])
+    diag = {"idle_s": idle_s, "keys": len(keys), "key_events": len(delays),
+            "max_event_age_ms": max([d["age"] or 0.0 for d in delays], default=None),
+            "loop_busy_ms": [e["busy"] for e in typing_stats.busy_stretches(events, 100.0)],
+            "stall_samples": [l for l in lines if "stall-sample" in l or l.startswith("[ft-stack]")][:80]}
+    hide(inst)
+    time.sleep(0.5)
+    return rows, diag
+
+
+def idle_mode():
+    """PERF_MODE=idle: the owner's report is a key typed after a pause drawn up to 1 s late, not every time. For each pause in PERF_IDLES
+    (interleaved over IDLE_ROUNDS rounds each) type `pup`, pause with the window shown and no input, then type `ppppp` 50 ms apart; the
+    key-to-glyph latency of the second burst is summed up per pause (p50/p95/max, and how many keys were drawn 500 ms or later). The launcher
+    runs with ASHDASH_FRAME_TRACE and ASHDASH_STALL_SAMPLE, so every round also says how old each key was when the app saw it and
+    where the main thread was during a stall."""
+    log(kind="env", accessibility_trusted=probe("trusted")[1], bin=BIN, uptime=sh(["uptime"]).stdout.strip(),
+        idles=IDLES, rounds=IDLE_ROUNDS, first=IDLE_BURST1, second=IDLE_BURST2)
+    variant = VARIANTS[0] if VARIANTS and VARIANTS[0] in ("heavy", "empty", "synth5000") else "heavy"
+    all_rows = []
+    for rep in range(REP_START, REP_START + REPS):
+        home = make_home(variant, f"i{rep}")
+        inst = None
+        try:
+            inst, res = start_timing(variant, rep, home, "idle-start")
+            if not (inst.alive() and res.get("hotkey_ready_ms")):
+                continue
+            hide(inst)
+            time.sleep(5)
+            for n in range(IDLE_ROUNDS * len(IDLES) + 1):
+                idle_s = IDLES[(n - 1) % len(IDLES)] if n else IDLES[0]
+                got = idle_round(inst, idle_s)
+                if got is None:
+                    log(kind="idle-round", rep=rep, round=n, error="launcher did not show or take focus")
+                    continue
+                rows, diag = got
+                log(kind="idle-round", rep=rep, round=n, warmup=(n == 0), keys=rows, **diag)
+                if n > 0:
+                    all_rows += rows
+        finally:
+            if inst is not None:
+                inst.quit()
+        shutil.rmtree(home, ignore_errors=True)
+    summary = typing_stats.summarize_idle(all_rows)
+    log(kind="idle-summary", variant=variant, summary={str(k): v for k, v in summary.items()})
+    failures = typing_stats.check_idle_limits(summary)
+    log(kind="idle-limits", failures=failures)
+    for f in failures:
+        print(f"perf-gui: LIMIT BROKEN: {f}", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def round_text(n):
     """The text typed in round `n` (0 = warm-up). With PERF_TYPE_VARY the last letter changes from round to round: the rows of the last key
     are then new ones, whose icons have to be converted and loaded while the user types, as with a real, varied use. The warm-up round
@@ -607,6 +722,8 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     if os.environ.get("PERF_MODE") == "typing":
         return typing_mode()
+    if os.environ.get("PERF_MODE") == "idle":
+        return idle_mode()
     if os.environ.get("PERF_MODE") == "gap":
         return gap_mode()
     if os.environ.get("PERF_MODE") in ("latency", "mem"):

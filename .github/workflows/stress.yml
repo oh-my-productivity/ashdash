@@ -52,7 +52,7 @@ on:
         default: "40"
         required: false
       perf_mode:
-        description: "perf-gui: PERF_MODE (empty = the full run; typing = key-to-glyph and key-to-results latency of typing a query)"
+        description: "perf-gui: PERF_MODE (empty = the full run; typing = key-to-glyph and key-to-results latency of typing a query; idle = keys typed after a pause)"
         type: string
         default: ""
         required: false
@@ -68,6 +68,22 @@ on:
         required: false
       perf_gap_ms:
         description: "perf-gui typing mode: milliseconds between two keys (empty = 110; 50 is a fast typist)"
+        type: string
+        default: ""
+        required: false
+
+      perf_idles:
+        description: "perf-gui idle mode: pauses in seconds between the two bursts (empty = 0.3,1,2,4)"
+        type: string
+        default: ""
+        required: false
+      perf_idle_rounds:
+        description: "perf-gui idle mode: rounds per pause length (empty = 12)"
+        type: string
+        default: ""
+        required: false
+      perf_env:
+        description: "perf-gui: extra environment for the app under test, e.g. ASHDASH_PRESENT_MODE=fifo (empty = none)"
         type: string
         default: ""
         required: false
@@ -158,6 +174,9 @@ jobs:
           PERF_VARIANTS: ${{ inputs.perf_variants }}
           PERF_REPS: ${{ inputs.perf_reps }}
           PERF_TYPE_GAP_MS: ${{ inputs.perf_gap_ms }}
+          PERF_IDLES: ${{ inputs.perf_idles }}
+          PERF_IDLE_ROUNDS: ${{ inputs.perf_idle_rounds }}
+          PERF_APP_ENV: ${{ inputs.perf_env }}
       - name: Upload the results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

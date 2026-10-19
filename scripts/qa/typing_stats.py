@@ -71,7 +71,8 @@ def percentile(values, p):
 
 def key_latencies(keys, events, text):
     """For each key `(index, char, t_ms)` the probe posted (typing `text`), the latency in ms of
-    * `glyph`: from the key to the first traced frame at or after it whose query field already held `text[:index + 1]`,
+    * `glyph`: from the key to the first traced frame at or after it whose query field already held `text[:index + 1]` (or more: when the
+      main thread was blocked, several keys are drawn by one frame),
     * `post_ms` (when the key tuple has a fourth item): how long the synthetic key press itself took to be handed over by the test driver;
       see [`POST_TAINTED_MS`],
     * `results`: from the key to the first `Final` results (or `Rerun`: any answer after the final one) of a query that was
@@ -84,7 +85,7 @@ def key_latencies(keys, events, text):
         post_ms = key[3] if len(key) > 3 else None
         prefix = text[: index + 1]
         glyph = next(
-            (e["t"] - t0 for e in events if e["type"] == "frame" and e["t"] >= t0 and e.get("q") == prefix),
+            (e["t"] - t0 for e in events if e["type"] == "frame" and e["t"] >= t0 and e.get("q", "").startswith(prefix)),
             None,
         )
         results = next(
@@ -256,4 +257,51 @@ def check_limits(summary, variant, glyph_p95=GLYPH_P95_MS, results_p95=None):
             out.append(f"{variant}: no key-to-results latency was measured")
         elif r["p95"] > limit_results:
             out.append(f"{variant}: key-to-results p95 {r['p95']} ms is over {limit_results} ms")
+    return out
+
+
+# --- typing after a pause (PERF_MODE=idle): the late-key bug of the owner's laptop, where a key typed after the launcher sat idle was
+# drawn up to a second late. Rows are the dicts of [`key_latencies`] with `idle_s` (the pause before the burst) added.
+
+# a key drawn this long after it was typed is a stall (the bug is a ~1000 ms one); the pass criterion is that none happen
+STALL_MS = 500.0
+IDLE_GLYPH_P95_MS = 50.0
+
+
+def summarize_idle(rows):
+    """Per pause length: p50/p95/max of the key-to-glyph latency of the keys typed after the pause, how many were drawn `STALL_MS` or
+    later (`stalls`), how many never were (`missing`), and how many the test driver handed over late (`tainted`, left out)."""
+    out = {}
+    for idle in sorted({r["idle_s"] for r in rows}):
+        sel = [r for r in rows if r["idle_s"] == idle]
+        ok = [r for r in sel if r.get("post_ms", 0.0) <= POST_TAINTED_MS]
+        got = [r["glyph_ms"] for r in ok if r["glyph_ms"] is not None]
+        out[idle] = {
+            "n": len(got),
+            "missing": len(ok) - len(got),
+            "tainted": len(sel) - len(ok),
+            "p50": percentile(got, 50),
+            "p95": percentile(got, 95),
+            "max": max(got) if got else None,
+            "stalls": sum(1 for g in got if g >= STALL_MS),
+        }
+    return out
+
+
+def check_idle_limits(summary, p95_limit=IDLE_GLYPH_P95_MS, stall_limit=STALL_MS):
+    """The ways the per-pause `summary` breaks the limits (p95 under `p95_limit`, no key drawn `stall_limit` or later); empty = fine.
+    No data is a failure."""
+    out = []
+    if not summary:
+        return ["idle: no key was measured"]
+    for idle, s in summary.items():
+        if s["n"] == 0:
+            out.append(f"idle {idle:g} s: no key-to-glyph latency was measured")
+            continue
+        if s["p95"] > p95_limit:
+            out.append(f"idle {idle:g} s: key-to-glyph p95 {s['p95']} ms is over {p95_limit:g} ms")
+        if s["max"] >= stall_limit:
+            out.append(f"idle {idle:g} s: {s['stalls']} of {s['n']} keys were drawn {stall_limit:g} ms or later (max {s['max']} ms)")
+        if s["missing"] > s["n"] // 2:
+            out.append(f"idle {idle:g} s: {s['missing']} of {s['n'] + s['missing']} keys were never seen drawn")
     return out

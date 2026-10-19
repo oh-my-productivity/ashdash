@@ -195,3 +195,40 @@ class EventTraceTest(unittest.TestCase):
         self.assertIn("<-- late", out)
         self.assertIn("verdict:", out)
         self.assertIn("busy 1003.1 ms", out)
+
+
+def idle_row(idle, glyph, post=3.0, index=3):
+    return {"index": index, "char": "p", "glyph_ms": glyph, "results_ms": None, "post_ms": post, "idle_s": idle}
+
+
+class IdleTest(unittest.TestCase):
+    def test_summary_is_per_pause_and_leaves_out_late_driver_keys(self):
+        rows = [idle_row(1.0, g) for g in (2.0, 3.0, 4.0, 5.0)] + [idle_row(2.0, 900.0, post=500.0), idle_row(2.0, 6.0)]
+        s = ts.summarize_idle(rows)
+        self.assertEqual(sorted(s), [1.0, 2.0])
+        self.assertEqual((s[1.0]["n"], s[1.0]["p50"], s[1.0]["max"], s[1.0]["stalls"]), (4, 3.0, 5.0, 0))
+        self.assertEqual((s[2.0]["n"], s[2.0]["tainted"], s[2.0]["max"]), (1, 1, 6.0))
+        self.assertEqual(ts.check_idle_limits(s), [])
+
+    def test_a_one_second_key_breaks_the_limit_even_when_p95_is_fine(self):
+        rows = [idle_row(1.0, 3.0)] * 99 + [idle_row(1.0, 1004.0)]
+        s = ts.summarize_idle(rows)
+        self.assertEqual(s[1.0]["p95"], 3.0)
+        self.assertEqual(s[1.0]["stalls"], 1)
+        out = ts.check_idle_limits(s)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("1 of 100 keys were drawn 500 ms or later (max 1004.0 ms)", out[0])
+
+    def test_a_slow_p95_and_no_data_fail(self):
+        rows = [idle_row(0.3, 60.0)] * 5
+        out = ts.check_idle_limits(ts.summarize_idle(rows))
+        self.assertIn("p95 60.0 ms is over 50 ms", out[0])
+        self.assertEqual(ts.check_idle_limits({}), ["idle: no key was measured"])
+        self.assertIn("no key-to-glyph latency", ts.check_idle_limits(ts.summarize_idle([idle_row(1.0, None)]))[0])
+
+
+class BatchedKeysTest(unittest.TestCase):
+    def test_keys_drawn_by_one_late_frame_all_get_that_frame(self):
+        ev = ts.parse_trace(['[ft] t=2005.0 frame dur=0.2 gap=1003.0 text=3 q="puppp" gen=9 rows=0 logic{} ui{}'])
+        rows = ts.key_latencies([(2, "p", 1000.0), (3, "p", 1050.0), (4, "p", 1100.0)], ev, "puppp")
+        self.assertEqual([r["glyph_ms"] for r in rows], [1005.0, 955.0, 905.0])

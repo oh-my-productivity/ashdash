@@ -81,6 +81,18 @@ def main(path):
     limits = [r for r in rows if r.get("kind") == "typing-limits"]
     for r in limits:
         out.append("\nTyping limits: " + ("all kept." if not r["failures"] else "**BROKEN**: " + "; ".join(r["failures"])))
+    idle = [r for r in rows if r.get("kind") == "idle-summary"]
+    if idle:
+        out.append("\n| keys typed after a pause (`ppppp`, 50 ms apart) | variant | n | glyph p50 ms | glyph p95 ms | glyph max ms | drawn 500 ms or later | not seen | driver-late |")
+        out.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+        for r in idle:
+            for pause, d in sorted(r["summary"].items(), key=lambda kv: float(kv[0])):
+                out.append(f"| idle {pause} s | {r['variant']} | {d['n']} | {fmt(d['p50'])} | {fmt(d['p95'])} | {fmt(d['max'])} | {d['stalls']} | {d['missing']} | {d['tainted']} |")
+        busy = [b for r in rows if r.get("kind") == "idle-round" for b in r.get("loop_busy_ms", [])]
+        out.append(f"\nMain-thread stretches of 100 ms or more without returning to the run loop: {len(busy)} ({', '.join(str(round(b)) for b in sorted(busy)[-10:])})")
+    for r in rows:
+        if r.get("kind") == "idle-limits":
+            out.append("\nIdle-typing limits: " + ("all kept." if not r["failures"] else "**BROKEN**: " + "; ".join(r["failures"])))
     print("\n".join(out))
 
 
