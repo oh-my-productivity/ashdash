@@ -144,3 +144,31 @@ def report(events, stall_ms=30.0):
     for e in sorted(slow, key=lambda e: -e.get("dur", 0.0))[:10]:
         lines.append("  " + e["line"].split("] ", 1)[-1])
     return "\n".join(lines)
+
+
+# Generous limits (the CI runner is a shared virtual machine): a typed character is drawn within about three 60 Hz frames, and the
+# answer of a query that only reads memory arrives within 150 ms; the slow variant runs two Script Filters of 250 ms each, which side by
+# side take about 300 ms and one after the other 550 ms.
+GLYPH_P95_MS = 50.0
+RESULTS_P95_MS = {"heavy": 150.0, "heavy-slow": 450.0}
+
+
+def check_limits(summary, variant, glyph_p95=GLYPH_P95_MS, results_p95=None):
+    """The ways `summary` (the dict of [`summarize`]) breaks the limits, as sentences; empty = fine. Missing data is a failure: a run
+    that measured nothing must not pass."""
+    limit_results = (results_p95 or RESULTS_P95_MS).get(variant)
+    out = []
+    g = summary["all"]["glyph_ms"]
+    if g["n"] == 0:
+        out.append(f"{variant}: no key-to-glyph latency was measured")
+    elif g["p95"] > glyph_p95:
+        out.append(f"{variant}: key-to-glyph p95 {g['p95']} ms is over {glyph_p95} ms")
+    if g["n"] and g["missing"] > g["n"] // 2:
+        out.append(f"{variant}: {g['missing']} of {g['n'] + g['missing']} typed characters were never seen drawn")
+    r = summary["all"]["results_ms"]
+    if limit_results is not None:
+        if r["n"] == 0:
+            out.append(f"{variant}: no key-to-results latency was measured")
+        elif r["p95"] > limit_results:
+            out.append(f"{variant}: key-to-results p95 {r['p95']} ms is over {limit_results} ms")
+    return out

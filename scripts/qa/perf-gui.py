@@ -568,6 +568,7 @@ def typing_mode():
     `typing` line per round and one `typing-summary` per variant (p50/p95 over all keys, and per key position) go to results.jsonl."""
     log(kind="env", accessibility_trusted=probe("trusted")[1], bin=BIN, uptime=sh(["uptime"]).stdout.strip(),
         apps={v: count_apps(v) for v in VARIANTS}, text=TYPE_TEXT, gap_ms=TYPE_GAP_MS, runs=TYPE_RUNS)
+    failures = []
     for variant in VARIANTS:
         all_rows = []
         for rep in range(REP_START, REP_START + REPS):
@@ -592,7 +593,13 @@ def typing_mode():
                 if inst is not None:
                     inst.quit()
             shutil.rmtree(home, ignore_errors=True)
-        log(kind="typing-summary", variant=variant, text=TYPE_TEXT, gap_ms=TYPE_GAP_MS, **typing_stats.summarize(all_rows))
+        summary = typing_stats.summarize(all_rows)
+        log(kind="typing-summary", variant=variant, text=TYPE_TEXT, gap_ms=TYPE_GAP_MS, **summary)
+        failures += typing_stats.check_limits(summary, variant)
+    log(kind="typing-limits", failures=failures)
+    for f in failures:
+        print(f"perf-gui: LIMIT BROKEN: {f}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def main():
@@ -634,4 +641,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

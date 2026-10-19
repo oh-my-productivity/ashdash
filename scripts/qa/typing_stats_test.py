@@ -106,3 +106,29 @@ class ReportTest(unittest.TestCase):
         ev = ts.parse_trace(['[ft] t=5.0 frame dur=0.5 gap=250.0 text=1 q="p" gen=1 rows=0 logic{} ui{}'])
         self.assertIn("<-- long gap", ts.report(ev))
         self.assertIn("no answer traced", ts.report(ev))
+
+
+class LimitsTest(unittest.TestCase):
+    @staticmethod
+    def rows(glyph, results):
+        return [{"index": i, "char": "p", "glyph_ms": g, "results_ms": r} for i, (g, r) in enumerate(zip(glyph, results))]
+
+    def test_a_fast_run_passes(self):
+        s = ts.summarize(self.rows([5.0, 12.0, 20.0], [20.0, 30.0, 40.0]))
+        self.assertEqual(ts.check_limits(s, "heavy"), [])
+
+    def test_a_slow_glyph_or_answer_fails_with_a_sentence(self):
+        s = ts.summarize(self.rows([5.0, 12.0, 80.0], [20.0, 30.0, 400.0]))
+        out = ts.check_limits(s, "heavy")
+        self.assertEqual(len(out), 2, out)
+        self.assertIn("key-to-glyph p95 80.0 ms is over 50.0 ms", out[0])
+        self.assertIn("key-to-results p95 400.0 ms is over 150.0 ms", out[1])
+        # the slow variant is allowed longer for its answers, never for the typed character
+        self.assertEqual(len(ts.check_limits(s, "heavy-slow")), 1)
+
+    def test_nothing_measured_is_a_failure_not_a_pass(self):
+        s = ts.summarize(self.rows([None, None, None], [None, None, None]))
+        out = ts.check_limits(s, "heavy")
+        self.assertEqual(len(out), 2, out)
+        self.assertTrue(all("no key-to" in x for x in out))
+        self.assertEqual(ts.check_limits(ts.summarize([]), "heavy-slow")[0], "heavy-slow: no key-to-glyph latency was measured")
