@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The launcher window screenshots (tests/e2e/screenshots/launcher-look.sh) on a GitHub-hosted macOS runner:
+#   bash tests/e2e/ci/run-launcher-look.sh
+# The empty launcher and the launcher with results go to $RUNNER_TEMP/ashdash-ci/launcher-look/shots/*.png, which the `launcher-look` job
+# of e2e.yml uploads as an artifact (7 days), together with window.txt (the window's size in points). They are evidence for a person to
+# look at; nothing compares them with reference images, so the job fails only when the script cannot take them.
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=common.sh
+. "$here/common.sh"
+ci_require_hosted
+cd "$CI_ROOT" || exit 1
+
+art=$(ci_artifacts launcher-look)
+export E2E_ARTIFACTS=$art E2E_AUTO_TCC=${E2E_AUTO_TCC:-1}
+bash tests/e2e/screenshots/launcher-look.sh
+rc=$?
+n=$(find "$art/shots" -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
+{
+  echo "### Launcher window on $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+  echo "$n screenshots in the artifact \`launcher-look\` (empty state and with results)."
+  echo '```'
+  cat "$art/window.txt" 2>/dev/null
+  echo '```'
+} | ci_summary
+[ "$n" -ge 10 ] || { echo "run-launcher-look: only $n screenshots were taken (expected at least 10)" >&2; rc=1; }
+exit "$rc"
