@@ -9,9 +9,10 @@ launcher may have is the theme border (1 device pixel, #242628 by default). Two 
 
 * `<state>-<n>.png`, `screencapture -o` (no shadow): the outermost ring of pixels (all four edges, corners included) must be fully
   transparent or have a luminance (composited over black) of at most N (default 80); the second ring is reported.
-* `<state>-with-shadow.png`: the window is located inside the capture by its top and bottom rows; the 1 pixel ring just OUTSIDE the
-  border, corners included, must be dark or transparent too (a shadow is dark; a system rim or halo is not). A capture without
-  any margin (no shadow) has no such ring and is reported as such.
+* `<state>-with-shadow.png` (the window as the compositor draws it): the window is the box of opaque pixels. Its outermost two rings
+  must equal the window-only capture (a step of more than 12 per channel means the compositor drew something over the edge: on
+  macOS 26 a light "Liquid Glass" rim) and not be light; the 1 pixel ring just OUTSIDE the border, corners included, must be dark or
+  transparent too (a shadow is dark; a halo is not).
 
 Pure Python 3 (no Pillow): the CI runners do not promise it. Reads 8-bit RGB / RGBA / gray / gray+alpha PNGs, not interlaced.
 Exit status: 0 all clear, 1 a light edge pixel (or no capture at all), 2 usage / unreadable image.
@@ -168,23 +169,18 @@ def describe(pts_img, pts):
     return ", ".join(f"{n}x rgba{p}" for p, n in c.most_common(3))
 
 
-def locate(big, small):
-    """Offset (dx, dy) of `small` inside `big`, found by its top and bottom row; None when it does not match."""
-    if big.w < small.w or big.h < small.h:
+def opaque_box(img, min_alpha=250):
+    """(x0, y0, x1, y1), inclusive, of the pixels that are (nearly) opaque: the window inside a capture that has a shadow margin."""
+    xs, ys = [], []
+    for y in range(img.h):
+        row = img.rows[y]
+        hit = [x for x in range(img.w) if row[4 * x + 3] >= min_alpha]
+        if hit:
+            xs += [hit[0], hit[-1]]
+            ys.append(y)
+    if not xs:
         return None
-
-    def close(a, b):
-        return all(abs(a[i] - b[i]) <= 12 for i in range(len(a)))
-
-    top, bottom = small.rows[0], small.rows[small.h - 1]
-    for dy in range(big.h - small.h + 1):
-        for dx in range(big.w - small.w + 1):
-            seg_t = big.rows[dy][4 * dx : 4 * (dx + small.w)]
-            if close(seg_t, top):
-                seg_b = big.rows[dy + small.h - 1][4 * dx : 4 * (dx + small.w)]
-                if close(seg_b, bottom):
-                    return dx, dy
-    return None
+    return min(xs), ys[0], max(xs), ys[-1]
 
 
 def check_plain(path, max_lum, out):
@@ -204,7 +200,14 @@ def check_plain(path, max_lum, out):
     return bad, img
 
 
+MAX_STEP = 12  # per channel: how far a composited edge pixel may differ from the same pixel of the window-only capture
+
+
 def check_shadow(path, ref, max_lum, out):
+    """The capture WITH the window as the compositor draws it (shadow, and on macOS 26 the system's edge rim).
+
+    The window is found as the box of opaque pixels. Its outermost two rings must equal the window-only capture `ref` (within
+    MAX_STEP per channel: a system rim adds light there) and not be light; the ring just outside must be dark or transparent."""
     img = read_png(path)
     name = os.path.basename(path)
     bad = 0
@@ -214,17 +217,37 @@ def check_shadow(path, ref, max_lum, out):
     if v > max_lum:
         out.append(f"  FAIL {name}: light pixel on the capture's outer ring at {at}: rgba{p}")
         bad += 1
-    if (img.w, img.h) == (ref.w, ref.h):
-        out.append("  no margin around the window (no shadow drawn): nothing outside the border to check")
-        return bad
-    pos = locate(img, ref)
-    if pos is None:
-        out.append(f"  FAIL {name}: the window could not be found inside the capture (top and bottom rows do not match)")
+    box = opaque_box(img)
+    if box is None:
+        out.append(f"  FAIL {name}: no opaque pixel: the window is not in the capture")
         return bad + 1
-    dx, dy = pos
-    out.append(f"  window found at +{dx},+{dy}; margins left {dx}, right {img.w - ref.w - dx}, top {dy}, bottom {img.h - ref.h - dy}")
-    outside = ring(img, dx - 1, dy - 1, dx + ref.w, dy + ref.h)
-    outside = [(x, y) for (x, y) in outside if not (dx <= x < dx + ref.w and dy <= y < dy + ref.h)]
+    x0, y0, x1, y1 = box
+    if (x1 - x0 + 1, y1 - y0 + 1) != (ref.w, ref.h):
+        out.append(f"  FAIL {name}: the opaque box is {x1 - x0 + 1}x{y1 - y0 + 1} but the window-only capture is {ref.w}x{ref.h}")
+        return bad + 1
+    out.append(f"  window at +{x0},+{y0}; margins left {x0}, right {img.w - 1 - x1}, top {y0}, bottom {img.h - 1 - y1}")
+    for depth in (0, 1):
+        got = ring(img, x0 + depth, y0 + depth, x1 - depth, y1 - depth)
+        step, at, gp = 0, None, None
+        for x, y in got:
+            e = ref.px(x - x0, y - y0)
+            g = img.px(x, y)
+            d = max(abs(e[i] - g[i]) for i in range(3))
+            if d > step:
+                step, at, gp = d, (x - x0, y - y0), g
+        v, vat, vp = worst(img, got)
+        what = "outermost" if depth == 0 else "second"
+        out.append(f"  {what} ring of the window as composited: [{describe(img, got)}] brightest {v:.0f}, largest step from the window-only capture {step}")
+        if step > MAX_STEP:
+            out.append(
+                f"  FAIL {name}: the compositor lightened the {what} ring: window pixel {at} is rgba{gp}, the window-only capture has "
+                f"rgba{ref.px(at[0], at[1])} (step {step} > {MAX_STEP}): a system rim"
+            )
+            bad += 1
+        if v > max_lum:
+            out.append(f"  FAIL {name}: light pixel in the {what} ring at {vat}: rgba{vp} (luminance {v:.0f} > {max_lum})")
+            bad += 1
+    outside = ring(img, x0 - 1, y0 - 1, x1 + 1, y1 + 1)
     v, at, p = worst(img, outside)
     out.append(f"  1 px outside the border (corners included): [{describe(img, outside)}] brightest {v:.0f}")
     if v > max_lum:
@@ -297,7 +320,7 @@ def selftest():
     run("clean", plain(None), shadowed(10, None), False)
     run("white-edge", plain((250, 250, 250, 255)), shadowed(10, None, plain((250, 250, 250, 255))), True)
     run("white-halo", plain(None), shadowed(10, (240, 240, 240, 200)), True)
-    run("transparent-edge", plain((0, 0, 0, 0)), shadowed(10, None, plain((0, 0, 0, 0))), False)
+    run("system-rim", plain(None), shadowed(10, None, lambda x, y: (58, 60, 61, 255) if x in (0, 39) or y in (0, 19) else window(x, y)), True)
     sub = os.path.join(d, "empty-dir")
     os.makedirs(sub)
     assert check_dir(sub, MAX_LUM_DEFAULT, []) == 1
