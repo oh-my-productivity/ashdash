@@ -36,9 +36,10 @@ CYCLES = int(os.environ.get("PERF_CYCLES", "20"))
 LAT_N = int(os.environ.get("PERF_LAT_N", "10"))
 VARIANTS = os.environ.get("PERF_VARIANTS", "empty,real,synth5000").split(",")
 QUERY = os.environ.get("PERF_QUERY", "saf")
-TYPE_TEXT = os.environ.get("PERF_TYPE_TEXT", "pup")      # typing mode: what is typed, key by key
-TYPE_GAP_MS = int(os.environ.get("PERF_TYPE_GAP_MS", "110"))   # typing mode: time between two keys (a quick typist)
-TYPE_RUNS = int(os.environ.get("PERF_TYPE_RUNS", "15"))   # typing mode: show/type/hide rounds per repetition
+TYPE_TEXT = os.environ.get("PERF_TYPE_TEXT") or "pup"      # typing mode: what is typed, key by key
+TYPE_GAP_MS = int(os.environ.get("PERF_TYPE_GAP_MS") or "110")   # typing mode: time between two keys (a quick typist)
+TYPE_RUNS = int(os.environ.get("PERF_TYPE_RUNS") or "15")   # typing mode: show/type/hide rounds per repetition
+TYPE_WARMUP = os.environ.get("PERF_TYPE_WARMUP", "1")   # typing mode: "1" = send an ignored key first (see _JXA_TYPE), "0" = type cold
 SLOW_FILTER_S = float(os.environ.get("PERF_SLOW_FILTER_S", "0.25"))   # heavy-slow: how long its Script Filters take
 HOTKEY = ("ctrl+alt+shift+j", "38", "alt,shift,ctrl")   # config string, key code, flags
 OWNER = "ashdash"
@@ -492,6 +493,10 @@ ObjC.import('Foundation');
 function run(argv) {
   var text = argv[0], gap = parseFloat(argv[1]), se = Application('System Events'), out = [];
   se.name();   // first call: connect to System Events before the first timed key
+  if (argv[2] === '1') {   // the first keystroke through System Events is slow by itself: send one the launcher ignores (F13), then let the app go idle again
+    se.keyCode(105);
+    $.NSThread.sleepForTimeInterval(0.35);
+  }
   for (var i = 0; i < text.length; i++) {
     out.push('key ' + i + ' ' + text[i] + ' ' + $.NSDate.date.timeIntervalSince1970);
     se.keystroke(text[i]);
@@ -508,7 +513,7 @@ def type_timed(text):
     if os.environ.get("PERF_TYPE_VIA") == "cgevent":
         r, how = sh([PROBE, "typetimed", text, str(TYPE_GAP_MS)], timeout=30), "cgevent"
     else:
-        r, how = sh(["osascript", "-l", "JavaScript", "-e", _JXA_TYPE, text, str(TYPE_GAP_MS / 1000.0)], timeout=60), "system-events"
+        r, how = sh(["osascript", "-l", "JavaScript", "-e", _JXA_TYPE, text, str(TYPE_GAP_MS / 1000.0), TYPE_WARMUP], timeout=60), "system-events"
     keys = []
     for line in (r.stdout + r.stderr).splitlines():
         p = line.split()

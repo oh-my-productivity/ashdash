@@ -66,6 +66,11 @@ on:
         type: string
         default: ""
         required: false
+      perf_gap_ms:
+        description: "perf-gui typing mode: milliseconds between two keys (empty = 110; 50 is a fast typist)"
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -152,6 +157,7 @@ jobs:
           PERF_MODE: ${{ inputs.perf_mode }}
           PERF_VARIANTS: ${{ inputs.perf_variants }}
           PERF_REPS: ${{ inputs.perf_reps }}
+          PERF_TYPE_GAP_MS: ${{ inputs.perf_gap_ms }}
       - name: Upload the results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
