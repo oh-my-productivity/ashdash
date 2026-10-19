@@ -54,7 +54,9 @@ capture() { # capture <state>: six window-only captures (no shadow), one with th
   done
   screencapture -l "$id" -x "$SHOTS/$state-with-shadow.png" 2>>"$ART/log.txt"
   screencapture -x "$SHOTS/$state-screen.png" 2>>"$ART/log.txt"
-  log "$state: $(ls "$SHOTS" | grep -c "^$state-") images"
+  n=0
+  for f in "$SHOTS/$state-"*; do [ -e "$f" ] && n=$((n + 1)); done
+  log "$state: $n images"
 }
 
 HOME=$LOOK_HOME "$GUI_EXEC" --detach -- "$BIN" >>"$ART/log.txt" 2>&1
