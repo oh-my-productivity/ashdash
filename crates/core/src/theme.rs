@@ -194,10 +194,10 @@ impl Default for Theme {
             result_text_selected: [255, 255, 255, 255],
             result_text_size: 17.0,
             result_subtext: [255, 255, 255, 126],
-            result_subtext_selected: [255, 255, 255, 203],
+            result_subtext_selected: [255, 255, 255, 0xE6],
             result_subtext_size: 12.0,
-            result_selected_background: [53, 129, 136, 255],
-            result_roundness: 8.0,
+            result_selected_background: [0x2C, 0x6E, 0x74, 255],
+            result_roundness: 4.0,
             icon_size: 36.0,
             separator: [203, 203, 203, 40],
         }
@@ -361,6 +361,59 @@ mod tests {
         assert_eq!(t.search_text, [255, 255, 255, 255]);
         assert_eq!(t.search_caret, [255, 255, 255, 255]);
         assert_eq!(t.search_caret_width, 1.0);
+    }
+
+    /// WCAG 2.x relative luminance of an opaque colour.
+    fn relative_luminance(c: [u8; 3]) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    }
+
+    /// `fg` (with its alpha) over the opaque `bg`.
+    fn over(fg: Rgba, bg: Rgba) -> [u8; 3] {
+        let a = f64::from(fg[3]) / 255.0;
+        let mix = |f: u8, b: u8| (f64::from(f) * a + f64::from(b) * (1.0 - a)).round() as u8;
+        [mix(fg[0], bg[0]), mix(fg[1], bg[1]), mix(fg[2], bg[2])]
+    }
+
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        let (la, lb) = (relative_luminance(a), relative_luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn the_selected_row_defaults_are_the_accessible_squarer_look() {
+        let t = Theme::default();
+        assert_eq!(t.result_selected_background, [0x2C, 0x6E, 0x74, 0xFF]);
+        assert_eq!(t.result_roundness, 4.0);
+        assert_eq!(t.result_text_selected, [255, 255, 255, 255]);
+        assert_eq!(t.result_subtext_selected, [255, 255, 255, 0xE6]);
+    }
+
+    #[test]
+    fn text_on_the_selection_meets_wcag_aa() {
+        let t = Theme::default();
+        let fill = t.result_selected_background;
+        assert_eq!(fill[3], 255, "the contrast below assumes an opaque fill");
+        let fill_rgb = [fill[0], fill[1], fill[2]];
+        let title = contrast(over(t.result_text_selected, fill), fill_rgb);
+        let subtitle = contrast(over(t.result_subtext_selected, fill), fill_rgb);
+        assert!(title >= 4.5, "title on the selection: {title:.2}");
+        assert!(subtitle >= 4.5, "subtitle and hint on the selection: {subtitle:.2}");
+        // the unselected text on the (opaque) panel colour, and the selection as a shape against the panel (WCAG 1.4.11)
+        let panel = t.window_color;
+        let panel_rgb = [panel[0], panel[1], panel[2]];
+        assert!(contrast(over(t.result_text, panel), panel_rgb) >= 4.5);
+        assert!(contrast(over(t.result_subtext, panel), panel_rgb) >= 4.5);
+        let shape = contrast(fill_rgb, panel_rgb);
+        assert!(shape >= 3.0, "selection against the panel: {shape:.2}");
     }
 
     fn theme_with(window: &str, search: &str) -> Theme {
