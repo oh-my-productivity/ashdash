@@ -10,8 +10,9 @@
 #   3. `ashdash show` -> the EMPTY state; several captures a third of a second apart (the caret blinks, so one of them has it),
 #      once with and once without the window shadow; the window's size and position are written to window.txt,
 #   4. `ashdash search saf` -> the state WITH results (the panel grows downward); the same captures.
-#   4a. the Down arrow twice (System Events, in the GUI session) -> `fbsel`: the second web-search fallback selected, so the hairline above
-#      the first fallback, an unselected fallback row (no URL) and the selected one (with its URL in mono) are all on screen.
+#   4a. a query nothing matches (`zzqxvk`) -> `fbonly`: only the web-search fallbacks, the first selected (its URL in mono), the others
+#      without URL. (The hairline above the first fallback is in `results`. Sending the Down arrow from a GUI-session job made the
+#      launcher lose focus and hide, so selecting a later fallback is not captured.)
 #   4b. a path query into a deep folder made under the temporary HOME -> `longpath`: rows whose path subtitle is far wider than the text
 #      column, so the middle elision (`~/…/Final Drafts/file`) and the text stopping before the hint column can be seen.
 #   5. edge-check.py reads the captures: the outermost pixel ring of every no-shadow capture, and the ring just outside the border in the
@@ -74,13 +75,6 @@ mkdir -p "$LOOK_HOME/$LONG_REL"
 : >"$LOOK_HOME/$LONG_REL/Meeting notes with the regional finance leads and the audit committee.md"
 : >"$LOOK_HOME/$LONG_REL/short.txt"
 
-press_down() { # press_down <n>: the Down arrow n times; the launcher has the key focus, the keys are sent from the GUI session
-  local i
-  for i in $(seq 1 "$1"); do
-    "$GUI_EXEC" --timeout 30 -- osascript -e 'tell application "System Events" to key code 125' >>"$ART/log.txt" 2>&1; sleep 0.4
-  done
-}
-
 HOME=$LOOK_HOME "$GUI_EXEC" --detach -- "$BIN" >>"$ART/log.txt" 2>&1
 up=""
 for _ in $(seq 1 40); do
@@ -95,8 +89,9 @@ HOME=$LOOK_HOME "$BIN" show >>"$ART/log.txt" 2>&1; sleep 2
 capture empty || rc=1
 HOME=$LOOK_HOME "$BIN" search saf >>"$ART/log.txt" 2>&1; sleep 2.5
 capture results || rc=1
-press_down 2; sleep 1
-capture fbsel || rc=1
+# a query nothing matches: only the web-search fallbacks remain, the first one selected (its URL shown in mono), the others without URL
+HOME=$LOOK_HOME "$BIN" search zzqxvk >>"$ART/log.txt" 2>&1; sleep 2.5
+capture fbonly || rc=1
 HOME=$LOOK_HOME "$BIN" search "~/$LONG_REL/" >>"$ART/log.txt" 2>&1; sleep 2.5
 capture longpath || rc=1
 cat "$ART/window.txt" 2>/dev/null

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The launcher window screenshots (tests/e2e/screenshots/launcher-look.sh) on a GitHub-hosted macOS runner:
 #   bash tests/e2e/ci/run-launcher-look.sh
-# The empty launcher, the launcher with results ("saf"), with the second web-search fallback selected (`fbsel`) and with long path
+# The empty launcher, the launcher with results ("saf"), with only web-search fallbacks (`fbonly`) and with long path
 # subtitles (`longpath`) go to $RUNNER_TEMP/ashdash-ci/launcher-look/shots/*.png, which the `launcher-look` job
 # of e2e.yml uploads as an artifact (7 days), together with window.txt (the window's size in points). They are evidence for a person to
 # look at; the job fails when the script cannot take them or when the edge check finds a light pixel on the window's edge.
@@ -19,7 +19,7 @@ rc=$?
 n=$(find "$art/shots" -name '*.png' 2>/dev/null | wc -l | tr -d ' ')
 {
   echo "### Launcher window on $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
-  echo "$n screenshots in the artifact \`launcher-look\` (empty state, with results, the second fallback selected, long path subtitles)."
+  echo "$n screenshots in the artifact \`launcher-look\` (empty state, with results, only fallbacks, long path subtitles)."
   echo '```'
   cat "$art/window.txt" 2>/dev/null
   echo '```'
