@@ -485,6 +485,40 @@ def cycle_block_short(inst, variant, rep):
     log(kind="mem", variant=variant, rep=rep, snaps=[base, shown, typed, h1, h10])
 
 
+# JXA: for each character note the wall clock, then send it as a System Events keystroke (the way the smoke test types), `gap` seconds apart.
+# The clock is read right before the Apple Event goes out, so the event's own delivery (a few ms) counts as part of the measured latency.
+_JXA_TYPE = """
+ObjC.import('Foundation');
+function run(argv) {
+  var text = argv[0], gap = parseFloat(argv[1]), se = Application('System Events'), out = [];
+  se.name();   // first call: connect to System Events before the first timed key
+  for (var i = 0; i < text.length; i++) {
+    out.push('key ' + i + ' ' + text[i] + ' ' + $.NSDate.date.timeIntervalSince1970);
+    se.keystroke(text[i]);
+    $.NSThread.sleepForTimeInterval(gap);
+  }
+  return out.join('\\n');
+}
+"""
+
+
+def type_timed(text):
+    """Type `text` key by key, TYPE_GAP_MS apart. Returns ([(index, char, unix-ms)], method). PERF_TYPE_VIA=cgevent uses the probe's
+    synthetic CGEvents instead of System Events (CGEvents posted by the probe did not reach the launcher on the CI runner)."""
+    if os.environ.get("PERF_TYPE_VIA") == "cgevent":
+        r, how = sh([PROBE, "typetimed", text, str(TYPE_GAP_MS)], timeout=30), "cgevent"
+    else:
+        r, how = sh(["osascript", "-l", "JavaScript", "-e", _JXA_TYPE, text, str(TYPE_GAP_MS / 1000.0)], timeout=60), "system-events"
+    keys = []
+    for line in (r.stdout + r.stderr).splitlines():
+        p = line.split()
+        if len(p) == 4 and p[0] == "key":
+            keys.append((int(p[1]), p[2], float(p[3]) * 1000))
+    if len(keys) != len(text):
+        log(kind="typing-error", how=how, rc=r.returncode, out=(r.stdout + r.stderr)[-400:])
+    return keys, how
+
+
 def typing_round(inst, text):
     """Show the launcher, type `text` key by key, wait for the answers, hide. Returns the per-key latencies and the slow frames."""
     t_show = time.time()
@@ -492,24 +526,23 @@ def typing_round(inst, text):
         return None
     time.sleep(0.6)   # let the first frame, the focus and any start-up work settle
     t_start = time.time() * 1000
-    r = sh([PROBE, "typetimed", text, str(TYPE_GAP_MS)], timeout=30)
-    keys = []
-    for line in r.stdout.splitlines():
-        p = line.split()
-        if len(p) == 4 and p[0] == "key":
-            keys.append((int(p[1]), p[2], float(p[3]) * 1000))
+    keys, how = type_timed(text)
     time.sleep(2.0 + 3 * SLOW_FILTER_S)   # the slowest query still in flight finishes
     events = typing_stats.parse_trace(l for t, l in list(inst.lines) if t * 1000 >= t_start - 50)
     rows = typing_stats.key_latencies(keys, events, text)
     slow = typing_stats.slow_frames([e for e in events if e["t"] >= t_start], limit=3)
+    diag = {"how": how, "requests": sum(e["type"] == "request" for e in events), "frames": sum(e["type"] == "frame" for e in events),
+            "results": sum(e["type"] == "results" for e in events)}
+    if not diag["requests"]:   # the keys did not arrive: keep what the app said instead
+        diag["stderr_tail"] = [l for t, l in list(inst.lines)[-8:]]
     hide(inst)
     time.sleep(0.5)
-    return rows, slow
+    return rows, slow, diag
 
 
 def typing_mode():
     """PERF_MODE=typing: for each variant (heavy, heavy-slow) and repetition, start the real app on the synthetic busy profile and
-    type PERF_TYPE_TEXT key by key (TYPE_GAP_MS apart) TYPE_RUNS times. The probe notes the wall clock at each key; the app's frame trace
+    type PERF_TYPE_TEXT key by key (TYPE_GAP_MS apart, as System Events keystrokes: see type_timed()) TYPE_RUNS times. The script notes the wall clock at each key; the app's frame trace
     (ASHDASH_FRAME_TRACE) says when the frame with the glyph was finished and when the results for that prefix were applied. One
     `typing` line per round and one `typing-summary` per variant (p50/p95 over all keys, and per key position) go to results.jsonl."""
     log(kind="env", accessibility_trusted=probe("trusted")[1], bin=BIN, uptime=sh(["uptime"]).stdout.strip(),
@@ -530,8 +563,8 @@ def typing_mode():
                     if got is None:
                         log(kind="typing", variant=variant, rep=rep, round=n, error="launcher did not show or take focus")
                         continue
-                    rows, slow = got
-                    log(kind="typing", variant=variant, rep=rep, round=n, warmup=(n == 0), keys=rows, slow_frames=slow)
+                    rows, slow, diag = got
+                    log(kind="typing", variant=variant, rep=rep, round=n, warmup=(n == 0), keys=rows, slow_frames=slow, diag=diag)
                     if n > 0:   # round 0 is the cold one (first glyphs of the session): kept in the log, left out of the statistics
                         all_rows += rows
             finally:
