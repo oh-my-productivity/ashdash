@@ -186,10 +186,10 @@ mod mac_glue {
         let Ok(mut clock) = CLOCK.lock() else { return };
         if activity == AFTER_WAITING {
             clock.woke(now);
-        } else if activity == BEFORE_WAITING {
-            if let Some(busy) = clock.slept(now) {
-                eprintln!("{}", busy_line(busy));
-            }
+        } else if activity == BEFORE_WAITING
+            && let Some(busy) = clock.slept(now)
+        {
+            eprintln!("{}", busy_line(busy));
         }
     }
 
