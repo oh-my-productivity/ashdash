@@ -2,9 +2,13 @@
 
 use ashdash_core::theme::Theme;
 use ashdash_core::{Icon, Mods, apps};
-use eframe::egui::{self, FontId, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Vec2};
 
 use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowhint};
+
+/// The hover fill of a row that is not selected: white at alpha 10 (`#FFFFFF0A`), 1.06:1 against the panel. A derived constant, not a
+/// theme key.
+const HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(10, 10, 10, 10);
 
 impl LauncherApp {
     pub(super) fn draw_results(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, t: &Theme) {
@@ -17,6 +21,11 @@ impl LauncherApp {
             shift: i.modifiers.shift,
             fn_key: false,
         });
+        if let (Some(p), Some(prev)) = (ctx.input(|i| i.pointer.hover_pos()), self.last_pointer)
+            && p.distance(prev) > 2.0
+        {
+            self.pointer_moved = true;
+        }
         egui::ScrollArea::vertical()
             .max_height(VISIBLE_ROWS as f32 * ROW_HEIGHT)
             .auto_shrink([false, true])
@@ -30,7 +39,6 @@ impl LauncherApp {
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
-                    let sel = idx == self.selected;
                     // Only a real mouse movement may steal the selection from the keyboard.
                     if resp.hovered() {
                         let pos = ctx.input(|i| i.pointer.hover_pos());
@@ -44,9 +52,13 @@ impl LauncherApp {
                         clicked = Some(idx);
                     }
                     let item = self.items[idx].clone();
+                    let sel = idx == self.selected;
                     let painter = ui.painter_at(rect);
                     if sel {
                         painter.rect_filled(rect, t.result_roundness, c(t.result_selected_background));
+                    } else if resp.hovered() && self.pointer_moved {
+                        // a faint hover row for a pointer the keyboard selection has moved away from
+                        painter.rect_filled(rect, t.result_roundness, HOVER_FILL);
                     }
                     let icon_size = t.icon_size.min(ROW_HEIGHT - 6.0);
                     let icon_rect = Rect::from_min_size(

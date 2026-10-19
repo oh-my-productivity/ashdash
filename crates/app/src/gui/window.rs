@@ -108,6 +108,7 @@ impl LauncherApp {
         self.cancel_query();
         self.last_height = 0.0;
         self.last_pointer = None;
+        self.pointer_moved = false;
         self.overlay = None;
         mac::style_launcher_window(super::WINDOW_TITLE, &style::window_style(&self.theme));
         self.position_launcher(ctx);

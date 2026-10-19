@@ -66,6 +66,8 @@ struct LauncherApp {
     last_height: f32,
     resize_retries: u8,
     last_pointer: Option<Pos2>,
+    /// The pointer moved over the window since the last show (it enables the hover fill of the rows).
+    pointer_moved: bool,
     focus_seen: Option<bool>,
     /// Decides when losing the key window hides the launcher (see `focus.rs`).
     focus_watch: focus::FocusWatch,
@@ -194,6 +196,7 @@ impl LauncherApp {
             last_height: 0.0,
             resize_retries: 0,
             last_pointer: None,
+            pointer_moved: false,
             focus_seen: None,
             focus_watch: focus::FocusWatch::default(),
             overlay: None,
