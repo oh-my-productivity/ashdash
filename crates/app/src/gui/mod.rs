@@ -13,7 +13,9 @@ mod panel;
 pub mod prefs;
 mod quicklook;
 mod results;
+mod rowfonts;
 mod rowhint;
+mod rowtext;
 mod schedule;
 mod statusitem;
 mod style;
@@ -68,6 +70,8 @@ struct LauncherApp {
     last_pointer: Option<Pos2>,
     /// The pointer moved over the window since the last show (it enables the hover fill of the rows).
     pointer_moved: bool,
+    /// The home folder, written as `~` in path subtitles.
+    home: String,
     focus_seen: Option<bool>,
     /// Decides when losing the key window hides the launcher (see `focus.rs`).
     focus_watch: focus::FocusWatch,
@@ -143,6 +147,8 @@ pub fn run(engine: Arc<Engine>, automation: crate::events::Automation) -> Result
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            // the result rows' fonts: registered once, here, never per show or per frame
+            rowfonts::install(&cc.egui_ctx);
             Ok(Box::new(LauncherApp::new(
                 cc.egui_ctx.clone(),
                 engine,
@@ -197,6 +203,9 @@ impl LauncherApp {
             resize_retries: 0,
             last_pointer: None,
             pointer_moved: false,
+            home: dirs::home_dir()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             focus_seen: None,
             focus_watch: focus::FocusWatch::default(),
             overlay: None,
@@ -368,7 +377,8 @@ impl LauncherApp {
             .chain(self.status.as_deref())
             .chain(self.large_type.as_deref())
             .chain(self.glue.panels.top().map(|l| l.title.as_str()));
-        self.cjk_fonts.ensure(ctx, &crate::fonts::SystemFonts, texts);
+        self.cjk_fonts
+            .ensure_with(ctx, &crate::fonts::SystemFonts, texts, &rowfonts::families());
     }
 }
 

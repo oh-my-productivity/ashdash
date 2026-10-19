@@ -1,14 +1,30 @@
 //! Result list painting and app-icon loading.
 
+use std::sync::Arc;
+
 use ashdash_core::theme::Theme;
 use ashdash_core::{Icon, Mods, apps};
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Vec2};
+use eframe::egui::text::{LayoutJob, TextWrapping};
+use eframe::egui::{self, Color32, FontId, Galley, Painter, Pos2, Rect, Sense, Vec2};
 
-use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowhint};
+use super::rowtext::SubKind;
+use super::{IconState, LauncherApp, ROW_HEIGHT, VISIBLE_ROWS, c, keynames, rowfonts, rowhint, rowtext};
 
 /// The hover fill of a row that is not selected: white at alpha 10 (`#FFFFFF0A`), 1.06:1 against the panel. A derived constant, not a
 /// theme key.
 const HOVER_FILL: Color32 = Color32::from_rgba_premultiplied(10, 10, 10, 10);
+
+/// One line of `text` that is cut with `…` where it would pass `max_width`.
+fn one_line(painter: &Painter, text: &str, font: FontId, color: Color32, max_width: f32) -> Arc<Galley> {
+    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = TextWrapping {
+        max_width,
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    painter.layout_job(job)
+}
 
 impl LauncherApp {
     pub(super) fn draw_results(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, t: &Theme) {
@@ -86,50 +102,49 @@ impl LauncherApp {
                             );
                         }
                     }
-                    let text_x = icon_rect.right() + 10.0;
-                    let has_sub = !item.subtitle.is_empty() || (sel && rowhint::mod_hint(&item, held).is_some());
-                    let title_y = if has_sub {
-                        rect.top() + 6.0
-                    } else {
-                        rect.center().y - t.result_text_size * 0.6
-                    };
+                    let has_hint = idx < rowtext::HINT_ROWS;
+                    let text_x = icon_rect.right() + rowtext::ICON_GAP;
+                    let max_w = rowtext::text_max_width(text_x, rect.right(), has_hint);
                     let dim = if item.valid { 1.0 } else { 0.6 };
-                    painter.text(
-                        Pos2::new(text_x, title_y),
-                        egui::Align2::LEFT_TOP,
+                    let title_color = if sel {
+                        c(t.result_text_selected)
+                    } else {
+                        c(t.result_text)
+                    }
+                    .gamma_multiply(dim);
+                    let title = one_line(
+                        &painter,
                         &item.title,
-                        FontId::proportional(t.result_text_size),
-                        c(if sel { t.result_text_selected } else { t.result_text }).gamma_multiply(dim),
+                        FontId::new(t.result_text_size, rowfonts::text_family()),
+                        title_color,
+                        max_w,
                     );
+                    // the subtitle: the modifier hint while a modifier is held on the selected row
                     let subtitle = if sel && !held.is_none() {
                         rowhint::mod_hint(&item, held).unwrap_or_else(|| item.subtitle.clone())
                     } else {
                         item.subtitle.clone()
                     };
-                    if !subtitle.is_empty() {
-                        painter.text(
-                            Pos2::new(text_x, rect.top() + 6.0 + t.result_text_size + 3.0),
-                            egui::Align2::LEFT_TOP,
-                            &subtitle,
-                            FontId::proportional(t.result_subtext_size),
-                            c(if sel {
-                                t.result_subtext_selected
-                            } else {
-                                t.result_subtext
-                            }),
-                        );
+                    let sub_color = c(if sel {
+                        t.result_subtext_selected
+                    } else {
+                        t.result_subtext
+                    });
+                    let sub =
+                        (!subtitle.is_empty()).then(|| self.subtitle_galley(&painter, t, &subtitle, sub_color, max_w));
+                    let (title_y, sub_y) =
+                        rowtext::block_tops(rect.center().y, title.size().y, sub.as_ref().map(|g| g.size().y));
+                    painter.galley(Pos2::new(text_x, title_y), title, title_color);
+                    if let (Some(galley), Some(y)) = (sub, sub_y) {
+                        painter.galley(Pos2::new(text_x, y), galley, sub_color);
                     }
-                    if idx < 9 {
+                    if has_hint {
                         painter.text(
-                            Pos2::new(rect.right() - 12.0, rect.center().y),
+                            Pos2::new(rect.right() - rowtext::HINT_MARGIN_R, rect.center().y),
                             egui::Align2::RIGHT_CENTER,
                             format!("⌘{}", idx + 1),
-                            FontId::proportional(t.result_subtext_size + 2.0),
-                            c(if sel {
-                                t.result_subtext_selected
-                            } else {
-                                t.result_subtext
-                            }),
+                            FontId::new(t.result_subtext_size, rowfonts::mono_family()),
+                            sub_color,
                         );
                     }
                 }
@@ -145,6 +160,34 @@ impl LauncherApp {
                 fn_key: false,
             });
             self.activate(ctx, i, mods);
+        }
+    }
+
+    /// The subtitle laid out in one line of at most `max_w`: Inter for plain text; Geist Mono for a path (home as `~`, middle elided) or
+    /// a URL (without scheme and `www.`, cut at the end).
+    fn subtitle_galley(&self, painter: &Painter, t: &Theme, subtitle: &str, color: Color32, max_w: f32) -> Arc<Galley> {
+        let (kind, text) = rowtext::subtitle_text(subtitle, &self.home);
+        match kind {
+            SubKind::Plain => one_line(
+                painter,
+                &text,
+                FontId::new(t.result_subtext_size, rowfonts::text_family()),
+                color,
+                max_w,
+            ),
+            SubKind::Url | SubKind::Path => {
+                let font = FontId::new(
+                    t.result_subtext_size - rowtext::MONO_SIZE_DELTA,
+                    rowfonts::mono_family(),
+                );
+                let text = if kind == SubKind::Path {
+                    let measure = |s: &str| painter.layout_no_wrap(s.to_owned(), font.clone(), color).size().x <= max_w;
+                    rowtext::elide_path(&text, measure)
+                } else {
+                    text
+                };
+                one_line(painter, &text, font, color, max_w)
+            }
         }
     }
 

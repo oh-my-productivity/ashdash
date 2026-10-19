@@ -263,6 +263,17 @@ impl Fallbacks {
         source: &dyn FontSource,
         texts: impl IntoIterator<Item = &'a str>,
     ) -> bool {
+        self.ensure_with(ctx, source, texts, &[])
+    }
+
+    /// [`Fallbacks::ensure`], and the fonts are appended to the `extra` families as well (the launcher's own result families).
+    pub fn ensure_with<'a>(
+        &mut self,
+        ctx: &egui::Context,
+        source: &dyn FontSource,
+        texts: impl IntoIterator<Item = &'a str>,
+        extra: &[FontFamily],
+    ) -> bool {
         if self.done() {
             return false;
         }
@@ -273,20 +284,15 @@ impl Fallbacks {
         let found = self.take(needed, source);
         let added = !found.is_empty();
         for f in found {
-            ctx.add_font(egui::epaint::text::FontInsert::new(
-                f.name,
-                f.data,
-                vec![
-                    egui::epaint::text::InsertFontFamily {
-                        family: FontFamily::Proportional,
-                        priority: egui::epaint::text::FontPriority::Lowest,
-                    },
-                    egui::epaint::text::InsertFontFamily {
-                        family: FontFamily::Monospace,
-                        priority: egui::epaint::text::FontPriority::Lowest,
-                    },
-                ],
-            ));
+            let families = [FontFamily::Proportional, FontFamily::Monospace]
+                .iter()
+                .chain(extra)
+                .map(|family| egui::epaint::text::InsertFontFamily {
+                    family: family.clone(),
+                    priority: egui::epaint::text::FontPriority::Lowest,
+                })
+                .collect();
+            ctx.add_font(egui::epaint::text::FontInsert::new(f.name, f.data, families));
         }
         if added {
             ctx.request_repaint();

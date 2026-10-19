@@ -20,7 +20,7 @@
 pub mod app;
 mod dialogs;
 mod features;
-mod fonts;
+pub(super) mod fonts;
 mod general;
 pub mod hotkey;
 mod kit;
