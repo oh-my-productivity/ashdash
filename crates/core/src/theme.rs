@@ -192,7 +192,7 @@ impl Default for Theme {
             search_caret_width: 1.0,
             result_text: [255, 255, 255, 203],
             result_text_selected: [255, 255, 255, 255],
-            result_text_size: 17.0,
+            result_text_size: 16.0,
             result_subtext: [255, 255, 255, 126],
             result_subtext_selected: [255, 255, 255, 0xE6],
             result_subtext_size: 12.0,
@@ -395,6 +395,12 @@ mod tests {
         assert_eq!(t.result_roundness, 4.0);
         assert_eq!(t.result_text_selected, [255, 255, 255, 255]);
         assert_eq!(t.result_subtext_selected, [255, 255, 255, 0xE6]);
+    }
+
+    #[test]
+    fn the_result_text_sizes_are_16_and_12() {
+        let t = Theme::default();
+        assert_eq!((t.result_text_size, t.result_subtext_size), (16.0, 12.0));
     }
 
     #[test]
