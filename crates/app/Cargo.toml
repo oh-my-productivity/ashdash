@@ -27,4 +27,4 @@ ashdash-core = { version = "0.1.0", path = "../core" }
 serde_json = "1.0.154"
 winit = "0.30.13"
 # Single-instance lock (flock), peer credentials (getpeereid) and process groups for the automation surface.
-libc = "=0.2.190"
+libc = "=0.2.191"

@@ -11,7 +11,7 @@ homepage = "https://github.com/oh-my-productivity/ashdash"
 [dependencies]
 anyhow = "1.0.104"
 dirs = "7.0.0"
-notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "=8.2.1", default-features = false, features = ["macos_fsevent"] }
 plist = "1.10.1"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
